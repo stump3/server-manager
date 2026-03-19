@@ -5,7 +5,7 @@
 > Модульная система установки и управления VPN-инфраструктурой.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/server-manager.sh | bash
+curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
 
 </div>
@@ -47,11 +47,11 @@ server-manager/
 
 ```bash
 # Скачать и запустить
-curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/server-manager.sh \
+curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh \
     -o server-manager.sh && bash server-manager.sh
 
 # Или через pipe
-curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/server-manager.sh | bash
+curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
 
 ---
@@ -161,9 +161,9 @@ hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3
 Добавляет `hy2://` URI в подписку Remnawave автоматически.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/integrations/hy-sub-install.sh \
+curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh \
     -o hy-sub-install.sh
-curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/integrations/hy-webhook.py \
+curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-webhook.py \
     -o hy-webhook.py
 bash hy-sub-install.sh
 ```
