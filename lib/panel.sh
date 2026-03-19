@@ -1015,8 +1015,8 @@ RSTART
     _ok "Скрипт управления установлен"
 
     # ── Копируем setup.sh ──────────────────────────────────────────
-    PUT "$0" "${ruser}@${rip}:/root/setup.sh" 2>/dev/null && \
-    RUN "chmod +x /root/setup.sh" 2>/dev/null
+    PUT "$0" "${ruser}@${rip}:/root/server-manager.sh" 2>/dev/null && \
+    RUN "chmod +x /root/server-manager.sh" 2>/dev/null
     _ok "setup.sh скопирован на новый сервер"
 
     # ── Очистка ────────────────────────────────────────────────────
@@ -1186,7 +1186,7 @@ panel_get_token() {
 # ── Автообновление скрипта ────────────────────────────────────────
 panel_update_script() {
     header "Обновление скрипта"
-    local script_url="https://raw.githubusercontent.com/stump3/setup_rth/main/setup.sh"
+    local script_url="https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh"
     info "Проверяем обновления..."
 
     # Скачиваем сразу в temp-файл — не в переменную (избегаем проблем с EOF/stdin)
@@ -1731,3 +1731,4 @@ panel_submenu_manage() {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════

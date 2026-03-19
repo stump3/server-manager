@@ -166,8 +166,8 @@ RTELEMT
     fi
 
     # ── Копируем скрипт ────────────────────────────────────────────
-    PUT "$0" "${ruser}@${rip}:/root/setup.sh" 2>/dev/null && \
-        RUN "chmod +x /root/setup.sh" 2>/dev/null && ok "setup.sh скопирован" || true
+    PUT "$0" "${ruser}@${rip}:/root/server-manager.sh" 2>/dev/null && \
+        RUN "chmod +x /root/server-manager.sh" 2>/dev/null && ok "server-manager.sh скопирован" || true
 
     # ── Итог ───────────────────────────────────────────────────────
     echo ""
@@ -191,3 +191,4 @@ RTELEMT
     fi
 }
 
+# ═══════════════════════════════════════════════════════════════════

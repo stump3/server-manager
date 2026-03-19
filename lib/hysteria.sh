@@ -734,7 +734,7 @@ REMOTE
     done
 
     # 6. Копирование этого скрипта
-    local script_path; script_path=$(realpath "$0" 2>/dev/null || echo "/root/setup.sh")
+    local script_path; script_path=$(realpath "$0" 2>/dev/null || echo "/root/server-manager.sh")
     PUT "$script_path" "${ruser}@${rip}:${script_path}" 2>/dev/null || true
 
     echo ""
@@ -1152,7 +1152,7 @@ hysteria_submenu_users() {
 # ── Интеграция Hysteria2 → Remnawave (webhook + subscription-page) ────────────
 
 hysteria_remnawave_integration() {
-    local script_url="https://raw.githubusercontent.com/stump3/setup_rth/main/hy-sub-install.sh"
+    local script_url="https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh"
     local tmp; tmp=$(mktemp /tmp/hy-sub-install.XXXXXX.sh)
 
     info "Скачиваем hy-sub-install.sh..."
@@ -1267,3 +1267,4 @@ panel_backup_restore() {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════
