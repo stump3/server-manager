@@ -37,7 +37,7 @@ server-manager/
 │   └── migrate.sh             # Перенос сервисов
 ├── integrations/
 │   ├── hy-sub-install.sh      # Интеграция Hysteria2 → подписка Remnawave
-│   └── hy-webhook.py          # Webhook-сервис синхронизации пользователей
+│   └── hy-webhook.py          # Webhook синхронизации пользователей
 └── docs/
     ├── README.md
     └── README.html            # Интерактивная документация
@@ -48,12 +48,14 @@ server-manager/
 ## Быстрый старт
 
 ```bash
-# Скачать и запустить
+curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
+```
+
+Или скачать и запустить локально:
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh \
     -o server-manager.sh && bash server-manager.sh
-
-# Или через pipe
-curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
 
 ---
@@ -61,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ## Главное меню
 
 ```
-  SERVER-MANAGER  v2603.181008
+  SERVER-MANAGER  v2603.190312
   ────────────────────────────────────────────
 
   Remnawave Panel  ● запущена  v2.6.4
@@ -82,34 +84,44 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 
 ## Remnawave Panel
 
-### Установка
+### Режимы установки
 
-```
-1) 🆕  Установить
-2) 💣  Переустановить (сброс всех данных!)
-```
-
-**Параметры:** домен панели, sub-домен, selfsteal-домен, SSL (Cloudflare / Let's Encrypt / Gcore)
-
-### Управление
-
-| Пункт | Действие |
+| Режим | Описание |
 |---|---|
-| 📋 Логи | docker logs всех контейнеров |
-| 📊 Статус | docker compose ps |
-| 🔄 Перезапустить | docker compose restart |
-| 📦 Обновить | docker pull + up -d |
-| 🔒 SSL | certbot renew |
-| 💾 Бэкап | pg_dump + архив конфигов |
-| 🏥 Диагноз | проверка портов и сертификатов |
-| 💻 Remnawave CLI | docker exec -it remnawave remnawave |
+| Панель + Нода | Reality selfsteal, всё на одном сервере |
+| Только панель | Нода на отдельном сервере |
 
-### Расширения
+### SSL
 
-- **🌐 WARP Native** — Cloudflare WARP как outbound в Xray, добавление в профиль через API
-- **🎨 Страница подписки** — Orion шаблон, брендинг, восстановление
-- **🖼️ Selfsteal шаблон** — случайный / Simple / SNI / Nothing SNI
-- **🔄 Обновить скрипт** — проверка и загрузка с GitHub
+| Метод | Описание |
+|---|---|
+| Cloudflare DNS-01 | Wildcard, рекомендуется |
+| ACME HTTP-01 | Let's Encrypt, простой |
+| Gcore DNS-01 | Wildcard через Gcore |
+
+### Меню управления
+
+```
+1) 🔧  Установка
+2) ⚙️   Управление     → статус, логи, перезапуск, обновление, SSL, бэкап
+3) 🌐  WARP Native     → установка, добавление в Xray профиль
+4) 🎨  Страница подписки → Orion шаблон, брендинг
+5) 🖼️   Selfsteal шаблон → случайный / Simple / SNI / Nothing SNI
+6) 🔄  Обновить скрипт
+7) 📦  Миграция на другой сервер
+8) 🗑️   Удалить панель
+```
+
+### Доступ к панели
+
+После установки сохраняется в `/root/remnawave-credentials.txt`:
+
+```
+Панель:     https://panel.example.com
+Cookie URL: https://panel.example.com/auth/login?KEY=VALUE
+Логин:      xxxxxxxx
+Пароль:     xxxxxxxxxxxxxxxx
+```
 
 ---
 
@@ -124,12 +136,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 
 ### Пользователи
 
-Hot reload — без перезапуска сервиса:
-```bash
-# Добавить через меню: имя, секрет, лимиты
-# Удалить — выбор из списка
-# Ссылки — tg://proxy для всех пользователей
-```
+Hot reload без перезапуска сервиса — добавление, удаление, ссылки `tg://proxy`.
 
 ---
 
@@ -139,28 +146,34 @@ Hot reload — без перезапуска сервиса:
 
 - Домен (ACME HTTP-01)
 - CA: Let's Encrypt / ZeroSSL / Buypass
-- **Port Hopping**: один порт или диапазон UDP (обход блокировок)
-- **IPv6**: поддержка если есть на сервере
-- Masquerade: proxy → URL или file → /var/www/html
-- Алгоритм: BBR или Brutal (с указанием скорости канала)
+- **Port Hopping** — диапазон UDP портов, обход блокировок по порту
+- IPv6 поддержка
+- Masquerade: proxy → URL или file
+- Алгоритм: BBR / Brutal
 
 ### Port Hopping
 
-```bash
-# Включается при установке или через hy-sub-install.sh
+```yaml
+# config.yaml
 listen: 0.0.0.0:8443,20000-29999
+```
 
+```
 # URI клиента
 hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3
 ```
 
 Совместимые клиенты: Hiddify, Nekoray, v2rayN 7.x+
 
+### Важно
+
+Hysteria2 использует порт **8443 UDP**. Порт 443 TCP занят nginx (Remnawave). Конфликта нет — разные протоколы и порты.
+
 ---
 
 ## Интеграция Hysteria2 → Подписка Remnawave
 
-Добавляет `hy2://` URI в подписку Remnawave автоматически.
+Добавляет `hy2://` URI в подписку Remnawave автоматически при создании пользователя.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh \
@@ -170,44 +183,35 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/integrat
 bash hy-sub-install.sh
 ```
 
-**Как работает:**
+**Схема:**
 
 ```
 Remnawave (user.created)
-    ↓  POST /webhook
-hy-webhook (порт 8766)
+    ↓  POST http://127.0.0.1:8766/webhook
+hy-webhook
     ↓  обновляет /etc/hysteria/config.yaml
 Hysteria2 (перезапуск)
 ```
 
-**Что устанавливается:**
-1. `hy-webhook` — systemd сервис синхронизации пользователей
-2. Форк `subscription-page` — добавляет `hy2://` URI к подписке
-3. Вебхуки в Remnawave `.env`
-
 ---
 
 ## Перенос
-
-### Отдельные сервисы
 
 ```
 1) Перенести Remnawave Panel
 2) Перенести MTProxy
 3) Перенести Hysteria2
 4) Перенести всё
-5) Бэкап / Восстановление (backup-restore)
+5) Бэкап / Восстановление
 ```
-
-### Что переносится
 
 | Данные | Panel | MTProxy | Hysteria2 |
 |---|---|---|---|
 | Конфиг | ✓ | ✓ | ✓ |
-| БД (сжатый pg_dump) | ✓ | — | — |
+| БД (pg_dumpall + gzip) | ✓ | — | — |
 | SSL сертификаты | ✓ | — | ✓ |
 | Пользователи | ✓ | ✓ | ✓ |
-| Selfsteal сайт | ✓ | — | — |
+| server-manager.sh | ✓ | — | — |
 
 ---
 
@@ -215,7 +219,7 @@ Hysteria2 (перезапуск)
 
 - Ubuntu 20.04+ / Debian 11+
 - Root доступ
-- Открытые порты: 22 (SSH), 443 (HTTPS), UDP для Hysteria2
+- Открытые порты: 80 (certbot), 443 TCP (nginx), 8443 UDP (Hysteria2)
 
 ---
 
