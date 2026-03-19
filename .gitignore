@@ -1,0 +1,15 @@
+# Временные файлы
+*.tmp
+*.bak
+*.swp
+/tmp/
+
+# Секреты
+*.env.local
+.secrets/
+
+# macOS
+.DS_Store
+
+# Логи
+*.log
