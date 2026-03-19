@@ -6,7 +6,7 @@
 #
 # Использование:
 #   bash server-manager.sh
-#   curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/server-manager.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 #
 set -euo pipefail
 
@@ -14,7 +14,7 @@ set -euo pipefail
 # При запуске через pipe (curl | bash) BASH_SOURCE[0] = "bash"
 # В этом случае скачиваем модули динамически
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
-REPO_RAW="https://raw.githubusercontent.com/stump3/setup_rth/main"
+REPO_RAW="https://raw.githubusercontent.com/stump3/server-manager/main"
 
 _load_module() {
     local mod="$1"
