@@ -190,5 +190,3 @@ RTELEMT
         systemctl stop hysteria-server 2>/dev/null && ok "Hysteria2 остановлена" || true
     fi
 }
-
-# ═══════════════════════════════════════════════════════════════════

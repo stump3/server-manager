@@ -1265,6 +1265,3 @@ panel_backup_restore() {
         echo -e "  ${CYAN}curl -fsSL $script_url | bash${NC}"
     fi
 }
-
-
-# ═══════════════════════════════════════════════════════════════════

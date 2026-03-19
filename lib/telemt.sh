@@ -699,4 +699,3 @@ telemt_section() {
     telemt_check_deps
     telemt_main_menu
 }
-
