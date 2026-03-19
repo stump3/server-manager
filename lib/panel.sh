@@ -299,7 +299,9 @@ services:
     networks: [remnawave-network]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}']
-      interval: 3s; timeout: 10s; retries: 3
+      interval: 3s
+      timeout: 10s
+      retries: 3
     logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
 
   remnawave:
@@ -315,7 +317,10 @@ services:
     networks: [remnawave-network]
     healthcheck:
       test: ['CMD-SHELL', 'curl -f http://localhost:\${METRICS_PORT:-3001}/health']
-      interval: 30s; timeout: 5s; retries: 3; start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       remnawave-db: {condition: service_healthy}
       remnawave-redis: {condition: service_healthy}
@@ -333,7 +338,9 @@ services:
       --maxmemory-policy noeviction --loglevel warning
     healthcheck:
       test: ['CMD', 'valkey-cli', 'ping']
-      interval: 3s; timeout: 10s; retries: 3
+      interval: 3s
+      timeout: 10s
+      retries: 3
     logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
 
   remnawave-nginx:
@@ -413,7 +420,9 @@ services:
     networks: [remnawave-network]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}']
-      interval: 3s; timeout: 10s; retries: 3
+      interval: 3s
+      timeout: 10s
+      retries: 3
     logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
 
   remnawave:
@@ -429,7 +438,10 @@ services:
     networks: [remnawave-network]
     healthcheck:
       test: ['CMD-SHELL', 'curl -f http://localhost:\${METRICS_PORT:-3001}/health']
-      interval: 30s; timeout: 5s; retries: 3; start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       remnawave-db: {condition: service_healthy}
       remnawave-redis: {condition: service_healthy}
@@ -447,7 +459,9 @@ services:
       --maxmemory-policy noeviction --loglevel warning
     healthcheck:
       test: ['CMD', 'valkey-cli', 'ping']
-      interval: 3s; timeout: 10s; retries: 3
+      interval: 3s
+      timeout: 10s
+      retries: 3
     logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
 
   remnawave-nginx:
@@ -778,6 +792,8 @@ HTMLEOF
     echo -e "${BOLD}${WHITE}  Управление${NC}"
     echo -e "${GRAY}  ──────────────────────────────${NC}"
     echo -e "  ${GRAY}Команда   ${NC}remnawave_panel  ${GRAY}или${NC}  rp"
+    echo ""
+    read -rp "  Нажмите Enter чтобы продолжить (данные выше сохраните сейчас)..." < /dev/tty
     echo ""
 }
 
