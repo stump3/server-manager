@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>setup.sh — документация</title>
+<title>server-manager — документация</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Unbounded:wght@700;900&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -189,13 +189,13 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
 <body>
 
 <div class="hero">
-  <div class="tag">v2603 · unified management</div>
-  <h1>setup.sh</h1>
-  <p>Единый скрипт установки и управления VPN-инфраструктурой. Один файл — полный контроль над сервером.</p>
+  <div class="tag">v2603 · server-manager</div>
+  <h1>server-manager</h1>
+  <p>Модульная система установки и управления VPN-инфраструктурой.</p>
   <div class="cmd-wrap">
     <div class="cmd">
       <span class="ps">$</span>
-      <span id="install-cmd">curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/setup.sh -o setup.sh && bash setup.sh</span>
+      <span id="install-cmd">curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash</span>
       <button class="copy-btn" onclick="copyCmd()">copy</button>
     </div>
   </div>
@@ -270,7 +270,7 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
   </div>
   <p>При запуске скрипт собирает статусы и версии всех компонентов (параллельно, ~15ms) и отображает меню.</p>
   <div class="term">
-    <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">setup.sh</div></div>
+    <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">server-manager.sh</div></div>
     <div class="term-body">
 <span class="tb">  SERVER-MANAGER</span><span class="td">  v2603.181008</span><br>
 <span class="td">  ────────────────────────────────────────────</span><br><br>
@@ -306,8 +306,7 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
       <div class="step-n">2</div>
       <div class="step-body">
         <div class="step-title">Скачайте и запустите</div>
-        <div class="code-block"><div class="code-head"><div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div><span class="code-lang">bash</span></div><pre>curl -fsSL https://raw.githubusercontent.com/stump3/setup_rth/main/setup.sh -o setup.sh
-bash setup.sh</pre></div>
+        <div class="code-block"><div class="code-head"><div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div><span class="code-lang">bash</span></div><pre>curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash</pre></div>
       </div>
     </div>
     <div class="step">
@@ -722,7 +721,7 @@ systemctl restart hy-merger</pre></div>
   </table></div>
 
   <h3>Что переносится (Panel)</h3>
-  <p><code>.env</code>, <code>docker-compose.yml</code>, <code>nginx.conf</code>, дамп БД (pg_dumpall, gzip с проверкой размера), SSL сертификаты, Hysteria2 сертификаты (если есть), selfsteal сайт, скрипт управления <code>rp</code>, <code>setup.sh</code>.</p>
+  <p><code>.env</code>, <code>docker-compose.yml</code>, <code>nginx.conf</code>, дамп БД (pg_dumpall, gzip с проверкой размера), SSL сертификаты, Hysteria2 сертификаты (если есть), selfsteal сайт, скрипт управления <code>rp</code>, <code>server-manager.sh</code>.</p>
   <p>Перед запуском проверяется свободное место на новом сервере. На новом сервере устанавливаются зависимости с подтверждением.</p>
 
   <h3>Мониторинг DNS после переноса Hysteria2</h3>
