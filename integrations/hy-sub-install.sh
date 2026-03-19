@@ -177,6 +177,15 @@ fi
 read -rp "  Название подключения [🇩🇪 Germany Hysteria2]: " HY_NAME < /dev/tty
 HY_NAME="${HY_NAME:-🇩🇪 Germany Hysteria2}"
 
+# API токен Remnawave (нужен для subscription-page)
+if [ -z "${REMNAWAVE_API_TOKEN:-}" ]; then
+    echo ""
+    info "Remnawave API токен нужен для subscription-page"
+    info "Создайте в панели: Settings → API Tokens → Create"
+    read -rp "  API токен Remnawave (Enter — пропустить): " REMNAWAVE_API_TOKEN < /dev/tty
+    REMNAWAVE_API_TOKEN="${REMNAWAVE_API_TOKEN:-}"
+fi
+
 # ── Шаг 1: hy-webhook ────────────────────────────────────────────
 if $DO_WEBHOOK; then
 
@@ -215,6 +224,7 @@ WEBHOOK_SECRET=${WEBHOOK_SECRET}
 HYSTERIA_CONFIG=/etc/hysteria/config.yaml
 USERS_DB=/var/lib/hy-webhook/users.json
 LISTEN_PORT=8766
+LISTEN_HOST=0.0.0.0
 HYSTERIA_SVC=hysteria-server
 SECRETEOF
 chmod 600 "$SECRETS_FILE"
@@ -240,6 +250,13 @@ SVCEOF
 
 systemctl daemon-reload
 systemctl enable --now hy-webhook
+
+# Разрешаем Docker контейнерам обращаться к hy-webhook
+if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active"; then
+    ufw allow in from 172.16.0.0/12 to any port 8766 >/dev/null 2>&1
+    ufw reload >/dev/null 2>&1
+    ok "UFW: доступ Docker → порт 8766 разрешён"
+fi
 
 for i in $(seq 1 10); do
     systemctl is-active --quiet hy-webhook && break || sleep 1
@@ -437,7 +454,7 @@ method = """
         try {
             const { data } = await this.axiosInstance.request({
                 method: 'GET',
-                url: 'api/users/get-by/short-uuid/' + shortUuid,
+                url: 'api/users/by-short-uuid/' + shortUuid,
                 headers: { 'x-remnawave-real-ip': clientIp },
             });
             return { isOk: true, response: data };
@@ -480,7 +497,7 @@ ok "Docker образ собран: remnawave-sub-hy:local"
 # ── Шаг 5: docker-compose.yml ────────────────────────────────────
 step "Обновление docker-compose.yml"
 
-cat > /tmp/hy_patch_compose.py << PYEOF
+cat > /tmp/hy_patch_compose.py << 'PYEOF'
 import re, sys
 
 with open("/opt/remnawave/docker-compose.yml") as f:
@@ -492,13 +509,17 @@ content = re.sub(
     content
 )
 
-hy_domain = "${HY_DOMAIN}"
-hy_port   = "${HY_PORT}"
-hy_name   = "${HY_NAME}"
+import os
+hy_domain = os.environ.get("HY_DOMAIN", "")
+hy_port   = os.environ.get("HY_PORT", "8443")
+hy_name   = os.environ.get("HY_NAME", "Hysteria2")
+api_token = os.environ.get("REMNAWAVE_API_TOKEN", "")
 
 env_block = (
     "    environment:\n"
-    f"      - HY_DOMAIN={hy_domain}\n"
+    "      - REMNAWAVE_PANEL_URL=http://remnawave:3000\n"
+    + (f"      - REMNAWAVE_API_TOKEN={api_token}\n" if api_token else "")
+    + f"      - HY_DOMAIN={hy_domain}\n"
     f"      - HY_PORT={hy_port}\n"
     f"      - HY_NAME={hy_name}\n"
     "      - HY_USERS_DB=/var/lib/hy-webhook/users.json\n"
@@ -549,7 +570,9 @@ else:
 with open("/opt/remnawave/docker-compose.yml", "w") as f:
     f.write(content)
 PYEOF
-python3 /tmp/hy_patch_compose.py || err "Ошибка обновления docker-compose.yml"
+HY_DOMAIN="$HY_DOMAIN" HY_PORT="$HY_PORT" HY_NAME="$HY_NAME" \
+    REMNAWAVE_API_TOKEN="${REMNAWAVE_API_TOKEN:-}" \
+    python3 /tmp/hy_patch_compose.py || err "Ошибка обновления docker-compose.yml"
 ok "docker-compose.yml обновлён"
 
 # ── Шаг 6: nginx ─────────────────────────────────────────────────
