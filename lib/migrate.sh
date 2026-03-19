@@ -190,3 +190,59 @@ RTELEMT
         systemctl stop hysteria-server 2>/dev/null && ok "Hysteria2 остановлена" || true
     fi
 }
+
+migrate_menu() {
+    clear
+    echo ""
+    echo -e "${BOLD}${WHITE}  📦  Перенос сервисов${NC}"
+    echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
+    echo ""
+    echo -e "  ${BOLD}1)${RESET} 🛡️   Перенести Remnawave Panel"
+    echo -e "  ${BOLD}2)${RESET} 📡  Перенести MTProxy (telemt)"
+    echo -e "  ${BOLD}3)${RESET} 🚀  Перенести Hysteria2"
+    echo -e "  ${BOLD}4)${RESET} 📦  Перенести всё (Panel + MTProxy + Hysteria2)"
+    echo -e "  ${BOLD}5)${RESET} 💾  Бэкап / Восстановление (backup-restore)"
+    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+    echo ""
+    local ch; read -rp "  Выбор: " ch < /dev/tty
+    case "$ch" in
+        1) do_migrate ;;
+        2) [ -z "$TELEMT_MODE" ] && {
+               TELEMT_MODE="systemd"
+               TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
+               TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD"
+           }
+           telemt_menu_migrate ;;
+        3) hysteria_migrate || true ;;
+        4) check_root; migrate_all ;;
+        5) panel_backup_restore ;;
+        0) return ;;
+        *) warn "Неверный выбор" ;;
+    esac
+    migrate_menu
+}
+
+panel_backup_restore() {
+    header "Бэкап / Восстановление"
+    local script_url="https://raw.githubusercontent.com/Remnawave/backup-restore/main/backup-restore.sh"
+    local script_path="/usr/local/bin/remnawave-backup"
+
+    if command -v remnawave-backup &>/dev/null; then
+        info "backup-restore уже установлен — запускаем..."
+        remnawave-backup
+        return
+    fi
+
+    info "Скачиваем backup-restore скрипт..."
+    if curl -fsSL "$script_url" -o "$script_path" 2>/dev/null; then
+        chmod +x "$script_path"
+        ok "backup-restore установлен: $script_path"
+        remnawave-backup
+    else
+        err "Не удалось скачать скрипт"
+        echo -e "  Установите вручную:"
+        echo -e "  ${CYAN}curl -fsSL $script_url | bash${NC}"
+    fi
+}
+
+
