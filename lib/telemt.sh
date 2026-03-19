@@ -12,7 +12,7 @@ telemt_choose_mode() {
     echo ""
     echo -e "  ${BOLD}0)${RESET} Назад"
     echo ""
-    read -rp "Выбор [1/2]: " ch
+    read -rp "Выбор [1/2]: " ch < /dev/tty
     case "$ch" in
         1) TELEMT_MODE="systemd"; TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"; TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD" ;;
         2) TELEMT_MODE="docker";  TELEMT_CONFIG_FILE="$TELEMT_CONFIG_DOCKER";  TELEMT_WORK_DIR="$TELEMT_WORK_DIR_DOCKER" ;;
@@ -60,7 +60,7 @@ telemt_pick_version() {
         va+=("$v"); i=$((i+1))
     done <<< "$versions"
     echo ""
-    local ch; read -rp "Версия [1]: " ch; ch="${ch:-1}"
+    local ch; read -rp "Версия [1]: " ch; ch="${ch:-1}" < /dev/tty
     if echo "$ch" | grep -qE '^[0-9]+$' && [ "$ch" -ge 1 ] && [ "$ch" -le "${#va[@]}" ]; then
         TELEMT_CHOSEN_VERSION="${va[$((ch-1))]}"
     else
@@ -232,10 +232,10 @@ telemt_ask_users() {
     TELEMT_USER_PAIRS=()
     info "Добавление пользователей"
     while true; do
-        local uname; read -rp "  Имя [Enter чтобы завершить]: " uname
+        local uname; read -rp "  Имя [Enter чтобы завершить]: " uname < /dev/tty
         [ -z "$uname" ] && [ ${#TELEMT_USER_PAIRS[@]} -gt 0 ] && break
         [ -z "$uname" ] && { warn "Нужен хотя бы один пользователь!"; continue; }
-        local secret; read -rp "  Секрет (32 hex) [Enter = сгенерировать]: " secret
+        local secret; read -rp "  Секрет (32 hex) [Enter = сгенерировать]: " secret < /dev/tty
         if [ -z "$secret" ]; then
             secret=$(gen_secret); ok "Секрет: $secret"
         elif ! echo "$secret" | grep -qE '^[0-9a-fA-F]{32}$'; then
@@ -249,9 +249,9 @@ telemt_ask_users() {
 telemt_menu_install() {
     header "Установка MTProxy (${TELEMT_MODE})"
     [ "$TELEMT_MODE" = "systemd" ] && need_root
-    local port; read -rp "Порт прокси [8443]: " port; port="${port:-8443}"
-    ss -tlnp 2>/dev/null | grep -q ":${port} " && { warn "Порт $port занят!"; read -rp "Другой порт: " port; }
-    local domain; read -rp "Домен-маскировка [petrovich.ru]: " domain; domain="${domain:-petrovich.ru}"
+    local port; read -rp "Порт прокси [8443]: " port; port="${port:-8443}" < /dev/tty
+    ss -tlnp 2>/dev/null | grep -q ":${port} " && { warn "Порт $port занят!"; read -rp "Другой порт: " port; } < /dev/tty
+    local domain; read -rp "Домен-маскировка [petrovich.ru]: " domain; domain="${domain:-petrovich.ru}" < /dev/tty
     echo ""; telemt_ask_users
 
     if [ "$TELEMT_MODE" = "systemd" ]; then
@@ -281,17 +281,17 @@ telemt_menu_add_user() {
     header "Добавить пользователя"
     [ "$TELEMT_MODE" = "systemd" ] && need_root
     [ ! -f "$TELEMT_CONFIG_FILE" ] && die "Конфиг не найден. Сначала выполни установку."
-    local uname; read -rp "  Имя: " uname; [ -z "$uname" ] && die "Имя не может быть пустым"
+    local uname; read -rp "  Имя: " uname; [ -z "$uname" ] && die "Имя не может быть пустым" < /dev/tty
     grep -q "^${uname} = " "$TELEMT_CONFIG_FILE" && die "Пользователь '$uname' уже существует"
-    local secret; read -rp "  Секрет [Enter = сгенерировать]: " secret
+    local secret; read -rp "  Секрет [Enter = сгенерировать]: " secret < /dev/tty
     [ -z "$secret" ] && { secret=$(gen_secret); ok "Секрет: $secret"; } \
         || echo "$secret" | grep -qE '^[0-9a-fA-F]{32}$' || die "Секрет должен быть 32 hex"
     echo ""; echo -e "${BOLD}Ограничения (Enter = пропустить):${RESET}"
     local mc mi qg ed
-    read -rp "  Макс. подключений:    " mc
-    read -rp "  Макс. уникальных IP:  " mi
-    read -rp "  Квота трафика (ГБ):   " qg
-    read -rp "  Срок действия (дней): " ed
+    read -rp "  Макс. подключений:    " mc < /dev/tty
+    read -rp "  Макс. уникальных IP:  " mi < /dev/tty
+    read -rp "  Квота трафика (ГБ):   " qg < /dev/tty
+    read -rp "  Срок действия (дней): " ed < /dev/tty
     echo "$uname = \"$secret\"" >> "$TELEMT_CONFIG_FILE"
     local has=0 block=""
     [ -n "$mc" ] && { block+="\nmax_tcp_conns = $mc"; has=1; }
@@ -419,8 +419,8 @@ telemt_menu_migrate() {
     cur_domain=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_FILE" | head -1 | grep -oP '"K[^"]+' || echo "petrovich.ru")
     echo ""; echo -e "${BOLD}Текущие настройки:${RESET} порт=$cur_port домен=$cur_domain"
     local new_pp new_dom
-    read -rp "  Порт на новом сервере [Enter=$cur_port]: " new_pp; new_pp="${new_pp:-$cur_port}"
-    read -rp "  Домен-маскировка [Enter=$cur_domain]: " new_dom; new_dom="${new_dom:-$cur_domain}"
+    read -rp "  Порт на новом сервере [Enter=$cur_port]: " new_pp; new_pp="${new_pp:-$cur_port}" < /dev/tty
+    read -rp "  Домен-маскировка [Enter=$cur_domain]: " new_dom; new_dom="${new_dom:-$cur_domain}" < /dev/tty
 
     local users_block
     users_block=$(awk '/^\[access\.users\]/{found=1;next} found&&/^\[/{exit} found&&/=/{print}' "$TELEMT_CONFIG_FILE")
@@ -554,8 +554,8 @@ telemt_menu_migrate_docker() {
     echo ""; echo -e "${BOLD}Текущие настройки:${RESET} порт=$cur_port домен=$cur_domain"
 
     local new_pp new_dom
-    read -rp "  Порт на новом сервере [Enter=$cur_port]: " new_pp; new_pp="${new_pp:-$cur_port}"
-    read -rp "  Домен-маскировка [Enter=$cur_domain]: " new_dom; new_dom="${new_dom:-$cur_domain}"
+    read -rp "  Порт на новом сервере [Enter=$cur_port]: " new_pp; new_pp="${new_pp:-$cur_port}" < /dev/tty
+    read -rp "  Домен-маскировка [Enter=$cur_domain]: " new_dom; new_dom="${new_dom:-$cur_domain}" < /dev/tty
 
     # Обновляем порт и домен в конфиге если изменились
     local config_to_send

@@ -384,7 +384,7 @@ main_menu() {
         echo ""
         echo -e "  ${BOLD}0)${RESET}  Выход"
         echo ""
-        local ch; read -rp "  Выбор: " ch
+        local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
             1) panel_menu || true ;;
             2) telemt_section || true ;;
