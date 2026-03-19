@@ -193,7 +193,7 @@ elif [ -f /root/hy-webhook.py ]; then
     info "Используется /root/hy-webhook.py"
 else
     info "Скачиваем hy-webhook.py с GitHub..."
-    curl -fsSL "https://raw.githubusercontent.com/stump3/setup_rth/main/hy-webhook.py" \
+    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/hy-webhook.py" \
         -o /opt/hy-webhook/hy-webhook.py \
         || err "Не удалось скачать hy-webhook.py"
 fi
