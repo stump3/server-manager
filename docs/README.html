@@ -976,10 +976,24 @@ ufw status | grep PORT</pre></div>
 
 <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
 function copyCmd(){
-  navigator.clipboard.writeText(document.getElementById('install-cmd').textContent);
-  const btn=document.querySelector('.copy-btn');
-  btn.textContent='✓ скопировано';
-  setTimeout(()=>btn.textContent='copy',2000)
+  const text = document.getElementById('install-cmd').textContent;
+  const btn = document.querySelector('.copy-btn');
+  const done = () => { btn.textContent='✓ скопировано'; setTimeout(()=>btn.textContent='copy',2000); };
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+function fallbackCopy(text, cb){
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  try { document.execCommand('copy'); cb(); } catch(e){}
+  document.body.removeChild(ta);
 }
 
 const sections=document.querySelectorAll('.section');
