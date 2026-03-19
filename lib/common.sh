@@ -13,7 +13,11 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # Версия обновляется автоматически при каждом сохранении файла
-SCRIPT_VERSION=$(date -r "$0" +'v%y%m.%d%H%M' 2>/dev/null || echo "v0000.000000")
+# Версия: git commit date → дата файла → fallback
+# Формат: v2603.191423 (год+месяц . день+час+минута)
+SCRIPT_VERSION=$(
+    git -C "$(dirname "${BASH_SOURCE[0]}")" log -1         --format='v%cd' --date='format:%y%m.%d%H%M' 2>/dev/null     || date -r "${BASH_SOURCE[0]}" +'v%y%m.%d%H%M' 2>/dev/null     || echo "v0000.000000"
+)
 # SCRIPT_VERSION_STATIC — используется для сравнения версий при обновлении
 SCRIPT_VERSION_STATIC="v2603.181008"
 
