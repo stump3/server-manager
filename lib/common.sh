@@ -14,7 +14,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Версия обновляется автоматически при каждом сохранении файла
 SCRIPT_VERSION=$(
-    git -C "$(dirname "${BASH_SOURCE[0]}")" log -1 \
+    git -C "$(dirname "${BASH_SOURCE[0]:-$0}")" log -1 \
         --format='v%cd' --date='format:%y%m.%d%H%M' 2>/dev/null \
     || date -r "${BASH_SOURCE[0]}" +'v%y%m.%d%H%M' 2>/dev/null \
     || echo "v0000.000000"
