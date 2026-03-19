@@ -499,14 +499,12 @@ hysteria_status() {
         port="${dp##*:}"; [ -z "$port" ] && port="—"
         # Первый пользователь из userpass (Python для надёжности)
         usr=$(python3 -c "
-import re, sys
+import re
 try:
     cfg = open('$HYSTERIA_CONFIG').read()
-    m = re.search(r'userpass:
-(    ([^
-:]+):', cfg)
-    print(m.group(2).strip() if m else '—')
-except: print('—')
+    m = re.search(r'userpass:\n([ ]{4}([^\n:]+)):', cfg)
+    print(m.group(2).strip() if m else chr(8212))
+except: print(chr(8212))
 " 2>/dev/null || echo "—")
         echo "    Домен: $dom    Порт: $port    Пользователь: $usr"
     fi
@@ -901,6 +899,7 @@ print(m.group(1).strip() if m else '')
         echo -e "  ${GRAY}QR: установите qrencode — apt install qrencode${NC}"
     fi
     echo ""
+    read -rp "  Enter для возврата..." < /dev/tty
 }
 
 # ── Подменю Hysteria2 ─────────────────────────────────────────────
@@ -1141,7 +1140,7 @@ hysteria_submenu_users() {
         case "$ch" in
             1) hysteria_add_user || true; read -rp "Enter..." < /dev/tty ;;
             2) hysteria_delete_user || true; read -rp "Enter..." < /dev/tty ;;
-            3) hysteria_show_links || true; read -rp "Enter..." < /dev/tty ;;
+            3) hysteria_show_links || true ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
