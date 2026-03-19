@@ -4,6 +4,8 @@
 
 > Модульная система установки и управления VPN-инфраструктурой.
 
+📖 **[Открыть интерактивную документацию](https://stump3.github.io/server-manager/README.html)** — тёмная тема, навигация, терминальные превью
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
