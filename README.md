@@ -4,13 +4,25 @@
 
 > Модульная система установки и управления VPN-инфраструктурой на базе Remnawave + Hysteria2 + MTProxy.
 
-📖 **[Интерактивная документация](https://stump3.github.io/server-manager/README.html)** — тёмная тема, навигация, схемы архитектуры
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
 
+[![Docs](https://img.shields.io/badge/docs-интерактивные-3b82f6?style=flat-square)](https://stump3.github.io/server-manager/docs/README.html)
+[![Changelog](https://img.shields.io/badge/changelog-v2.1.0-22c55e?style=flat-square)](docs/CHANGELOG.md)
+[![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](docs/ENGINEER.md)
+
 </div>
+
+---
+
+## Документация
+
+| Файл | Описание |
+|---|---|
+| 📖 [docs/README.html](docs/README.html) | Интерактивная документация — тёмная тема, навигация, схемы архитектуры |
+| 📋 [docs/CHANGELOG.md](docs/CHANGELOG.md) | История изменений по версиям |
+| 🔧 [docs/ENGINEER.md](docs/ENGINEER.md) | Для разработчиков — архитектура, API, диагностика, анализ кода |
 
 ---
 
