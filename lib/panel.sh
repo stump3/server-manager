@@ -506,11 +506,11 @@ EOFYML
     fi
 
     # nginx.conf
-    local LISTEN_DIR REAL_IP_P REAL_IP_S LISTEN_DIRECT
+    local LISTEN_DIR REAL_IP_P REAL_IP_S
     if [ "$MODE" = "1" ]; then
-        # selfsteal: принимаем через unix-сокет от Xray И напрямую на 443 (fallback)
-        LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
-    listen 443 ssl;"
+        # selfsteal: nginx слушает ТОЛЬКО unix-сокет
+        # Xray занимает порт 443 и форвардит трафик в unix-сокет через proxy_protocol
+        LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;"
         REAL_IP_P="\$proxy_protocol_addr"
         REAL_IP_S="\$proxy_protocol_addr"
     else
@@ -620,10 +620,11 @@ server {
 }
 
 server {
-    listen 443 ssl default_server;
+    ${LISTEN_DIR}
     server_name _;
     ssl_certificate "/etc/nginx/ssl/${PC}/fullchain.pem";
     ssl_certificate_key "/etc/nginx/ssl/${PC}/privkey.pem";
+    ssl_reject_handshake on;
     return 444;
 }
 NGINX_CONF_EOF
