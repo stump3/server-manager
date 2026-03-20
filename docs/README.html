@@ -275,10 +275,11 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
 <span class="td">  MTProxy (telemt) </span><span class="tg">●</span><span class="tw"> запущен (systemd)</span><br>
 <span class="td">  Hysteria2        </span><span class="tr">○ не установлена</span><br><br>
 <span class="td">  ────────────────────────────────────────────</span><br><br>
-<span class="tw">  1)</span><span class="tb">  🛡️   Remnawave Panel</span><br>
+<span class="tw">  1)</span><span class="tb">  🛡️  Remnawave Panel</span><br>
 <span class="tw">  2)</span><span class="tp">  📡  MTProxy (telemt)</span><br>
 <span class="tw">  3)</span><span class="tc">  🚀  Hysteria2</span><br>
 <span class="tw">  4)</span><span class="ty">  📦  Перенос</span><br><br>
+<span class="tw">  5)</span><span class="tg">  🔄  Обновить скрипт</span><br><br>
 <span class="tw">  0)</span><span class="td">  Выход</span>
     </div>
   </div>
@@ -344,9 +345,14 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
   <div class="term">
     <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">Remnawave Panel</div></div>
     <div class="term-body">
-<span class="tw">  1)</span><span class="tb"> Установить</span><br>
-<span class="tw">  2)</span><span class="tr"> Управление (remnawave_panel)</span><br>
-<span class="tw">  0)</span><span class="td"> Назад</span>
+<span class="tw">  1)</span><span class="tb"> 🔧  Установка</span><br>
+<span class="tw">  2)</span><span class="tb"> ⚙️  Управление</span><br>
+<span class="tw">  3)</span><span class="tb"> 🌐  WARP Native</span><br>
+<span class="tw">  4)</span><span class="tb"> 🎨  Страница подписки</span><br>
+<span class="tw">  5)</span><span class="tb"> 🖼️  Selfsteal шаблон</span><br>
+<span class="tw">  6)</span><span class="tb"> 📦  Миграция на другой сервер</span><br>
+<span class="tw">  7)</span><span class="tr"> 🗑️  Удалить панель</span><br>
+<span class="tw">  0)</span><span class="td"> ◀️  Назад</span>
     </div>
   </div>
 
@@ -1064,7 +1070,7 @@ ssh root@NEW_IP systemctl restart hysteria-server</pre>
   <p style="color:var(--muted);margin-bottom:12px">Если скрипт уже установлен и запущен:</p>
   <div class="code-block">
     <div class="code-head"><div class="dots"><span class="dot d-r"></span><span class="dot d-y"></span><span class="dot d-g"></span></div><span class="code-lang">menu</span></div>
-    <pre>Главное меню → 1) Remnawave Panel → 6) Обновить скрипт</pre>
+    <pre>Главное меню → 5) Обновить скрипт</pre>
   </div>
   <p style="color:var(--muted);margin-top:8px;margin-bottom:24px">Скачивает архив с GitHub и обновляет все модули <code>lib/*.sh</code>.</p>
 

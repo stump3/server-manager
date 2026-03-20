@@ -52,7 +52,7 @@ for f in lib/*.sh; do echo "$(sha256sum $f | awk '{print $1}')  $(basename $f .s
 | Файл | Строк | Экспортирует |
 |---|---|---|
 | `lib/common.sh` | 384 | `ok/info/warn/err`, `step/header/section`, `confirm/ask`, `gen_*`, `check_dns`, `spinner`, SSH-хелперы, `main_menu` |
-| `lib/panel.sh` | 1780 | `panel_menu`, `panel_install`, `panel_submenu_*`, `panel_install_mgmt_script`, `panel_update_script` |
+| `lib/panel.sh` | 1780 | `panel_menu`, `panel_install`, `panel_submenu_*`, `panel_install_mgmt_script`, `panel_update_script` (вызывается из `main_menu`) |
 | `lib/telemt.sh` | 703 | `telemt_main_menu`, `telemt_install`, `telemt_menu_*`, `telemt_submenu_*` |
 | `lib/hysteria.sh` | 1213 | `hysteria_menu`, `hysteria_install`, `hysteria_*` |
 | `lib/migrate.sh` | 250 | `migrate_menu`, `do_migrate`, `migrate_all` |
