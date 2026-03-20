@@ -1,0 +1,24 @@
+upstream_url = "http://127.0.0.1:3010"
+bind_addr = "0.0.0.0:3020"
+
+# per_user_url — персональный hy2:// URI для каждого пользователя.
+# Инжектор извлекает токен из пути /sub/TOKEN и делает GET {per_user_url}/TOKEN.
+# hy-webhook возвращает персональный URI или 204 если пользователь не найден.
+# Приоритет над links_source если оба указаны.
+[[injections]]
+header = "User-Agent"
+contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayng"]
+per_user_url = "http://127.0.0.1:8766/uri"
+
+# Clash/Mihomo — YAML пропускается без изменений (автоматически)
+
+# links_source — статичный источник (одинаковый для всех пользователей).
+# Файл или URL с URI по одному на строку.
+# [[injections]]
+# header = "User-Agent"
+# contains = ["hiddify", "happ"]
+# links_source = "/data/hysteria2-links.txt"
+
+# Оба поля опциональны — можно использовать любое из них:
+# per_user_url — для персональных URI (Hysteria2 с per-user паролями)
+# links_source — для статичных URI (MTProxy, общие ссылки)
