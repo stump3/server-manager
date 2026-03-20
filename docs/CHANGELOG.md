@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.2.0] — 2026-03-20
+
+### Исправления
+
+- **Рекурсивные меню** → `while true`: `panel_menu`, `panel_warp_menu`, `panel_template_menu`, `panel_subpage_menu`, `panel_submenu_manage`, `migrate_menu`, `telemt_submenu_manage`, `telemt_submenu_users` — устранён потенциальный stack overflow при длительном использовании и падение при `set -e`
+- **`|| true` на все case-ветки** в конвертированных меню — функции возвращающие non-zero больше не роняют скрипт при `set -euo pipefail`
+- **`panel_update_script`** — теперь скачивает полный архив репозитория (`archive/refs/heads/main.tar.gz`) и обновляет все `lib/*.sh` модули. Ранее скачивался только loader (`server-manager.sh`, 64 строки), а модули оставались устаревшими
+- **`_load_module` SHA256** — опциональная проверка контрольной суммы модулей при скачивании с GitHub. Заполните `_MODULE_SHA256` в `server-manager.sh` для защиты от компрометации репозитория
+- **`_main_menu_load_cache`** — удалена (мёртвый код)
+- **`▶️ Старт`** — исправлен отступ в `panel_submenu_manage`
+- **`Enter...` без `/dev/tty`** — исправлены все broken redirects в heredoc `remnawave_panel`
+- **`docker stats` выравнивание** — `awk -F"\t" '{printf "%-36s %6s   %s\n"}'` вместо tab-разделителей
+
+---
+
 ## [2.1.0] — 2026-03-20
 
 ### Критические исправления

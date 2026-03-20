@@ -12,28 +12,76 @@
 # server-manager.sh (точка входа)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 
+# SHA256 контрольные суммы — заполните для защиты от компрометации репозитория
+declare -A _MODULE_SHA256=(
+    ["common"]=""   # sha256sum lib/common.sh | awk '{print $1}'
+    ["panel"]=""
+    ["telemt"]=""
+    ["hysteria"]=""
+    ["migrate"]=""
+)
+
 _load_module() {
     local mod="$1"
     local local_path="${SCRIPT_DIR}/lib/${mod}.sh"
     if [ -n "$SCRIPT_DIR" ] && [ -f "$local_path" ]; then
-        source "$local_path"          # локально из репо
+        source "$local_path"                        # локально из репо
     else
-        curl -fsSL "${REPO_RAW}/lib/${mod}.sh" | source /dev/stdin  # с GitHub
+        local tmp; tmp=$(mktemp)
+        curl -fsSL "${REPO_RAW}/lib/${mod}.sh" -o "$tmp"
+        # Проверяем SHA256 если задан
+        local expected="${_MODULE_SHA256[$mod]:-}"
+        if [ -n "$expected" ]; then
+            local actual; actual=$(sha256sum "$tmp" | awk '{print $1}')
+            [ "$actual" = "$expected" ] || { rm -f "$tmp"; echo "SHA256 mismatch: $mod"; exit 1; }
+        fi
+        source "$tmp"; rm -f "$tmp"
     fi
 }
 ```
 
-При `curl | bash` — `SCRIPT_DIR` пустой, модули скачиваются с GitHub. При локальном запуске — из `lib/`.
+При `curl | bash` — `SCRIPT_DIR` пустой, модули скачиваются с GitHub и опционально проверяются по SHA256. При локальном запуске — из `lib/`.
+
+**Как получить SHA256 для релиза:**
+```bash
+for f in lib/*.sh; do echo "$(sha256sum $f | awk '{print $1}')  $(basename $f .sh)"; done
+```
 
 ### Модули
 
 | Файл | Строк | Экспортирует |
 |---|---|---|
-| `lib/common.sh` | 399 | `ok/info/warn/err`, `step/header/section`, `confirm/ask`, `gen_*`, `check_dns`, `spinner`, SSH-хелперы, `main_menu` |
-| `lib/panel.sh` | 1750 | `panel_menu`, `panel_install`, `panel_submenu_*`, `panel_install_mgmt_script` |
-| `lib/telemt.sh` | 701 | `telemt_menu`, `telemt_install`, `telemt_menu_*` |
+| `lib/common.sh` | 384 | `ok/info/warn/err`, `step/header/section`, `confirm/ask`, `gen_*`, `check_dns`, `spinner`, SSH-хелперы, `main_menu` |
+| `lib/panel.sh` | 1780 | `panel_menu`, `panel_install`, `panel_submenu_*`, `panel_install_mgmt_script`, `panel_update_script` |
+| `lib/telemt.sh` | 703 | `telemt_main_menu`, `telemt_install`, `telemt_menu_*`, `telemt_submenu_*` |
 | `lib/hysteria.sh` | 1213 | `hysteria_menu`, `hysteria_install`, `hysteria_*` |
-| `lib/migrate.sh` | 248 | `migrate_menu`, `do_migrate`, `migrate_all` |
+| `lib/migrate.sh` | 250 | `migrate_menu`, `do_migrate`, `migrate_all` |
+
+---
+
+## Архитектура меню
+
+Все интерактивные меню используют `while true` вместо рекурсии:
+
+```bash
+panel_menu() {
+    local ver; ver=$(get_remnawave_version 2>/dev/null || true)
+    while true; do
+        clear
+        # ... отрисовка меню ...
+        read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) panel_submenu_install || true ;;  # || true обязателен при set -e
+            0) return ;;
+        esac
+    done
+}
+```
+
+**Правила:**
+- Данные (версии, домены) загружаются **до** `while true` — один раз при входе
+- Все вызовы функций в `case` имеют `|| true` — защита от `set -euo pipefail`
+- `read -rp "..." < /dev/tty` — обязателен `< /dev/tty`, иначе read не ждёт при pipe-запуске
 
 ---
 
