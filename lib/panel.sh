@@ -1205,49 +1205,71 @@ panel_get_token() {
 # ── Автообновление скрипта ────────────────────────────────────────
 panel_update_script() {
     header "Обновление скрипта"
-    local script_url="https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh"
+    local repo_url="https://raw.githubusercontent.com/stump3/server-manager/main"
+    local archive_url="https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz"
     info "Проверяем обновления..."
 
-    # Скачиваем сразу в temp-файл — не в переменную (избегаем проблем с EOF/stdin)
-    local tmp; tmp=$(mktemp)
-    if ! curl -fsSL "$script_url" -o "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
-        rm -f "$tmp"
-        warn "Не удалось получить скрипт с GitHub"
+    # Получаем версию с GitHub (только loader для проверки версии)
+    local tmp_ver; tmp_ver=$(mktemp)
+    if ! curl -fsSL "${repo_url}/lib/common.sh" -o "$tmp_ver" 2>/dev/null || [ ! -s "$tmp_ver" ]; then
+        rm -f "$tmp_ver"
+        warn "Не удалось получить версию с GitHub"
         return 1
     fi
 
-    local remote_ver; remote_ver=$(grep "^SCRIPT_VERSION_STATIC=" "$tmp" | head -1         | sed 's/SCRIPT_VERSION_STATIC=//;s/[^a-zA-Z0-9._-]//g' | tr -d " ")
+    local remote_ver; remote_ver=$(grep "^SCRIPT_VERSION_STATIC=" "$tmp_ver" | head -1         | sed 's/SCRIPT_VERSION_STATIC=//;s/[^a-zA-Z0-9._-]//g' | tr -d " ")
+    rm -f "$tmp_ver"
     local local_ver; local_ver="$SCRIPT_VERSION"
 
     info "Локальная версия: $local_ver"
     info "Версия на GitHub: ${remote_ver:-неизвестна}"
     echo ""
 
-    # Определяем нужно ли обновление
     if [ -n "$remote_ver" ] && [ "$remote_ver" = "$local_ver" ]; then
         ok "Установлена актуальная версия."
         echo ""
-        if ! confirm "Переустановить всё равно?" n; then
-            rm -f "$tmp"; return
-        fi
+        if ! confirm "Переустановить всё равно?" n; then return; fi
     elif [ -n "$remote_ver" ] && [[ "$local_ver" > "$remote_ver" ]]; then
-        warn "Локальная версия новее GitHub. Вы уже используете более новый скрипт."
+        warn "Локальная версия новее GitHub."
         echo ""
-        if ! confirm "Перезаписать локальную версию версией с GitHub?" n; then
-            rm -f "$tmp"; return
-        fi
+        if ! confirm "Перезаписать локальную версию версией с GitHub?" n; then return; fi
     else
-        if ! confirm "Обновить до $remote_ver?" y; then
-            rm -f "$tmp"; return
+        if ! confirm "Обновить до ${remote_ver:-последней версии}?" y; then return; fi
+    fi
+
+    # Определяем директорию скрипта
+    local script_path script_dir
+    script_path=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
+    script_dir=$(dirname "$script_path")
+
+    info "Скачиваем обновление..."
+    local tmp_dir; tmp_dir=$(mktemp -d)
+
+    # Скачиваем архив репозитория (содержит server-manager.sh + lib/*.sh)
+    if curl -fsSL "$archive_url" -o "${tmp_dir}/archive.tar.gz" 2>/dev/null; then
+        tar -xzf "${tmp_dir}/archive.tar.gz" -C "$tmp_dir" 2>/dev/null
+        local extracted; extracted=$(find "$tmp_dir" -maxdepth 1 -type d -name "server-manager-*" | head -1)
+        if [ -n "$extracted" ]; then
+            # Обновляем loader
+            cp "${extracted}/server-manager.sh" "$script_path" && chmod +x "$script_path"
+            # Обновляем все модули
+            if [ -d "${script_dir}/lib" ]; then
+                cp "${extracted}/lib/"*.sh "${script_dir}/lib/" 2>/dev/null && ok "Модули обновлены: ${script_dir}/lib/"
+            else
+                warn "Директория lib/ не найдена рядом со скриптом — модули не обновлены"
+                warn "Создайте ${script_dir}/lib/ и скопируйте модули вручную"
+            fi
+            rm -rf "$tmp_dir"
+            ok "Скрипт обновлён → $script_path"
+            warn "Перезапустите: bash $script_path"
+            return 0
         fi
     fi
 
-    # Определяем путь к текущему скрипту
-    local script_path; script_path=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
-    cp "$tmp" "$script_path" && chmod +x "$script_path"
-    rm -f "$tmp"
-    ok "Скрипт обновлён → $script_path"
-    warn "Перезапустите: bash $script_path"
+    rm -rf "$tmp_dir"
+    warn "Не удалось скачать архив. Попробуйте вручную:"
+    info "curl -fsSL $archive_url | tar -xz"
+    return 1
 }
 
 # ── Переустановка скрипта управления ─────────────────────────────
@@ -1340,24 +1362,27 @@ panel_reinstall() {
 
 # ── WARP Native ───────────────────────────────────────────────────
 panel_warp_menu() {
-    clear
-    header "WARP Native"
-    echo -e "  ${BOLD}1)${RESET} ⬇️   Установить WARP"
-    echo -e "  ${BOLD}2)${RESET} ➕  Добавить в профиль Xray"
-    echo -e "  ${BOLD}3)${RESET} ➖  Удалить из профиля Xray"
-    echo -e "  ${BOLD}4)${RESET} 🗑️   Удалить WARP с системы"
-    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    case "$ch" in
-        1) bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/install.sh); read -rp "Enter..." < /dev/tty ;;
-        2) panel_warp_add_config ;;
-        3) panel_warp_remove_config ;;
-        4) bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/uninstall.sh); read -rp "Enter..." < /dev/tty ;;
-        0) return ;;
-        *) warn "Неверный выбор" ;;
-    esac
-    panel_warp_menu
+    while true; do
+        clear
+        header "WARP Native"
+        echo -e "  ${BOLD}1)${RESET} ⬇️   Установить WARP"
+        echo -e "  ${BOLD}2)${RESET} ➕  Добавить в профиль Xray"
+        echo -e "  ${BOLD}3)${RESET} ➖  Удалить из профиля Xray"
+        echo -e "  ${BOLD}4)${RESET} 🗑️   Удалить WARP с системы"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/install.sh) || true
+               read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            2) panel_warp_add_config || true ;;
+            3) panel_warp_remove_config || true ;;
+            4) bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/uninstall.sh) || true
+               read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+    done
 }
 
 panel_warp_select_profile() {
@@ -1458,24 +1483,25 @@ PY
 
 # ── Selfsteal шаблоны ─────────────────────────────────────────────
 panel_template_menu() {
-    clear
-    header "Selfsteal — шаблон сайта"
-    echo -e "  ${BOLD}1)${RESET} 🎲  Случайный шаблон"
-    echo -e "  ${BOLD}2)${RESET} 🌐  Simple web templates"
-    echo -e "  ${BOLD}3)${RESET} 🔷  SNI templates"
-    echo -e "  ${BOLD}4)${RESET} ⬜  Nothing SNI"
-    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    case "$ch" in
-        1) panel_install_template "" ;;
-        2) panel_install_template "simple" ;;
-        3) panel_install_template "sni" ;;
-        4) panel_install_template "nothing" ;;
-        0) return ;;
-        *) warn "Неверный выбор" ;;
-    esac
-    panel_template_menu
+    while true; do
+        clear
+        header "Selfsteal — шаблон сайта"
+        echo -e "  ${BOLD}1)${RESET} 🎲  Случайный шаблон"
+        echo -e "  ${BOLD}2)${RESET} 🌐  Simple web templates"
+        echo -e "  ${BOLD}3)${RESET} 🔷  SNI templates"
+        echo -e "  ${BOLD}4)${RESET} ⬜  Nothing SNI"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) panel_install_template "" || true ;;
+            2) panel_install_template "simple" || true ;;
+            3) panel_install_template "sni" || true ;;
+            4) panel_install_template "nothing" || true ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+    done
 }
 
 panel_install_template() {
@@ -1541,22 +1567,23 @@ panel_install_template() {
 
 # ── Страница подписки ─────────────────────────────────────────────
 panel_subpage_menu() {
-    clear
-    header "Страница подписки"
-    echo -e "  ${BOLD}1)${RESET} 🎨  Установить Orion шаблон"
-    echo -e "  ${BOLD}2)${RESET} 🏷️   Настроить брендинг"
-    echo -e "  ${BOLD}3)${RESET} ♻️   Восстановить оригинал"
-    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    case "$ch" in
-        1) panel_subpage_install_orion ;;
-        2) panel_subpage_branding ;;
-        3) panel_subpage_restore ;;
-        0) return ;;
-        *) warn "Неверный выбор" ;;
-    esac
-    panel_subpage_menu
+    while true; do
+        clear
+        header "Страница подписки"
+        echo -e "  ${BOLD}1)${RESET} 🎨  Установить Orion шаблон"
+        echo -e "  ${BOLD}2)${RESET} 🏷️   Настроить брендинг"
+        echo -e "  ${BOLD}3)${RESET} ♻️   Восстановить оригинал"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) panel_subpage_install_orion || true ;;
+            2) panel_subpage_branding || true ;;
+            3) panel_subpage_restore || true ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+    done
 }
 
 panel_subpage_install_orion() {
@@ -1654,45 +1681,47 @@ panel_cli() {
 }
 
 panel_menu() {
-    # Кэшируем данные при входе, не перезапрашиваем при рекурсии
     local ver panel_domain
     ver=$(get_remnawave_version 2>/dev/null || true)
     panel_domain=""
     [ -f /opt/remnawave/.env ] && panel_domain=$(awk -F= '/^FRONT_END_DOMAIN=/{gsub(/"/, "", $2); print $2; exit}' /opt/remnawave/.env 2>/dev/null || true)
-    clear
-    echo ""
-    echo -e "${BOLD}${WHITE}  🛡️  Remnawave Panel${NC}"
-    echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
-    if [ -n "$ver" ] || [ -n "$panel_domain" ]; then
-        [ -n "$ver" ]          && echo -e "  ${GRAY}Версия  ${NC}${ver}"
-        [ -n "$panel_domain" ] && echo -e "  ${GRAY}Домен   ${NC}${panel_domain}"
+    while true; do
+        clear
         echo ""
-    fi
-    echo -e "  ${BOLD}1)${RESET}  🔧  Установка"
-    echo -e "  ${BOLD}2)${RESET}  ⚙️  Управление"
-    echo -e "  ${BOLD}3)${RESET}  🌐  WARP Native"
-    echo -e "  ${BOLD}4)${RESET}  🎨  Страница подписки"
-    echo -e "  ${BOLD}5)${RESET}  🖼️  Selfsteal шаблон"
-    echo -e "  ${BOLD}6)${RESET}  🔄  Обновить скрипт"
-    echo -e "  ${BOLD}7)${RESET}  📦  Миграция на другой сервер"
-    echo -e "  ${BOLD}8)${RESET}  🗑️  Удалить панель"
-    echo ""
-    echo -e "  ${BOLD}0)${RESET}  ◀️ Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    case "$ch" in
-        1) panel_submenu_install ;;
-        2) panel_submenu_manage ;;
-        3) panel_warp_menu ;;
-        4) panel_subpage_menu ;;
-        5) panel_template_menu ;;
-        6) panel_update_script; read -rp "Enter..." < /dev/tty ;;
-        7) [ -x "$PANEL_MGMT_SCRIPT" ] && "$PANEL_MGMT_SCRIPT" migrate             || warn "Панель не установлена." ;;
-        8) panel_remove ;;
-        0) return ;;
-        *) warn "Неверный выбор" ;;
-    esac
-    panel_menu
+        echo -e "${BOLD}${WHITE}  🛡️  Remnawave Panel${NC}"
+        echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
+        if [ -n "$ver" ] || [ -n "$panel_domain" ]; then
+            [ -n "$ver" ]          && echo -e "  ${GRAY}Версия  ${NC}${ver}"
+            [ -n "$panel_domain" ] && echo -e "  ${GRAY}Домен   ${NC}${panel_domain}"
+            echo ""
+        fi
+        echo -e "  ${BOLD}1)${RESET}  🔧  Установка"
+        echo -e "  ${BOLD}2)${RESET}  ⚙️  Управление"
+        echo -e "  ${BOLD}3)${RESET}  🌐  WARP Native"
+        echo -e "  ${BOLD}4)${RESET}  🎨  Страница подписки"
+        echo -e "  ${BOLD}5)${RESET}  🖼️  Selfsteal шаблон"
+        echo -e "  ${BOLD}6)${RESET}  🔄  Обновить скрипт"
+        echo -e "  ${BOLD}7)${RESET}  📦  Миграция на другой сервер"
+        echo -e "  ${BOLD}8)${RESET}  🗑️  Удалить панель"
+        echo ""
+        echo -e "  ${BOLD}0)${RESET}  ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) panel_submenu_install || true ;;
+            2) panel_submenu_manage || true ;;
+            3) panel_warp_menu || true ;;
+            4) panel_subpage_menu || true ;;
+            5) panel_template_menu || true ;;
+            6) panel_update_script || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            7) { [ -x "$PANEL_MGMT_SCRIPT" ] && "$PANEL_MGMT_SCRIPT" migrate || warn "Панель не установлена."; } || true
+               read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            8) panel_remove || true ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+        ver=$(get_remnawave_version 2>/dev/null || true)
+    done
 }
 
 panel_submenu_install() {
@@ -1712,25 +1741,26 @@ panel_submenu_install() {
 }
 
 panel_submenu_manage() {
-    clear
-    header "Remnawave Panel — Управление"
-    echo -e "  ${BOLD}1)${RESET} 📋  Логи"
-    echo -e "  ${BOLD}2)${RESET} 📊  Статус"
-    echo -e "  ${BOLD}3)${RESET} 🔄  Перезапустить"
-    echo -e "  ${BOLD}4)${RESET} ▶️  Старт"
-    echo -e "  ${BOLD}5)${RESET} 📦  Обновить"
-    echo -e "  ${BOLD}6)${RESET} 🔒  SSL"
-    echo -e "  ${BOLD}7)${RESET} 💾  Бэкап"
-    echo -e "  ${BOLD}8)${RESET} 🏥  Диагноз"
-    echo -e "  ${BOLD}9)${RESET} 🔓  Открыть порт 8443"
-    echo -e " ${BOLD}10)${RESET} 🔐  Закрыть порт 8443"
-    echo -e " ${BOLD}11)${RESET} 💻  Remnawave CLI"
-    echo -e " ${BOLD}12)${RESET} 🔧  Переустановить скрипт (rp)"
-    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    [ -x "$PANEL_MGMT_SCRIPT" ] || { warn "Панель не установлена."; return; }
-    case "$ch" in
+    while true; do
+        clear
+        header "Remnawave Panel — Управление"
+        echo -e "  ${BOLD}1)${RESET} 📋  Логи"
+        echo -e "  ${BOLD}2)${RESET} 📊  Статус"
+        echo -e "  ${BOLD}3)${RESET} 🔄  Перезапустить"
+        echo -e "  ${BOLD}4)${RESET}  ▶️   Старт"
+        echo -e "  ${BOLD}5)${RESET} 📦  Обновить"
+        echo -e "  ${BOLD}6)${RESET} 🔒  SSL"
+        echo -e "  ${BOLD}7)${RESET} 💾  Бэкап"
+        echo -e "  ${BOLD}8)${RESET} 🏥  Диагноз"
+        echo -e "  ${BOLD}9)${RESET} 🔓  Открыть порт 8443"
+        echo -e " ${BOLD}10)${RESET} 🔐  Закрыть порт 8443"
+        echo -e " ${BOLD}11)${RESET} 💻  Remnawave CLI"
+        echo -e " ${BOLD}12)${RESET} 🔧  Переустановить скрипт (rp)"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        [ -x "$PANEL_MGMT_SCRIPT" ] || { warn "Панель не установлена."; return; }
+        case "$ch" in
         1)  "$PANEL_MGMT_SCRIPT" logs ;;
         2)  "$PANEL_MGMT_SCRIPT" status; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
         3)  "$PANEL_MGMT_SCRIPT" restart; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
@@ -1745,6 +1775,6 @@ panel_submenu_manage() {
         12) panel_reinstall_mgmt || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
         0)  return ;;
         *)  warn "Неверный выбор" ;;
-    esac
-    panel_submenu_manage
+        esac
+        done
 }

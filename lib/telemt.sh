@@ -648,41 +648,43 @@ telemt_main_menu() {
 }
 
 telemt_submenu_manage() {
-    clear
-    header "MTProxy — Управление"
-    echo -e "  ${BOLD}1)${RESET} 📊  Статус и логи"
-    echo -e "  ${BOLD}2)${RESET} 🔄  Обновить"
-    echo -e "  ${BOLD}3)${RESET} ⏹️   Остановить"
-    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    case "$ch" in
-        1) telemt_menu_status; read -rp "Enter..." < /dev/tty ;;
-        2) telemt_menu_update ;;
-        3) telemt_menu_stop; read -rp "Enter..." < /dev/tty ;;
-        0) return ;;
-        *) warn "Неверный выбор" ;;
-    esac
-    telemt_submenu_manage
+    while true; do
+        clear
+        header "MTProxy — Управление"
+        echo -e "  ${BOLD}1)${RESET} 📊  Статус и логи"
+        echo -e "  ${BOLD}2)${RESET} 🔄  Обновить"
+        echo -e "  ${BOLD}3)${RESET} ⏹️   Остановить"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) telemt_menu_status || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            2) telemt_menu_update || true ;;
+            3) telemt_menu_stop || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+    done
 }
 
 telemt_submenu_users() {
-    clear
-    header "MTProxy — Пользователи"
-    echo -e "  ${BOLD}1)${RESET} ➕  Добавить пользователя"
-    echo -e "  ${BOLD}2)${RESET} ➖  Удалить пользователя"
-    echo -e "  ${BOLD}3)${RESET} 👥  Пользователи и ссылки"
-    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    case "$ch" in
-        1) telemt_menu_add_user ;;
-        2) telemt_menu_delete_user ;;
-        3) telemt_menu_links; read -rp "Enter..." < /dev/tty ;;
-        0) return ;;
-        *) warn "Неверный выбор" ;;
-    esac
-    telemt_submenu_users
+    while true; do
+        clear
+        header "MTProxy — Пользователи"
+        echo -e "  ${BOLD}1)${RESET} ➕  Добавить пользователя"
+        echo -e "  ${BOLD}2)${RESET} ➖  Удалить пользователя"
+        echo -e "  ${BOLD}3)${RESET} 👥  Пользователи и ссылки"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) telemt_menu_add_user || true ;;
+            2) telemt_menu_delete_user || true ;;
+            3) telemt_menu_links || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+    done
 }
 
 telemt_section() {

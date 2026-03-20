@@ -192,34 +192,36 @@ RTELEMT
 }
 
 migrate_menu() {
-    clear
-    echo ""
-    echo -e "${BOLD}${WHITE}  📦  Перенос сервисов${NC}"
-    echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
-    echo ""
-    echo -e "  ${BOLD}1)${RESET} 🛡️   Перенести Remnawave Panel"
-    echo -e "  ${BOLD}2)${RESET} 📡  Перенести MTProxy (telemt)"
-    echo -e "  ${BOLD}3)${RESET} 🚀  Перенести Hysteria2"
-    echo -e "  ${BOLD}4)${RESET} 📦  Перенести всё (Panel + MTProxy + Hysteria2)"
-    echo -e "  ${BOLD}5)${RESET} 💾  Бэкап / Восстановление (backup-restore)"
-    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    case "$ch" in
-        1) do_migrate ;;
-        2) [ -z "$TELEMT_MODE" ] && {
-               TELEMT_MODE="systemd"
-               TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
-               TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD"
-           }
-           telemt_menu_migrate ;;
-        3) hysteria_migrate || true ;;
-        4) check_root; migrate_all ;;
-        5) panel_backup_restore ;;
-        0) return ;;
-        *) warn "Неверный выбор" ;;
-    esac
-    migrate_menu
+    while true; do
+        clear
+        echo ""
+        echo -e "${BOLD}${WHITE}  📦  Перенос сервисов${NC}"
+        echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} 🛡️   Перенести Remnawave Panel"
+        echo -e "  ${BOLD}2)${RESET} 📡  Перенести MTProxy (telemt)"
+        echo -e "  ${BOLD}3)${RESET} 🚀  Перенести Hysteria2"
+        echo -e "  ${BOLD}4)${RESET} 📦  Перенести всё (Panel + MTProxy + Hysteria2)"
+        echo -e "  ${BOLD}5)${RESET} 💾  Бэкап / Восстановление (backup-restore)"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) do_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            2) { [ -z "$TELEMT_MODE" ] && {
+                       TELEMT_MODE="systemd"
+                       TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
+                       TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD"
+                   }
+                   telemt_menu_migrate; } || true
+               read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            3) hysteria_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            4) { check_root; migrate_all; } || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            5) panel_backup_restore || true ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+    done
 }
 
 panel_backup_restore() {

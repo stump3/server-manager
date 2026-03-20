@@ -297,9 +297,6 @@ panel_api() {
 # ГЛАВНОЕ МЕНЮ
 # ═══════════════════════════════════════════════════════════════════
 
-# Файлы кэша статусов (обновляются асинхронно)
-_STATUS_CACHE="/tmp/.sm_status_$$"
-
 _main_menu_refresh_status() {
     # Собираем все данные за один вызов docker ps (7ms с точным фильтром)
     # Синхронно — версии видны сразу при входе и после возврата из подменю
@@ -309,6 +306,8 @@ _main_menu_refresh_status() {
     ps_out=$(docker ps --format "{{.Names}}" 2>/dev/null || true)
 
     # Версии параллельно через temp-файлы (~15ms вместо 30ms последовательно)
+    # ЗАВИСИМОСТЬ: get_remnawave_version и get_hysteria_version объявлены в lib/panel.sh
+    # panel.sh должен быть загружен до вызова main_menu
     local _f_rw _f_hy
     _f_rw=$(mktemp /tmp/.sm_rw_XXXX); _f_hy=$(mktemp /tmp/.sm_hy_XXXX)
     { get_remnawave_version 2>/dev/null > "$_f_rw"; } &
@@ -345,20 +344,6 @@ _main_menu_refresh_status() {
         _HYSTERIA_STATUS="${YELLOW}◐${NC} остановлена"
     else
         _HYSTERIA_STATUS="${GRAY}○ не установлена${NC}"
-    fi
-}
-
-_main_menu_load_cache() {
-    # Читаем из кэша если он свежее 10 секунд
-    if [ -f "${_STATUS_CACHE}" ]; then
-        local age; age=$(( $(date +%s) - $(stat -c %Y "${_STATUS_CACHE}" 2>/dev/null || echo 0) ))
-        if [ "$age" -lt 10 ]; then
-            local lines=()
-            while IFS= read -r line; do lines+=("$line"); done < "${_STATUS_CACHE}"
-            [ -n "${lines[0]:-}" ] && _PANEL_STATUS="${lines[0]}"
-            [ -n "${lines[1]:-}" ] && _TELEMT_STATUS="${lines[1]}"
-            [ -n "${lines[2]:-}" ] && _HYSTERIA_STATUS="${lines[2]}"
-        fi
     fi
 }
 
