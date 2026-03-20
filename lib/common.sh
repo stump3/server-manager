@@ -367,6 +367,8 @@ main_menu() {
         echo -e "  ${BOLD}3)${RESET}  🚀  Hysteria2"
         echo -e "  ${BOLD}4)${RESET}  📦  Перенос"
         echo ""
+        echo -e "  ${BOLD}5)${RESET}  🔄  Обновить скрипт"
+        echo ""
         echo -e "  ${BOLD}0)${RESET}  Выход"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
@@ -375,6 +377,7 @@ main_menu() {
             2) telemt_section || true ;;
             3) hysteria_menu || true ;;
             4) migrate_menu || true ;;
+            5) panel_update_script || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             0) exit 0 ;;
             *) warn "Неверный выбор" ;;
         esac
