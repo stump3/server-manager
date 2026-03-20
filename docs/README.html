@@ -893,11 +893,22 @@ docker logs remnanode --tail=5 | grep "inbounds"
     </div>
   </div>
 
-  <p>Добавляет <code>hy2://</code> URI в подписку Remnawave автоматически — при создании, удалении или изменении пользователя.</p>
+  <p>Добавляет персональный <code>hy2://</code> URI в подписку Remnawave автоматически — каждый пользователь получает уникальную ссылку со своим именем и паролем. Clash/Sing-Box конфиги проходят без изменений.</p>
 
   <div class="alert al-info">
     <span class="alert-icon">📍</span>
     <div>Путь в меню: <strong>3) Hysteria2 → 4) Подписка → 3) Интеграция с Remnawave</strong></div>
+  </div>
+
+  <h3>Компоненты</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Компонент</th><th>Тип</th><th>Описание</th></tr></thead>
+      <tbody>
+        <tr><td>hy-webhook</td><td><span class="badge b-green">systemd</span></td><td>Вебхук-сервис + <code>GET /uri/:shortUuid</code> + встроенный proxy :3020</td></tr>
+        <tr><td>sub-injector</td><td><span class="badge b-green">systemd</span></td><td>Rust reverse-proxy с per-user URI инъекцией, фильтрацией по UA</td></tr>
+      </tbody>
+    </table>
   </div>
 
   <h3>Схема работы</h3>
@@ -906,13 +917,21 @@ docker logs remnanode --tail=5 | grep "inbounds"
     <pre><span class="tg">Remnawave</span> (user.created / deleted / disabled)
     ↓  POST http://172.30.0.1:8766/webhook
     ↓  X-Remnawave-Signature: HMAC-SHA256
-<span class="tb">hy-webhook</span> (systemd, :8766, 0.0.0.0)
-    ↓  verify → sanitize → gen_password → update users.json
+<span class="tb">hy-webhook</span> (systemd, :8766, 127.0.0.1)
+    ↓  verify → gen_password → update users.json
     ↓  update /etc/hysteria/config.yaml
     ↓  systemctl reload-or-restart hysteria-server
-<span class="tp">subscription-page</span> (remnawave-sub-hy:local)
-    ↓  при запросе подписки читает users.json
-    ↓  добавляет hy2:// URI в base64 ответ</pre>
+
+<span class="tw">Клиент (Hiddify/v2rayNG)</span>
+    ↓  GET /sub/TOKEN
+<span class="tb">remna-sub-injector</span> :3020  (Rust/Tokio)
+    ↓  GET /uri/TOKEN  →  hy-webhook :8766
+    ↓  GET Remnawave API /by-short-uuid/TOKEN  →  username
+    ↓  найти пароль в users.json  →  hy2://user:pass@domain:port?...
+    ↓  проксировать на upstream :3010
+    ←  base64 ответ + hy2:// URI
+
+<span class="tw">Клиент (Clash/Sing-Box)</span>  →  YAML конфиг без изменений</pre>
   </div>
 
   <h3>Требования</h3>
@@ -923,7 +942,7 @@ docker logs remnanode --tail=5 | grep "inbounds"
         <tr><td>/opt/remnawave/</td><td>Remnawave установлена через server-manager</td></tr>
         <tr><td>/etc/hysteria/config.yaml</td><td>Hysteria2 установлена через server-manager</td></tr>
         <tr><td>UFW: 172.16.0.0/12 → 8766</td><td>Добавляется автоматически при установке</td></tr>
-        <tr><td>REMNAWAVE_API_TOKEN</td><td>Создать в панели: Settings → API Tokens</td></tr>
+        <tr><td>REMNAWAVE_API_TOKEN</td><td>Опционально — для <code>GET /uri/:shortUuid</code></td></tr>
       </tbody>
     </table>
   </div>
@@ -944,17 +963,21 @@ WEBHOOK_SECRET_HEADER=<span class="cs">&lt;hex64&gt;</span></pre>
   <h3>Диагностика интеграции</h3>
   <div class="code-block">
     <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">bash</span></div>
-    <pre><span class="cm"># Статус webhook</span>
+    <pre><span class="cm"># Статус сервисов</span>
+systemctl status hy-webhook remna-sub-injector
+
+<span class="cm"># Webhook health</span>
 curl -s http://127.0.0.1:8766/health
 
-<span class="cm"># Доступность из контейнера</span>
-docker exec remnawave curl -s http://172.30.0.1:8766/health
+<span class="cm"># URI endpoint (персональный)</span>
+curl -s http://127.0.0.1:8766/uri/TOKEN_SHORT_UUID
 
-<span class="cm"># Логи событий</span>
+<span class="cm"># Тест инъекции через injector</span>
+curl -s -H "User-Agent: hiddify" http://127.0.0.1:3020/TOKEN | base64 -d | grep "hy2://"
+
+<span class="cm"># Логи</span>
 journalctl -u hy-webhook -n 20
-
-<span class="cm"># Проверить hy2:// в подписке</span>
-curl -s "https://sub.domain/TOKEN" | base64 -d | grep "hy2://"</pre>
+journalctl -u remna-sub-injector -n 20</pre>
   </div>
 </section>
 
@@ -1003,6 +1026,12 @@ curl -s "https://sub.domain/TOKEN" | base64 -d | grep "hy2://"</pre>
         <tr><td>/etc/hysteria/config.yaml</td><td>Конфигурация сервера</td></tr>
         <tr><td>/etc/systemd/system/hysteria-server.service</td><td>Systemd unit</td></tr>
         <tr><td>/etc/systemd/system/hy-webhook.service</td><td>Systemd unit webhook-синхронизации</td></tr>
+        <tr><td>/opt/hy-webhook/hy-webhook.py</td><td>Python сервис (webhook + proxy)</td></tr>
+        <tr><td>/etc/hy-webhook.env</td><td>Конфиг и секреты (права 600)</td></tr>
+        <tr><td>/var/lib/hy-webhook/users.json</td><td>База пользователей</td></tr>
+        <tr><td>/opt/remna-sub-injector/sub-injector</td><td>Бинарник sub-injector (~3 MB)</td></tr>
+        <tr><td>/opt/remna-sub-injector/config.toml</td><td>Конфиг инжектора</td></tr>
+        <tr><td>/etc/systemd/system/remna-sub-injector.service</td><td>Systemd unit sub-injector</td></tr>
         <tr><td>/root/hysteria-{домен}.txt</td><td>URI подключения</td></tr>
         <tr><td>/root/hysteria-{домен}.yaml</td><td>Конфиг Clash/Mihomo</td></tr>
         <tr><td>/root/hysteria-{домен}.png</td><td>QR-код PNG</td></tr>
@@ -1136,7 +1165,7 @@ ssh root@NEW_IP systemctl restart hysteria-server</pre>
         <tr>
           <td>Invalid subscription content</td>
           <td>Подписка не парсится клиентом</td>
-          <td>Проверить логи: <code>docker logs remnawave-subscription-page --tail=20</code>. Убедиться что <code>REMNAWAVE_PANEL_URL</code> и <code>REMNAWAVE_API_TOKEN</code> заданы</td>
+          <td>Проверить логи injector: <code>journalctl -u remna-sub-injector -n 20</code>. Проверить URI endpoint: <code>curl -s http://127.0.0.1:8766/uri/TOKEN</code></td>
         </tr>
       </tbody>
     </table>
@@ -1223,6 +1252,7 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
         <tr><td>2222 TCP</td><td>remnanode — только из Docker сети 172.30.0.0/16</td></tr>
         <tr><td>8766 TCP</td><td>hy-webhook — только из Docker сети 172.16.0.0/12</td></tr>
         <tr><td>9091 TCP</td><td>telemt API — только localhost</td></tr>
+        <tr><td>3020 TCP</td><td>sub-injector reverse-proxy подписок</td></tr>
         <tr><td>Зависимости</td><td>Docker, docker-compose, jq, certbot, openssl</td></tr>
       </tbody>
     </table>

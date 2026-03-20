@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.4.0] — 2026-03-21
+
+### Интеграция Hysteria2 → Remnawave — новая архитектура
+
+- **sub-injector** — новый компонент (`sub-injector/`). Rust/Axum reverse-proxy (~3 MB бинарник) заменяет хрупкий форк TypeScript subscription-page. Поддерживает `per_user_url` — инжектор сам извлекает токен из пути запроса подписки и делает `GET /uri/{token}` в hy-webhook для получения персонального URI. Конфиг: `sub-injector/config.toml`. При отсутствии готового бинарника собирается из исходников через `cargo build --release`
+- **hy-webhook.py** — серьёзное расширение. Добавлены: `GET /uri/:shortUuid` (персональный `hy2://` URI с TTL-кэшем), встроенный reverse-proxy на порту `3020` с UA-фильтрацией и инъекцией URI, поддержка переменных `REMNAWAVE_URL`, `REMNAWAVE_TOKEN`, `HY_DOMAIN`, `HY_PORT`, `HY_NAME`, `INJECT_UA_PATTERNS`. Clash/Sing-Box YAML-конфиги проходят без изменений
+- **hy-sub-install.sh** — переработан. Шаг установки форка subscription-page заменён установкой `sub-injector` (systemd unit `remna-sub-injector`). Nginx перенаправляется с `:3010` на `:3020` (injector). Убрана сборка Docker образа (2-5 мин) — установка занимает ~1 минуту. Идемпотентность: проверяет `remna-sub-injector` вместо Docker образа
+
+### Новая схема интеграции
+
+```
+Клиент (Hiddify/v2rayNG)
+    ↓  GET /sub/TOKEN
+remna-sub-injector :3020
+    ↓  GET /uri/TOKEN → hy-webhook :8766
+    ←  hy2://user:pass@domain:port?...
+    ↓  проксирует на upstream :3010
+    ←  base64 + hy2:// URI (инъекция)
+
+Клиент (Clash/Sing-Box) → YAML без изменений
+```
+
+### Новые пути
+
+| Путь | Назначение |
+|---|---|
+| `/opt/remna-sub-injector/sub-injector` | Бинарник sub-injector |
+| `/opt/remna-sub-injector/config.toml` | Конфиг инжектора |
+| `/etc/systemd/system/remna-sub-injector.service` | Systemd unit |
+
+---
+
+
 ## [2.3.0] — 2026-03-20
 
 ### MTProxy (telemt) — новые возможности

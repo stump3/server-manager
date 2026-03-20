@@ -56,6 +56,9 @@ for f in lib/*.sh; do echo "$(sha256sum $f | awk '{print $1}')  $(basename $f .s
 | `lib/telemt.sh` | 703 | `telemt_main_menu`, `telemt_install`, `telemt_menu_*`, `telemt_submenu_*` |
 | `lib/hysteria.sh` | 1213 | `hysteria_menu`, `hysteria_install`, `hysteria_*` |
 | `lib/migrate.sh` | 250 | `migrate_menu`, `do_migrate`, `migrate_all` |
+| `integrations/hy-webhook.py` | 444 | Webhook-сервис + `GET /uri/:shortUuid` + встроенный proxy |
+| `integrations/hy-sub-install.sh` | 484 | Установка hy-webhook + sub-injector |
+| `sub-injector/src/main.rs` | 897 | Rust reverse-proxy с per-user URI инъекцией |
 
 ---
 
@@ -197,7 +200,7 @@ print(json.dumps(json.loads(body).get(\"inbounds\",[]), indent=2))
 
 ---
 
-## hy-webhook — архитектура интеграции
+## hy-webhook + sub-injector — архитектура интеграции
 
 ### Схема
 
@@ -207,22 +210,48 @@ Remnawave (user.created/deleted/disabled/enabled)
     ▼ POST http://172.30.0.1:8766/webhook
     │  Header: X-Remnawave-Signature: <hex(HMAC-SHA256)>
     │
-hy-webhook.py (systemd, порт 8766, 0.0.0.0)
+hy-webhook.py (systemd, :8766 на 127.0.0.1)
     │  1. Verify signature: HMAC-SHA256(body, WEBHOOK_SECRET)
-    │  2. sanitize(username): [a-zA-Z0-9_-], min 6 chars
-    │  3. gen_password(username, secret): sha256(u:s)[:32]
-    │  4. update users.json
-    │  5. update /etc/hysteria/config.yaml (userpass block)
-    │  6. systemctl reload-or-restart hysteria-server
+    │  2. gen_password(username, secret): sha256(u:s)[:32]
+    │  3. update users.json
+    │  4. update /etc/hysteria/config.yaml (userpass block)
+    │  5. systemctl reload-or-restart hysteria-server
+    │  6. TTL-кэш URI сбрасывается (_uri_cache.clear())
     │
-subscription-page (remnawave-sub-hy:local)
-    │  При запросе подписки:
-    │  1. Получить shortUuid пользователя
-    │  2. GET /api/users/by-short-uuid/:uuid
+    │  GET /uri/:shortUuid (вызывается sub-injector)
+    │  1. TTL-кэш: URI_CACHE_TTL (по умолчанию 60 сек)
+    │  2. GET {REMNAWAVE_URL}/api/users/by-short-uuid/:uuid
     │  3. Читает /var/lib/hy-webhook/users.json
-    │  4. Находит пароль пользователя
-    │  5. Добавляет hy2:// URI в base64 ответ
+    │  4. Возвращает hy2://username:pass@domain:port?sni=...&alpn=h3
+    │  5. 204 если пользователь не найден
+    │
+    │  Proxy :3020 (встроенный reverse-proxy)
+    │  1. Принимает запросы клиентов
+    │  2. Проверяет User-Agent по INJECT_UA_PATTERNS
+    │  3. Если UA совпал + не YAML/JSON → вызывает GET /uri/TOKEN
+    │  4. Инжектирует hy2:// URI в base64 ответ
+    │  5. Проксирует на UPSTREAM_URL (:3010)
+
+    ─── Параллельно: sub-injector (Rust, :3020) ───────────────
+    │  Альтернатива встроенному proxy: читает конфиг config.toml
+    │  [[injections]] с per_user_url = "http://127.0.0.1:8766/uri"
+    │  Инжектор извлекает token из пути /sub/TOKEN
+    │  GET http://127.0.0.1:8766/uri/TOKEN → персональный URI
+
+nginx sub домен (:3020) → hy-webhook proxy или sub-injector
 ```
+
+### Два режима proxy: встроенный Python vs sub-injector (Rust)
+
+| | hy-webhook встроенный proxy | sub-injector |
+|---|---|---|
+| Язык | Python (однопоточный) | Rust/Tokio (async) |
+| Конфиг | `/etc/hy-webhook.env` | `/opt/remna-sub-injector/config.toml` |
+| Производительность | Достаточно для малой нагрузки | Тысячи RPS |
+| Настройка UA | `INJECT_UA_PATTERNS` env | `[[injections]]` в TOML |
+| Установка | Уже в hy-webhook | Отдельный бинарник |
+
+В `hy-sub-install.sh` по умолчанию устанавливается sub-injector. Встроенный proxy в hy-webhook — запасной вариант.
 
 ### UFW — почему 172.16.0.0/12
 
@@ -236,17 +265,45 @@ docker network inspect remnawave-network | grep Gateway
 docker exec remnawave curl -s http://172.30.0.1:8766/health
 ```
 
-### subscription-page — патчи TypeScript
+### sub-injector — конфиг
 
-При установке `hy-sub-install.sh` патчит исходники subscription-page перед сборкой Docker образа:
+```toml
+upstream_url = "http://127.0.0.1:3010"
+bind_addr = "0.0.0.0:3020"
 
-| Патч | Файл | Что делает |
+[[injections]]
+header = "User-Agent"
+contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayng"]
+per_user_url = "http://127.0.0.1:8766/uri"
+# Инжектор извлекает token из пути запроса и делает:
+# GET http://127.0.0.1:8766/uri/{token} → персональный hy2:// URI
+
+# Для статичных URI (MTProxy, общие ссылки):
+# links_source = "/data/mtproxy-links.txt"
+```
+
+Поля `per_user_url` и `links_source` опциональны и могут комбинироваться. `per_user_url` имеет приоритет.
+
+### Переменные окружения hy-webhook
+
+Файл: `/etc/hy-webhook.env` (права 600)
+
+| Переменная | Значение по умолчанию | Описание |
 |---|---|---|
-| Патч 1 | `root.service.ts` | Добавляет `import fs` |
-| Патч 2 | `root.service.ts` | Добавляет `getHysteriaUriForUser()` |
-| Патч 3 | `axios.service.ts` | Добавляет `getUserByShortUuid()` |
-
-После патчей Docker пересобирает образ с TypeScript компиляцией (`npm run build`).
+| `WEBHOOK_SECRET` | hex64 | HMAC-SHA256 ключ подписи |
+| `HYSTERIA_CONFIG` | `/etc/hysteria/config.yaml` | Путь к конфигу |
+| `USERS_DB` | `/var/lib/hy-webhook/users.json` | База пользователей |
+| `LISTEN_PORT` | `8766` | Порт webhook-сервера (127.0.0.1) |
+| `HYSTERIA_SVC` | `hysteria-server` | Имя systemd сервиса |
+| `REMNAWAVE_URL` | `http://127.0.0.1:3000` | URL Remnawave API |
+| `REMNAWAVE_TOKEN` | — | API токен для `/uri/:shortUuid` |
+| `HY_DOMAIN` | — | Домен Hysteria2 (в URI) |
+| `HY_PORT` | `8443` | Порт Hysteria2 (в URI) |
+| `HY_NAME` | `Hysteria2` | Название в URI |
+| `URI_CACHE_TTL` | `60` | TTL кэша URI в секундах |
+| `PROXY_PORT` | `3020` | Порт встроенного proxy |
+| `UPSTREAM_URL` | `http://127.0.0.1:3010` | Upstream subscription-page |
+| `INJECT_UA_PATTERNS` | `hiddify,happ,...` | UA паттерны для инъекции |
 
 ---
 
@@ -346,22 +403,22 @@ echo "LISTEN_HOST=0.0.0.0" >> /etc/hy-webhook.env
 systemctl restart hy-webhook
 ```
 
-### subscription-page: Invalid subscription content
+### sub-injector не инжектирует URI
 
 ```bash
-# 1. Контейнер запущен?
-docker ps | grep sub
+# 1. Сервис запущен?
+systemctl status remna-sub-injector
+journalctl -u remna-sub-injector -n 30
 
-# 2. Переменные окружения заданы?
-docker logs remnawave-subscription-page --tail=20 | grep -i "error\|REMNAWAVE"
+# 2. /uri endpoint отвечает?
+curl -s http://127.0.0.1:8766/uri/TEST_TOKEN
+# 200 с hy2:// или 204 если токен не найден
 
-# 3. Патч применился?
-docker exec remnawave-subscription-page \
-  grep -c "getHysteriaUriForUser" /opt/app/dist/src/modules/root/root.service.js
+# 3. nginx направляет на :3020?
+grep "3020\|3010" /opt/remnawave/nginx.conf
 
-# 4. API URL правильный?
-docker exec remnawave-subscription-page \
-  grep "by-short-uuid\|get-by" /opt/app/dist/src/common/axios/axios.service.js
+# 4. Тест инъекции вручную
+curl -s -H "User-Agent: hiddify" http://127.0.0.1:3020/sub/TOKEN | base64 -d | grep hy2://
 ```
 
 ### Пользователь не появляется в Hysteria2 при создании в панели
@@ -407,18 +464,7 @@ git push
 
 ---
 
-## Переменные окружения hy-webhook
 
-Файл: `/etc/hy-webhook.env` (права 600)
-
-| Переменная | Значение | Описание |
-|---|---|---|
-| `WEBHOOK_SECRET` | hex64 | HMAC-SHA256 ключ подписи |
-| `HYSTERIA_CONFIG` | `/etc/hysteria/config.yaml` | Путь к конфигу |
-| `USERS_DB` | `/var/lib/hy-webhook/users.json` | База пользователей |
-| `LISTEN_PORT` | `8766` | Порт HTTP сервера |
-| `LISTEN_HOST` | `0.0.0.0` | Интерфейс (0.0.0.0 для Docker) |
-| `HYSTERIA_SVC` | `hysteria-server` | Имя systemd сервиса |
 
 ---
 
@@ -426,6 +472,9 @@ git push
 
 | Дата | Решение | Причина |
 |---|---|---|
+| 2026-03-21 | sub-injector (Rust) вместо форка TypeScript | Форк ломался при каждом обновлении upstream subscription-page |
+| 2026-03-21 | `GET /uri/:shortUuid` в hy-webhook + TTL-кэш | sub-injector запрашивает персональный URI для каждого токена |
+| 2026-03-21 | Встроенный proxy :3020 в hy-webhook | Запасной вариант без установки sub-injector |
 | 2026-03-20 | nginx MODE=1: убран `listen 443 ssl` | Xray не мог занять порт 443 |
 | 2026-03-20 | LISTEN_HOST=0.0.0.0 в hy-webhook | Docker контейнеры не видели localhost хоста |
 | 2026-03-20 | UFW 172.16.0.0/12 → 8766 | Блокировка трафика от Docker к хосту |
