@@ -211,6 +211,13 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
     <a href="#manual" class="nav-link"><span class="nav-dot" style="background:#3d5068"></span> Ручное управление</a>
     <a href="#troubleshoot" class="nav-link"><span class="nav-dot" style="background:#ef4444"></span> Диагностика</a>
     <a href="#requirements" class="nav-link"><span class="nav-dot" style="background:#3d5068"></span> Требования</a>
+    <a href="#codequality" class="nav-link"><span class="nav-dot" style="background:#f59e0b"></span> Качество кода</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Ещё</div>
+    <a href="CHANGELOG.md" class="nav-link"><span class="nav-dot" style="background:#22c55e"></span> Changelog</a>
+    <a href="ENGINEER.md" class="nav-link"><span class="nav-dot" style="background:#f59e0b"></span> Для инженеров</a>
+    <a href="https://github.com/stump3/server-manager" class="nav-link" target="_blank"><span class="nav-dot" style="background:#3d5068"></span> GitHub ↗</a>
   </div>
 </nav>
 
@@ -1106,6 +1113,70 @@ ssh root@NEW_IP systemctl restart hysteria-server</pre>
 <span class="cf">mkswap</span> /swapfile
 <span class="cf">swapon</span> /swapfile
 <span class="cf">echo</span> <span class="cs">'/swapfile none swap sw 0 0'</span> >> /etc/fstab</pre>
+  </div>
+</section>
+
+
+<div class="divider"></div>
+
+<!-- КАЧЕСТВО КОДА -->
+<section class="section" id="codequality">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.2)">🔍</div>
+    <div class="sec-title">Качество кода — сравнение с eGames</div>
+  </div>
+
+  <h3>Сравнение с eGames</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Аспект</th><th>eGames</th><th>server-manager</th></tr></thead>
+      <tbody>
+        <tr><td>Обработка ошибок API</td><td><span class="badge b-green">Подробные сообщения</span></td><td><span class="badge b-amber">|| warn без деталей</span></td></tr>
+        <tr><td>Идемпотентность</td><td><span class="badge b-red">Повторный запуск ломает</span></td><td><span class="badge b-green">IS_INSTALLED + компоненты</span></td></tr>
+        <tr><td>Модульность</td><td><span class="badge b-amber">Монолит 5000+ строк</span></td><td><span class="badge b-green">5 модулей, curl|bash</span></td></tr>
+        <tr><td>SSH рефакторинг</td><td><span class="badge b-red">Дублирование кода</span></td><td><span class="badge b-green">ask_ssh_target/helpers</span></td></tr>
+        <tr><td>Валидация UUID</td><td><span class="badge b-green">Проверка перед API</span></td><td><span class="badge b-amber">Частичная</span></td></tr>
+        <tr><td>API Client-Type header</td><td><span class="badge b-green">X-Remnawave-Client-Type</span></td><td><span class="badge b-green">X-Remnawave-Client-Type</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Исправленные баги</h3>
+  <div class="alert al-danger">
+    <span class="alert-icon">🔴</span>
+    <div><strong>panel_api() не была определена</strong> — функция вызывалась 9 раз в panel_install() но не существовала. Исправлено в v2.1.0.</div>
+  </div>
+  <div class="alert al-warn">
+    <span class="alert-icon">⚠️</span>
+    <div><strong>set -e в mgmt-скрипте</strong> — может прерывать при ненулевом exit code от grep/[ ]. eGames не использует set -e в mgmt-скрипте.</div>
+  </div>
+  <div class="alert al-warn">
+    <span class="alert-icon">⚠️</span>
+    <div><strong>Смешение jq и python3</strong> для JSON в panel.sh — усложняет поддержку. Рекомендуется использовать jq везде.</div>
+  </div>
+
+  <h3>Рекомендации для будущих версий</h3>
+  <div class="cards">
+    <div class="card">
+      <div class="card-ico">📝</div>
+      <div class="card-title">Логирование</div>
+      <div class="card-desc">tee /var/log/server-manager-install.log — сохранять лог установки для диагностики</div>
+    </div>
+    <div class="card">
+      <div class="card-ico">🔒</div>
+      <div class="card-title">Атомарность</div>
+      <div class="card-desc">Флаг /opt/remnawave/.installed — предотвращать дубликаты при прерванной установке</div>
+    </div>
+    <div class="card">
+      <div class="card-ico">✅</div>
+      <div class="card-title">Smoke test</div>
+      <div class="card-desc">После установки проверять что 443 отвечает и Xray принял соединение</div>
+    </div>
+    <div class="card">
+      <div class="card-ico">🔄</div>
+      <div class="card-title">Версии конфигов</div>
+      <div class="card-desc">CONFIG_VERSION в .env — предупреждать об устаревшем docker-compose при обновлении</div>
+    </div>
   </div>
 </section>
 
