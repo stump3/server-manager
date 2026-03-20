@@ -299,4 +299,4 @@ alice = 5
 
 ---
 
-> Полный оригинальный справочник на английском: [telemt/docs/CONFIG_PARAMS.en.md](https://github.com/dxrkcat/telemt/blob/main/docs/CONFIG_PARAMS.en.md)
+> Полный оригинальный справочник на английском: [telemt/docs/CONFIG_PARAMS.en.md](https://github.com/telemt/telemt/blob/main/docs/CONFIG_PARAMS.en.md)
