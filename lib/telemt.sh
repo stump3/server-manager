@@ -624,7 +624,7 @@ telemt_main_menu() {
             echo ""
         fi
         echo -e "  ${BOLD}1)${RESET} 🔧  Установка"
-        echo -e "  ${BOLD}2)${RESET} ⚙️   Управление"
+        echo -e "  ${BOLD}2)${RESET} ⚙️  Управление"
         echo -e "  ${BOLD}3)${RESET} 👥  Пользователи"
         echo -e "  ${BOLD}4)${RESET} 📦  Миграция на другой сервер"
         echo -e "  ${BOLD}5)${RESET} 🔀  Сменить режим (systemd ↔ Docker)"
@@ -653,7 +653,7 @@ telemt_submenu_manage() {
         header "MTProxy — Управление"
         echo -e "  ${BOLD}1)${RESET} 📊  Статус и логи"
         echo -e "  ${BOLD}2)${RESET} 🔄  Обновить"
-        echo -e "  ${BOLD}3)${RESET} ⏹️   Остановить"
+        echo -e "  ${BOLD}3)${RESET} ⏹️  Остановить"
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
