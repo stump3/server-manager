@@ -216,7 +216,7 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
   </div>
   <div class="nav-group">
     <div class="nav-label">Ещё</div>
-    <a href="https://github.com/stump3/server-manager/blob/main/docs/CHANGELOG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#22c55e"></span> Changelog ↗</a>
+    <a href="https://github.com/stump3/server-manager/blob/main/CHANGELOG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#22c55e"></span> Changelog ↗</a>
     <a href="https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#f59e0b"></span> Для инженеров ↗</a>
     <a href="https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#a78bfa"></span> Конфиг telemt ↗</a>
     <a href="https://github.com/stump3/server-manager" class="nav-link" target="_blank"><span class="nav-dot" style="background:#3d5068"></span> GitHub ↗</a>
@@ -966,21 +966,6 @@ curl -s "https://sub.domain/TOKEN" | base64 -d | grep "hy2://"</pre>
     <div class="sec-title">Файлы и пути</div>
   </div>
 
-  <h3>Hysteria2</h3>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Путь</th><th>Назначение</th></tr></thead>
-      <tbody>
-        <tr><td>/etc/hysteria/config.yaml</td><td>Конфигурация сервера</td></tr>
-        <tr><td>/usr/local/bin/hysteria</td><td>Бинарник</td></tr>
-        <tr><td>/root/hysteria-{домен}.txt</td><td>URI подключения</td></tr>
-        <tr><td>/root/hysteria-{домен}.yaml</td><td>Конфиг Clash/Mihomo</td></tr>
-        <tr><td>/root/hysteria-{домен}.png</td><td>QR-код PNG</td></tr>
-        <tr><td>/root/hysteria-{домен}-users.txt</td><td>URI всех пользователей</td></tr>
-      </tbody>
-    </table>
-  </div>
-
   <h3>Remnawave Panel</h3>
   <div class="table-wrap">
     <table>
@@ -991,18 +976,37 @@ curl -s "https://sub.domain/TOKEN" | base64 -d | grep "hy2://"</pre>
         <tr><td>/opt/remnawave/nginx.conf</td><td>Nginx (cookie-ключ здесь)</td></tr>
         <tr><td>/opt/remnawave/backups/</td><td>Бэкапы</td></tr>
         <tr><td>/usr/local/bin/remnawave_panel</td><td>Скрипт управления <code>rp</code></td></tr>
+        <tr><td>/root/remnawave-credentials.txt</td><td>Cookie URL для входа в панель</td></tr>
       </tbody>
     </table>
   </div>
 
-  <h3>MTProxy (systemd)</h3>
+  <h3>MTProxy (telemt)</h3>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Путь</th><th>Назначение</th></tr></thead>
       <tbody>
         <tr><td>/usr/local/bin/telemt</td><td>Бинарник</td></tr>
-        <tr><td>/etc/telemt/telemt.toml</td><td>Конфиг</td></tr>
-        <tr><td>/etc/systemd/system/telemt.service</td><td>Systemd-сервис</td></tr>
+        <tr><td>/etc/telemt/telemt.toml</td><td>Конфиг (владелец <code>telemt:telemt</code>)</td></tr>
+        <tr><td>/opt/telemt/</td><td>Рабочая директория — cache, tlsfront, proxy-secret</td></tr>
+        <tr><td>/etc/systemd/system/telemt.service</td><td>Systemd unit</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Hysteria2</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Путь</th><th>Назначение</th></tr></thead>
+      <tbody>
+        <tr><td>/usr/local/bin/hysteria</td><td>Бинарник</td></tr>
+        <tr><td>/etc/hysteria/config.yaml</td><td>Конфигурация сервера</td></tr>
+        <tr><td>/etc/systemd/system/hysteria-server.service</td><td>Systemd unit</td></tr>
+        <tr><td>/etc/systemd/system/hy-webhook.service</td><td>Systemd unit webhook-синхронизации</td></tr>
+        <tr><td>/root/hysteria-{домен}.txt</td><td>URI подключения</td></tr>
+        <tr><td>/root/hysteria-{домен}.yaml</td><td>Конфиг Clash/Mihomo</td></tr>
+        <tr><td>/root/hysteria-{домен}.png</td><td>QR-код PNG</td></tr>
+        <tr><td>/root/hysteria-{домен}-users.txt</td><td>URI всех пользователей</td></tr>
       </tbody>
     </table>
   </div>
@@ -1213,9 +1217,12 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
         <tr><td>ОС</td><td>Ubuntu 20.04+ / Debian 11+</td></tr>
         <tr><td>Права</td><td>root</td></tr>
         <tr><td>443 TCP</td><td>Xray (selfsteal) + nginx — должен быть свободен до установки</td></tr>
-        <tr><td>8443 UDP</td><td>Hysteria2</td></tr>
+        <tr><td>2053 / 8443 TCP</td><td>telemt MTProxy (по выбору при установке)</td></tr>
+        <tr><td>8443 UDP</td><td>Hysteria2 — основной порт + Port Hopping диапазон</td></tr>
         <tr><td>80 TCP</td><td>certbot — открывается на время SSL, потом закрывается</td></tr>
         <tr><td>2222 TCP</td><td>remnanode — только из Docker сети 172.30.0.0/16</td></tr>
+        <tr><td>8766 TCP</td><td>hy-webhook — только из Docker сети 172.16.0.0/12</td></tr>
+        <tr><td>9091 TCP</td><td>telemt API — только localhost</td></tr>
         <tr><td>Зависимости</td><td>Docker, docker-compose, jq, certbot, openssl</td></tr>
       </tbody>
     </table>
