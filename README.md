@@ -2,9 +2,7 @@
 
 # 🛠️ server-manager
 
-> Модульная система установки и управления VPN-инфраструктурой.
-
-📖 **[Открыть интерактивную документацию](https://stump3.github.io/server-manager/README.html)** — тёмная тема, навигация, терминальные превью
+> Модульная система установки и управления VPN-инфраструктурой на базе Remnawave + Hysteria2 + MTProxy.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
@@ -18,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 
 | Компонент | Описание |
 |---|---|
-| 🛡️ **Remnawave Panel** | VPN-панель с Xray/Reality, cookie-защитой, WARP Native |
+| 🛡️ **Remnawave Panel** | VPN-панель с Xray/Reality selfsteal, cookie-защитой, WARP Native |
 | 📡 **MTProxy (telemt)** | Telegram MTProto прокси на Rust, systemd / Docker |
 | 🚀 **Hysteria2** | Высокоскоростной VPN поверх QUIC/UDP, Port Hopping |
 
@@ -28,19 +26,16 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 
 ```
 server-manager/
-├── server-manager.sh          # Точка входа — загружает модули
+├── server-manager.sh           # Точка входа — загружает модули
 ├── lib/
-│   ├── common.sh              # Утилиты, цвета, главное меню
-│   ├── panel.sh               # Remnawave Panel + Extensions
-│   ├── telemt.sh              # MTProxy (telemt)
-│   ├── hysteria.sh            # Hysteria2
-│   └── migrate.sh             # Перенос сервисов
-├── integrations/
-│   ├── hy-sub-install.sh      # Интеграция Hysteria2 → подписка Remnawave
-│   └── hy-webhook.py          # Webhook синхронизации пользователей
-└── docs/
-    ├── README.md
-    └── README.html            # Интерактивная документация
+│   ├── common.sh               # Утилиты, цвета, главное меню, SSH-хелперы
+│   ├── panel.sh                # Remnawave Panel + Extensions (1750 строк)
+│   ├── telemt.sh               # MTProxy (telemt) (701 строка)
+│   ├── hysteria.sh             # Hysteria2 (1213 строк)
+│   └── migrate.sh              # Перенос сервисов (248 строк)
+└── integrations/
+    ├── hy-sub-install.sh       # Интеграция Hysteria2 → подписка Remnawave
+    └── hy-webhook.py           # Webhook синхронизации пользователей
 ```
 
 ---
@@ -51,11 +46,12 @@ server-manager/
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
 
-Или скачать и запустить локально:
+Или локально:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh \
-    -o server-manager.sh && bash server-manager.sh
+git clone https://github.com/stump3/server-manager
+cd server-manager
+bash server-manager.sh
 ```
 
 ---
@@ -63,7 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ## Главное меню
 
 ```
-  SERVER-MANAGER  v2603.190312
+  SERVER-MANAGER  v2603.200312
   ────────────────────────────────────────────
 
   Remnawave Panel  ● запущена  v2.6.4
@@ -88,55 +84,59 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 
 | Режим | Описание |
 |---|---|
-| Панель + Нода | Reality selfsteal, всё на одном сервере |
+| Панель + Нода | Reality selfsteal, Xray и панель на одном сервере |
 | Только панель | Нода на отдельном сервере |
+
+### Архитектура selfsteal (MODE=1)
+
+```
+Клиент → TCP 443 → Xray (rw-core) → unix:/dev/shm/nginx.sock → nginx → Remnawave
+```
+
+> **Важно:** nginx НЕ слушает порт 443. Порт 443 занимает Xray, который форвардит трафик в unix-сокет nginx через proxy_protocol.
 
 ### SSL
 
 | Метод | Описание |
 |---|---|
-| Cloudflare DNS-01 | Wildcard, рекомендуется |
+| Cloudflare DNS-01 | Wildcard сертификат, рекомендуется |
 | ACME HTTP-01 | Let's Encrypt, простой |
 | Gcore DNS-01 | Wildcard через Gcore |
 
-### Меню управления
+### Меню управления (rp)
 
 ```
-1) 🔧  Установка
-2) ⚙️   Управление     → статус, логи, перезапуск, обновление, SSL, бэкап
-3) 🌐  WARP Native     → установка, добавление в Xray профиль
-4) 🎨  Страница подписки → Orion шаблон, брендинг
-5) 🖼️   Selfsteal шаблон → случайный / Simple / SNI / Nothing SNI
-6) 🔄  Обновить скрипт
-7) 📦  Миграция на другой сервер
-8) 🗑️   Удалить панель
+ 1)  📋  Логи
+ 2)  📊  Статус
+ 3)  🔄  Перезапуск
+ 4)  ▶️   Старт
+ 5)  📦  Обновить
+ 6)  🔒  SSL
+ 7)  💾  Бэкап
+ 8)  🏥  Диагноз
+ 9)  🔓  Открыть порт 8443
+10)  🔐  Закрыть порт 8443
+11)  📦  Перенос
 ```
 
 ### Доступ к панели
 
-После установки сохраняется в `/root/remnawave-credentials.txt`:
+После установки cookie URL сохраняется в `/root/remnawave-credentials.txt`:
 
 ```
-Панель:     https://panel.example.com
-Cookie URL: https://panel.example.com/auth/login?KEY=VALUE
-Логин:      xxxxxxxx
-Пароль:     xxxxxxxxxxxxxxxx
+https://panel.example.com/auth/login?KEY=VALUE
 ```
 
 ---
 
 ## MTProxy (telemt)
 
-### Режимы
-
 | Режим | Описание |
 |---|---|
 | systemd | Бинарник с GitHub Releases, автозапуск |
 | Docker | Образ с Docker Hub |
 
-### Пользователи
-
-Hot reload без перезапуска сервиса — добавление, удаление, ссылки `tg://proxy`.
+Hot reload пользователей без перезапуска сервиса.
 
 ---
 
@@ -144,11 +144,10 @@ Hot reload без перезапуска сервиса — добавление
 
 ### Установка
 
-- Домен (ACME HTTP-01)
+- Домен с ACME HTTP-01
 - CA: Let's Encrypt / ZeroSSL / Buypass
 - **Port Hopping** — диапазон UDP портов, обход блокировок по порту
 - IPv6 поддержка
-- Masquerade: proxy → URL или file
 - Алгоритм: BBR / Brutal
 
 ### Port Hopping
@@ -158,40 +157,49 @@ Hot reload без перезапуска сервиса — добавление
 listen: 0.0.0.0:8443,20000-29999
 ```
 
-```
-# URI клиента
-hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3
-```
+URI клиента: `hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3`
 
 Совместимые клиенты: Hiddify, Nekoray, v2rayN 7.x+
 
-### Важно
-
-Hysteria2 использует порт **8443 UDP**. Порт 443 TCP занят nginx (Remnawave). Конфликта нет — разные протоколы и порты.
+> Hysteria2 использует **8443 UDP**. Порт 443 TCP занят Xray. Конфликта нет.
 
 ---
 
 ## Интеграция Hysteria2 → Подписка Remnawave
 
-Добавляет `hy2://` URI в подписку Remnawave автоматически при создании пользователя.
+Добавляет `hy2://` URI в подписку Remnawave автоматически при создании/изменении пользователя.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh \
-    -o hy-sub-install.sh
-curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-webhook.py \
-    -o hy-webhook.py
-bash hy-sub-install.sh
+# Путь: Главное меню → 3) Hysteria2 → 4) Подписка → 3) Интеграция с Remnawave
 ```
 
-**Схема:**
+### Схема работы
 
 ```
-Remnawave (user.created)
-    ↓  POST http://127.0.0.1:8766/webhook
-hy-webhook
-    ↓  обновляет /etc/hysteria/config.yaml
-Hysteria2 (перезапуск)
+Remnawave  ──POST /webhook──►  hy-webhook :8766
+                                    │
+                            обновляет config.yaml
+                                    │
+                            Hysteria2 reload
+                                    │
+subscription-page  ◄──  читает users.json  ──►  hy2:// URI в подписку
 ```
+
+### Требования
+
+- `/opt/remnawave/` — Remnawave установлена через server-manager
+- `/etc/hysteria/config.yaml` — Hysteria2 установлена через server-manager
+- UFW разрешает `172.16.0.0/12 → 8766` (добавляется автоматически)
+
+### Webhook в .env Remnawave
+
+```env
+WEBHOOK_ENABLED=true
+WEBHOOK_URL=http://172.30.0.1:8766/webhook
+WEBHOOK_SECRET_HEADER=<hex64>
+```
+
+> Адрес `172.30.0.1` — gateway Docker сети `remnawave-network`. Не `127.0.0.1` — Docker контейнер не видит localhost хоста.
 
 ---
 
@@ -201,7 +209,7 @@ Hysteria2 (перезапуск)
 1) Перенести Remnawave Panel
 2) Перенести MTProxy
 3) Перенести Hysteria2
-4) Перенести всё
+4) Перенести всё (Panel + MTProxy + Hysteria2)
 5) Бэкап / Восстановление
 ```
 
@@ -211,7 +219,6 @@ Hysteria2 (перезапуск)
 | БД (pg_dumpall + gzip) | ✓ | — | — |
 | SSL сертификаты | ✓ | — | ✓ |
 | Пользователи | ✓ | ✓ | ✓ |
-| server-manager.sh | ✓ | — | — |
 
 ---
 
@@ -219,7 +226,8 @@ Hysteria2 (перезапуск)
 
 - Ubuntu 20.04+ / Debian 11+
 - Root доступ
-- Открытые порты: 80 (certbot), 443 TCP (nginx), 8443 UDP (Hysteria2)
+- Открытые порты: 80 (certbot), 443 TCP (Xray/nginx), 8443 UDP (Hysteria2)
+- Docker, docker-compose, jq, certbot, openssl
 
 ---
 
