@@ -4,6 +4,8 @@
 
 > Модульная система установки и управления VPN-инфраструктурой на базе Remnawave + Hysteria2 + MTProxy.
 
+📖 **[Интерактивная документация](https://stump3.github.io/server-manager/README.html)** — тёмная тема, навигация, схемы архитектуры
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
