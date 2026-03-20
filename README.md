@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 | Файл | Описание |
 |---|---|
 | 📖 [docs/README.html](https://stump3.github.io/server-manager/README.html) | Интерактивная документация — тёмная тема, навигация, схемы архитектуры |
-| 📋 [CHANGELOG.md](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md) | История изменений по версиям |
+| 📋 [CHANGELOG.md](https://github.com/stump3/server-manager/blob/main/docs/CHANGELOG.md) | История изменений по версиям |
 | 🔧 [docs/ENGINEER.md](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md) | Для разработчиков — архитектура, API, диагностика |
 | 📡 [docs/TELEMT_CONFIG.md](https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md) | Справочник всех параметров конфига telemt (MTProxy) |
 
