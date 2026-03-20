@@ -4,7 +4,7 @@
 >
 > ⚠️ Параметры предназначены для опытных пользователей и тонкой настройки. Изменение без понимания назначения может привести к нестабильной работе прокси.
 
-Связанные файлы: [`/etc/telemt/telemt.toml`](../integrations/hy-sub-install.sh) · [Upstream: telemt/docs/CONFIG_PARAMS.en.md](https://github.com/dxrkcat/telemt/blob/main/docs/CONFIG_PARAMS.en.md)
+Связанные файлы: [`/etc/telemt/telemt.toml`](../integrations/hy-sub-install.sh) · [Upstream: telemt/docs/CONFIG_PARAMS.en.md](https://github.com/telemt/telemt/blob/main/docs/CONFIG_PARAMS.en.md)
 
 ---
 
