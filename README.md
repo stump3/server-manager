@@ -328,6 +328,41 @@ subscription-page  ◄──  читает users.json  ──►  hy2:// URI в 
 
 ---
 
+## Файлы и пути
+
+### Remnawave Panel
+
+| Путь | Назначение |
+|---|---|
+| `/opt/remnawave/.env` | Конфигурация панели |
+| `/opt/remnawave/docker-compose.yml` | Docker Compose |
+| `/opt/remnawave/nginx.conf` | Nginx (cookie-ключ здесь) |
+| `/opt/remnawave/backups/` | Бэкапы |
+| `/usr/local/bin/remnawave_panel` | Скрипт управления `rp` |
+| `/root/remnawave-credentials.txt` | Cookie URL для входа в панель |
+
+### MTProxy (telemt)
+
+| Путь | Назначение |
+|---|---|
+| `/usr/local/bin/telemt` | Бинарник |
+| `/etc/telemt/telemt.toml` | Конфиг (владелец `telemt:telemt`) |
+| `/opt/telemt/` | Рабочая директория (cache, tlsfront, proxy-secret) |
+| `/etc/systemd/system/telemt.service` | Systemd unit |
+
+### Hysteria2
+
+| Путь | Назначение |
+|---|---|
+| `/usr/local/bin/hysteria` | Бинарник |
+| `/etc/hysteria/config.yaml` | Конфигурация сервера |
+| `/etc/systemd/system/hysteria-server.service` | Systemd unit |
+| `/etc/systemd/system/hy-webhook.service` | Systemd unit webhook-синхронизации |
+| `/root/hysteria-{домен}.txt` | URI подключения |
+| `/root/hysteria-{домен}-users.txt` | URI всех пользователей |
+
+---
+
 ## Требования
 
 - `/opt/remnawave/` — Remnawave установлена через server-manager
@@ -441,6 +476,7 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
 | `2053` / `8443` | TCP | telemt | MTProxy (по выбору при установке) |
 | `8443` | UDP | Hysteria2 | Основной порт + Port Hopping диапазон |
 | `2222` | TCP | remnanode | Только из Docker сети 172.30.0.0/16 |
+| `8766` | TCP | hy-webhook | Только из Docker сети 172.16.0.0/12 |
 | `9091` | TCP | telemt API | Только localhost — управление через REST |
 
 ### RAM
