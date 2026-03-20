@@ -199,7 +199,67 @@ Remnawave  ──POST /webhook──►  hy-webhook :8766
 subscription-page  ◄──  читает users.json  ──►  hy2:// URI в подписку
 ```
 
-### Требования
+### Обновление
+
+### Вариант 1 — через меню (рекомендуется)
+
+Если скрипт уже установлен и запущен:
+
+```
+Главное меню → 1) Remnawave Panel → 6) Обновить скрипт
+```
+
+Скачивает свежий архив с GitHub и обновляет все модули `lib/*.sh`.
+
+---
+
+### Вариант 2 — полная переустановка с нуля
+
+Если скрипта ещё нет или нужна чистая установка:
+
+```bash
+mkdir -p /root/lib
+
+for mod in common panel telemt hysteria migrate; do
+    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/${mod}.sh" \
+        -o "/root/lib/${mod}.sh"
+done
+
+curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh" \
+    -o /root/server-manager.sh && chmod +x /root/server-manager.sh
+
+bash /root/server-manager.sh
+```
+
+---
+
+### Вариант 3 — обновить один модуль
+
+Если нужно обновить только конкретный компонент:
+
+```bash
+# Заменить panel.sh (Remnawave Panel)
+curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/panel.sh" \
+    -o /root/lib/panel.sh
+
+# Или через tar-архив (все модули сразу)
+curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz \
+    | tar -xz --strip-components=2 -C /root/lib server-manager-main/lib
+```
+
+---
+
+### После обновления
+
+Скрипт управления `remnawave_panel` (команда `rp`) хранится отдельно в `/usr/local/bin/remnawave_panel`. Он не обновляется автоматически. Чтобы применить изменения:
+
+```
+Главное меню → 1) Remnawave Panel → 2) Управление → 12) Переустановить скрипт (rp)
+```
+
+---
+
+## Требования
 
 - `/opt/remnawave/` — Remnawave установлена через server-manager
 - `/etc/hysteria/config.yaml` — Hysteria2 установлена через server-manager
@@ -233,6 +293,66 @@ WEBHOOK_SECRET_HEADER=<hex64>
 | БД (pg_dumpall + gzip) | ✓ | — | — |
 | SSL сертификаты | ✓ | — | ✓ |
 | Пользователи | ✓ | ✓ | ✓ |
+
+---
+
+## Обновление
+
+### Вариант 1 — через меню (рекомендуется)
+
+Если скрипт уже установлен и запущен:
+
+```
+Главное меню → 1) Remnawave Panel → 6) Обновить скрипт
+```
+
+Скачивает свежий архив с GitHub и обновляет все модули `lib/*.sh`.
+
+---
+
+### Вариант 2 — полная переустановка с нуля
+
+Если скрипта ещё нет или нужна чистая установка:
+
+```bash
+mkdir -p /root/lib
+
+for mod in common panel telemt hysteria migrate; do
+    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/${mod}.sh" \
+        -o "/root/lib/${mod}.sh"
+done
+
+curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh" \
+    -o /root/server-manager.sh && chmod +x /root/server-manager.sh
+
+bash /root/server-manager.sh
+```
+
+---
+
+### Вариант 3 — обновить один модуль
+
+Если нужно обновить только конкретный компонент:
+
+```bash
+# Заменить panel.sh (Remnawave Panel)
+curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/panel.sh" \
+    -o /root/lib/panel.sh
+
+# Или через tar-архив (все модули сразу)
+curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz \
+    | tar -xz --strip-components=2 -C /root/lib server-manager-main/lib
+```
+
+---
+
+### После обновления
+
+Скрипт управления `remnawave_panel` (команда `rp`) хранится отдельно в `/usr/local/bin/remnawave_panel`. Он не обновляется автоматически. Чтобы применить изменения:
+
+```
+Главное меню → 1) Remnawave Panel → 2) Управление → 12) Переустановить скрипт (rp)
+```
 
 ---
 
