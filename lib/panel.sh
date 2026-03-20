@@ -1747,7 +1747,7 @@ panel_submenu_manage() {
         echo -e "  ${BOLD}1)${RESET} 📋  Логи"
         echo -e "  ${BOLD}2)${RESET} 📊  Статус"
         echo -e "  ${BOLD}3)${RESET} 🔄  Перезапустить"
-        echo -e "  ${BOLD}4)${RESET}  ▶️   Старт"
+        echo -e "  ${BOLD}4)${RESET}  ▶️  Старт"
         echo -e "  ${BOLD}5)${RESET} 📦  Обновить"
         echo -e "  ${BOLD}6)${RESET} 🔒  SSL"
         echo -e "  ${BOLD}7)${RESET} 💾  Бэкап"
