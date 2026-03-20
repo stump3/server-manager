@@ -3,8 +3,8 @@
 # ║  SERVER-MANAGER — Hysteria2 ↔ Remnawave Subscription Sync       ║
 # ║                                                                  ║
 # ║  Устанавливает:                                                  ║
-# ║  1. hy-webhook  — синхронизация пользователей через вебхук      ║
-# ║  2. Форк subscription-page — Hysteria2 URI в подписке            ║
+# ║  1. hy-webhook      — синхронизация + GET /uri/:shortUuid        ║
+# ║  2. Встроенный proxy в hy-webhook — per-user hy2:// без зависим. ║
 # ╚══════════════════════════════════════════════════════════════════╝
 set -euo pipefail
 
@@ -21,7 +21,7 @@ cfg_manual(){ echo -e "${YELLOW}  ✎ ${WHITE}$1${NC}${DIM} = $2  (вручну�
 cfg_gen()  { echo -e "${CYAN}  ⚙ ${WHITE}$1${NC}${DIM} = $2  (сгенерировано)${NC}"; }
 
 STEP_NUM=0
-TOTAL_STEPS=7
+TOTAL_STEPS=6
 
 step() {
     STEP_NUM=$((STEP_NUM + 1))
@@ -51,14 +51,14 @@ DO_SUBPAGE=true
 TOTAL_STEPS=6
 
 if systemctl is-active --quiet hy-webhook 2>/dev/null && \
-   docker ps --format '{{.Image}}' 2>/dev/null | grep -q 'remnawave-sub-hy:local'; then
+   systemctl is-active --quiet remna-sub-injector 2>/dev/null; then
     echo ""
     echo -e "  ${YELLOW}●${NC} ${BOLD}Интеграция уже установлена${NC}"
     echo ""
     echo -e "  ${BOLD}1)${NC} Переустановить полностью"
     echo -e "       ${GRAY}webhook + форк subscription-page${NC}"
-    echo -e "  ${BOLD}2)${NC} Обновить форк subscription-page"
-    echo -e "       ${GRAY}пересобрать Docker образ с новыми патчами${NC}"
+    echo -e "  ${BOLD}2)${NC} Обновить hy-webhook + proxy"
+    echo -e "       ${GRAY}скачать новый бинарник, обновить конфиг${NC}"
     echo -e "  ${BOLD}3)${NC} Обновить hy-webhook"
     echo -e "       ${GRAY}заменить скрипт синхронизации${NC}"
     echo -e "  ${BOLD}0)${NC} ${GRAY}Отмена${NC}"
@@ -177,12 +177,13 @@ fi
 read -rp "  Название подключения [🇩🇪 Germany Hysteria2]: " HY_NAME < /dev/tty
 HY_NAME="${HY_NAME:-🇩🇪 Germany Hysteria2}"
 
-# API токен Remnawave (нужен для subscription-page)
+# API токен Remnawave для GET /uri/:shortUuid в hy-webhook
+# Создайте в панели: Settings → API Tokens → Create (опционально)
 if [ -z "${REMNAWAVE_API_TOKEN:-}" ]; then
     echo ""
-    info "Remnawave API токен нужен для subscription-page"
+    info "API токен Remnawave — опционально, для /uri/:shortUuid endpoint"
     info "Создайте в панели: Settings → API Tokens → Create"
-    read -rp "  API токен Remnawave (Enter — пропустить): " REMNAWAVE_API_TOKEN < /dev/tty
+    read -rp "  API токен (Enter — пропустить): " REMNAWAVE_API_TOKEN < /dev/tty
     REMNAWAVE_API_TOKEN="${REMNAWAVE_API_TOKEN:-}"
 fi
 
@@ -224,8 +225,15 @@ WEBHOOK_SECRET=${WEBHOOK_SECRET}
 HYSTERIA_CONFIG=/etc/hysteria/config.yaml
 USERS_DB=/var/lib/hy-webhook/users.json
 LISTEN_PORT=8766
-LISTEN_HOST=0.0.0.0
 HYSTERIA_SVC=hysteria-server
+REMNAWAVE_URL=http://127.0.0.1:3000
+REMNAWAVE_TOKEN=${REMNAWAVE_API_TOKEN:-}
+HY_DOMAIN=${HY_DOMAIN}
+HY_PORT=${HY_PORT}
+HY_NAME=${HY_NAME}
+URI_CACHE_TTL=60
+PROXY_PORT=3020
+UPSTREAM_URL=http://127.0.0.1:3010
 SECRETEOF
 chmod 600 "$SECRETS_FILE"
 ok "Secrets сохранены в $SECRETS_FILE с правами 600"
@@ -314,325 +322,101 @@ ok "Remnawave перезапущена"
 
 fi # DO_WEBHOOK
 
-# ── Шаг 4: Форк subscription-page ───────────────────────────────
+
 if $DO_SUBPAGE; then
 
-step "Установка форка subscription-page"
+step "Установка sub-injector"
 
-command -v docker &>/dev/null || err "Docker не найден"
+INJECTOR_DIR="/opt/remna-sub-injector"
+INJECTOR_BIN="$INJECTOR_DIR/sub-injector"
+INJECTOR_CFG="$INJECTOR_DIR/config.toml"
+INJECTOR_URL="https://github.com/stump3/server-manager/releases/latest/download/sub-injector-x86_64-linux"
 
-rm -rf /opt/hy-subpage
-mkdir -p /opt/hy-subpage
+mkdir -p "$INJECTOR_DIR"
 
-info "Скачиваем исходники subscription-page..."
-curl -fsSL "https://github.com/remnawave/subscription-page/archive/refs/heads/main.tar.gz" \
-    -o /opt/hy-subpage/source.tar.gz \
-    || err "Не удалось скачать исходники"
-tar -xzf /opt/hy-subpage/source.tar.gz -C /opt/hy-subpage --strip-components=1
-rm /opt/hy-subpage/source.tar.gz
-ok "Исходники скачаны"
-
-ROOTSVC="/opt/hy-subpage/backend/src/modules/root/root.service.ts"
-AXSVC="/opt/hy-subpage/backend/src/common/axios/axios.service.ts"
-
-[ -f "$ROOTSVC" ] || err "root.service.ts не найден — структура пакета изменилась"
-[ -f "$AXSVC" ]   || err "axios.service.ts не найден — структура пакета изменилась"
-
-# Патч 1: импорт fs
-if grep -q "import \* as fs from 'node:fs'" "$ROOTSVC"; then
-    info "Патч 1: импорт fs уже есть"
+# ── Скачиваем бинарник из releases stump3/server-manager ─────────
+info "Скачиваем sub-injector..."
+if curl -fsSL "$INJECTOR_URL" -o "$INJECTOR_BIN" 2>/dev/null; then
+    chmod +x "$INJECTOR_BIN"
+    ok "sub-injector установлен: $INJECTOR_BIN"
 else
-    sed -i "s|import { nanoid } from 'nanoid';|import { nanoid } from 'nanoid';\nimport * as fs from 'node:fs';|" "$ROOTSVC"
-    ok "Патч 1: импорт fs"
+    warn "Бинарник недоступен — собираем из sub-injector/ репозитория"
+    if ! command -v cargo &>/dev/null; then
+        info "Устанавливаем Rust (потребуется 2-3 минуты)..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+        export PATH="$HOME/.cargo/bin:$PATH"
+    fi
+    INJECTOR_SRC="/tmp/sm-sub-injector"
+    rm -rf "$INJECTOR_SRC" && mkdir -p "$INJECTOR_SRC/src"
+    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector/Cargo.toml"         -o "$INJECTOR_SRC/Cargo.toml" || err "Не удалось скачать Cargo.toml"
+    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector/src/main.rs"         -o "$INJECTOR_SRC/src/main.rs" || err "Не удалось скачать main.rs"
+    cd "$INJECTOR_SRC"
+    cargo build --release 2>&1 | tail -5
+    cp target/release/sub-injector "$INJECTOR_BIN"
+    chmod +x "$INJECTOR_BIN"
+    ok "sub-injector собран из исходников"
 fi
 
-# Патч 2 и 3 — выносим Python во временные файлы
-# Патч 2: инжекция URI + метод getHysteriaUriForUser
-cat > /tmp/hy_patch_rootsvc.py << 'PYEOF'
-import sys
-rootsvc = "/opt/hy-subpage/backend/src/modules/root/root.service.ts"
-with open(rootsvc) as f:
-    content = f.read()
+# ── Конфиг ────────────────────────────────────────────────────────
+if [ -f "$INJECTOR_CFG" ]; then
+    info "Конфиг уже существует — пропускаем"
+else
+    cat > "$INJECTOR_CFG" << TOMLEOF
+upstream_url = "http://127.0.0.1:3010"
+bind_addr = "0.0.0.0:3020"
 
-if 'getHysteriaUriForUser' in content:
-    print("INFO: Патч 2 уже применён")
-    sys.exit(0)
-
-inject = """            // ── Hysteria2 URI injection ──────────────────────────
-            try {
-                const hyUri = await this.getHysteriaUriForUser(shortUuidLocal, clientIp);
-                if (hyUri) {
-                    const raw = subscriptionDataResponse.response as string;
-                    let lines: string[] = [];
-                    try {
-                        lines = Buffer.from(raw, 'base64').toString('utf-8')
-                            .split('\\n').filter(l => l.trim());
-                    } catch {
-                        lines = raw.split('\\n').filter(l => l.trim());
-                    }
-                    lines.push(hyUri);
-                    subscriptionDataResponse = {
-                        ...subscriptionDataResponse,
-                        response: Buffer.from(lines.join('\\n')).toString('base64'),
-                    };
-                }
-            } catch (e) {
-                this.logger.warn('Hysteria2 inject error: ' + e);
-            }
-            // ─────────────────────────────────────────────────────"""
-
-old = "            if (subscriptionDataResponse.headers) {"
-if old not in content:
-    print("ERROR: точка вставки не найдена")
-    sys.exit(1)
-content = content.replace(old, inject + "\n\n" + old, 1)
-print("OK: inject добавлен")
-
-method = """
-    private async getHysteriaUriForUser(
-        shortUuid: string,
-        clientIp: string,
-    ): Promise<string | null> {
-        try {
-            const usersDb = process.env.HY_USERS_DB || '/var/lib/hy-webhook/users.json';
-            const hyDomain = process.env.HY_DOMAIN || '';
-            const hyPort = process.env.HY_PORT || '8443';
-            const hyName = process.env.HY_NAME || 'Hysteria2';
-            if (!hyDomain) return null;
-            let users: Record<string, string> = {};
-            try {
-                const raw = fs.readFileSync(usersDb, 'utf-8');
-                users = JSON.parse(raw);
-            } catch { return null; }
-            const userInfo = await this.axiosService.getUserByShortUuid(clientIp, shortUuid);
-            if (!userInfo.isOk || !userInfo.response) return null;
-            const username = (userInfo.response as any).response?.username;
-            if (!username) return null;
-            const safeUsername = username.replace(/[^\\w\\-.]/g, '_');
-            const password = users[safeUsername] || users[username];
-            if (!password) return null;
-            return 'hy2://' + encodeURIComponent(safeUsername) + ':' + password +
-                '@' + hyDomain + ':' + hyPort +
-                '?sni=' + hyDomain + '&alpn=h3&insecure=0#' + encodeURIComponent(hyName);
-        } catch (e) {
-            this.logger.warn('getHysteriaUriForUser error: ' + e);
-            return null;
-        }
-    }
-}
-"""
-
-content = content.rstrip()
-if not content.endswith('}'):
-    print("ERROR: конец класса не найден")
-    sys.exit(1)
-content = content[:-1].rstrip() + '\n' + method
-print("OK: getHysteriaUriForUser добавлен")
-
-with open(rootsvc, 'w') as f:
-    f.write(content)
-PYEOF
-python3 /tmp/hy_patch_rootsvc.py || err "Патч 2 не применился"
-ok "Патч 2: инжекция URI"
-
-# Патч 3: getUserByShortUuid
-cat > /tmp/hy_patch_axsvc.py << 'PYEOF'
-import sys
-axsvc = "/opt/hy-subpage/backend/src/common/axios/axios.service.ts"
-with open(axsvc) as f:
-    content = f.read()
-
-if 'getUserByShortUuid' in content:
-    print("INFO: Патч 3 уже применён")
-    sys.exit(0)
-
-method = """
-    public async getUserByShortUuid(
-        clientIp: string,
-        shortUuid: string,
-    ): Promise<any> {
-        try {
-            const { data } = await this.axiosInstance.request({
-                method: 'GET',
-                url: 'api/users/by-short-uuid/' + shortUuid,
-                headers: { 'x-remnawave-real-ip': clientIp },
-            });
-            return { isOk: true, response: data };
-        } catch (error: any) {
-            this.logger.error('Error in GetUserByShortUuid: ' + error.message);
-            return { isOk: false };
-        }
-    }
-"""
-
-insert_before = "    public async getSubscription("
-if insert_before not in content:
-    print("ERROR: место вставки не найдено")
-    sys.exit(1)
-content = content.replace(insert_before, method + "\n" + insert_before, 1)
-print("OK: getUserByShortUuid добавлен")
-
-with open(axsvc, 'w') as f:
-    f.write(content)
-PYEOF
-python3 /tmp/hy_patch_axsvc.py || err "Патч 3 не применился"
-ok "Патч 3: getUserByShortUuid"
-
-# ── Сборка образа ─────────────────────────────────────────────────
-info "Сборка Docker образа (2-5 минут)..."
-cd /opt/hy-subpage
-
-if [ ! -d "frontend/dist" ]; then
-    info "Сборка frontend..."
-    docker run --rm -v "$(pwd)/frontend:/app" -w /app node:24-alpine \
-        sh -c "npm ci && npm run build" >/dev/null 2>&1 \
-        && ok "Frontend собран" || warn "Ошибка сборки frontend — продолжаем"
+[[injections]]
+header = "User-Agent"
+contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayng"]
+per_user_url = "http://127.0.0.1:8766/uri"
+TOMLEOF
+    ok "Конфиг создан: $INJECTOR_CFG"
 fi
 
-docker build --no-cache -t remnawave-sub-hy:local . 2>&1 | tail -5
-docker inspect remnawave-sub-hy:local &>/dev/null \
-    || err "Docker образ не собрался"
-ok "Docker образ собран: remnawave-sub-hy:local"
+# ── Systemd ───────────────────────────────────────────────────────
+cat > /etc/systemd/system/remna-sub-injector.service << 'SVCEOF'
+[Unit]
+Description=Remnawave Subscription Injector
+After=network.target hy-webhook.service
 
-# ── Шаг 5: docker-compose.yml ────────────────────────────────────
-step "Обновление docker-compose.yml"
+[Service]
+Type=simple
+WorkingDirectory=/opt/remna-sub-injector
+ExecStart=/opt/remna-sub-injector/sub-injector
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
-cat > /tmp/hy_patch_compose.py << 'PYEOF'
-import re, sys
+[Install]
+WantedBy=multi-user.target
+SVCEOF
 
-with open("/opt/remnawave/docker-compose.yml") as f:
-    content = f.read()
+systemctl daemon-reload
+systemctl enable --now remna-sub-injector
 
-content = re.sub(
-    r'(image:\s*)remnawave/subscription-page:[^\n]+',
-    r'\1remnawave-sub-hy:local',
-    content
-)
+for i in $(seq 1 10); do
+    systemctl is-active --quiet remna-sub-injector && break || sleep 1
+done
+systemctl is-active --quiet remna-sub-injector     && ok "remna-sub-injector запущен — порт 3020"     || err "remna-sub-injector не запустился — journalctl -u remna-sub-injector -n 20"
 
-import os
-hy_domain = os.environ.get("HY_DOMAIN", "")
-hy_port   = os.environ.get("HY_PORT", "8443")
-hy_name   = os.environ.get("HY_NAME", "Hysteria2")
-api_token = os.environ.get("REMNAWAVE_API_TOKEN", "")
-
-env_block = (
-    "    environment:\n"
-    "      - REMNAWAVE_PANEL_URL=http://remnawave:3000\n"
-    + (f"      - REMNAWAVE_API_TOKEN={api_token}\n" if api_token else "")
-    + f"      - HY_DOMAIN={hy_domain}\n"
-    f"      - HY_PORT={hy_port}\n"
-    f"      - HY_NAME={hy_name}\n"
-    "      - HY_USERS_DB=/var/lib/hy-webhook/users.json\n"
-    "    volumes:\n"
-    "      - /var/lib/hy-webhook:/var/lib/hy-webhook:ro\n"
-)
-
-marker = 'container_name: remnawave-subscription-page\n'
-if marker not in content:
-    print("ERROR: блок subscription-page не найден")
-    sys.exit(1)
-
-if 'HY_DOMAIN' not in content:
-    # Удаляем ВСЕ существующие environment/volumes строки подписки
-    # и добавляем наш блок
-    result = []
-    in_sub = False
-    skip_block = False
-    for ln in content.split('\n'):
-        if 'container_name: remnawave-subscription-page' in ln:
-            in_sub = True
-            result.append(ln)
-            continue
-        if in_sub:
-            stripped = ln.strip()
-            # Пропускаем environment и volumes блоки
-            if stripped in ('environment:', 'volumes:'):
-                skip_block = True
-                continue
-            if skip_block:
-                if stripped.startswith('- '):
-                    continue  # строки внутри блока
-                else:
-                    skip_block = False
-                    in_sub = False
-        result.append(ln)
-    content = '\n'.join(result)
-    content = content.replace(marker, marker + env_block)
-    print("OK: docker-compose обновлён")
-
-
-else:
-    content = re.sub(r'- HY_DOMAIN=.*', f'- HY_DOMAIN={hy_domain}', content)
-    content = re.sub(r'- HY_PORT=.*',   f'- HY_PORT={hy_port}',     content)
-    content = re.sub(r'- HY_NAME=.*',   f'- HY_NAME={hy_name}',     content)
-    print("OK: docker-compose обновлён — существующие значения")
-
-with open("/opt/remnawave/docker-compose.yml", "w") as f:
-    f.write(content)
-PYEOF
-HY_DOMAIN="$HY_DOMAIN" HY_PORT="$HY_PORT" HY_NAME="$HY_NAME" \
-    REMNAWAVE_API_TOKEN="${REMNAWAVE_API_TOKEN:-}" \
-    python3 /tmp/hy_patch_compose.py || err "Ошибка обновления docker-compose.yml"
-ok "docker-compose.yml обновлён"
-
-# ── Шаг 6: nginx ─────────────────────────────────────────────────
-step "Настройка nginx"
+# ── nginx: sub домен → injector :3020 ────────────────────────────
+step "Обновление nginx"
 
 if [ -f /opt/remnawave/nginx.conf ]; then
-    if grep -q "location /merge/" /opt/remnawave/nginx.conf; then
-        warn "location /merge/ уже существует — пропускаем"
-    elif ! systemctl is-active --quiet hy-merger 2>/dev/null; then
-        warn "hy-merger не запущен — location /merge/ не добавляем"
-        info "Установите merger: server-manager.sh → Hysteria2 → Подписка → Объединить с Remnawave"
+    if grep -q "server 127.0.0.1:3010" /opt/remnawave/nginx.conf; then
+        sed -i "s|server 127.0.0.1:3010|server 127.0.0.1:3020|g" /opt/remnawave/nginx.conf
+        docker exec remnawave-nginx nginx -t >/dev/null 2>&1             && { cd /opt/remnawave && docker compose restart remnawave-nginx >/dev/null 2>&1
+                 ok "nginx: sub домен → injector :3020"; }             || warn "nginx конфиг невалиден — проверьте вручную"
+    elif grep -q "server 127.0.0.1:3020" /opt/remnawave/nginx.conf; then
+        ok "nginx уже настроен на :3020"
     else
-        cat > /tmp/hy_patch_nginx.py << 'PYEOF'
-import sys
-with open('/opt/remnawave/nginx.conf') as f:
-    cfg = f.read()
-loc = (
-    "    location /merge/ {\n"
-    "        proxy_pass http://127.0.0.1:8765/;\n"
-    "        proxy_set_header Host $host;\n"
-    "        proxy_set_header X-Real-IP $proxy_protocol_addr;\n"
-    "        proxy_set_header X-Forwarded-For $proxy_protocol_addr;\n"
-    "        proxy_set_header X-Forwarded-Proto $scheme;\n"
-    "    }\n"
-    "    # NOTE: порт 8765 — hy-merger.service\n"
-)
-marker = '    location @redirect {'
-if marker not in cfg:
-    print("WARN: @redirect не найден — добавьте location /merge/ вручную")
-    sys.exit(0)
-cfg = cfg.replace(marker, loc + marker, 1)
-print("OK: location /merge/ добавлен в sub домен")
-with open('/opt/remnawave/nginx.conf', 'w') as f:
-    f.write(cfg)
-PYEOF
-        python3 /tmp/hy_patch_nginx.py
-        ok "nginx.conf обновлён"
+        warn "Upstream :3010 не найден — настройте nginx вручную"
     fi
-
-    docker exec remnawave-nginx nginx -t >/dev/null 2>&1 \
-        && ok "nginx конфиг валиден" \
-        || warn "nginx конфиг невалиден — проверьте вручную"
-fi
-
-# ── Запуск ────────────────────────────────────────────────────────
-cd /opt/remnawave
-docker compose up -d remnawave-subscription-page 2>&1 | tail -3
-docker compose restart remnawave-nginx >/dev/null 2>&1
-
-info "Ждём запуска контейнера..."
-for i in $(seq 1 15); do
-    docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription-page" && break || sleep 1
-done
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription-page"; then
-    ok "subscription-page запущен"
-else
-    warn "Контейнер не виден в docker ps — проверьте: docker logs remnawave-subscription-page"
 fi
 
 fi # DO_SUBPAGE
+
 
 # ── Очистка временных файлов ──────────────────────────────────────
 rm -f /tmp/hy_patch_*.py
@@ -645,8 +429,8 @@ WEBHOOK_SECRET_DISPLAY=""
 # ── Статус сервисов ───────────────────────────────────────────────
 HW_STATUS="${RED}○ не запущен${NC}"
 systemctl is-active --quiet hy-webhook 2>/dev/null && HW_STATUS="${GREEN}● запущен${NC}"
-SP_STATUS="${RED}○ не запущен${NC}"
-docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription-page"     && SP_STATUS="${GREEN}● запущен${NC}"
+INJECTOR_STATUS="${RED}○ не запущен${NC}"
+systemctl is-active --quiet remna-sub-injector 2>/dev/null && INJECTOR_STATUS="${GREEN}● запущен${NC}"
 RW_STATUS="${RED}○ не запущен${NC}"
 docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^remnawave$"     && RW_STATUS="${GREEN}● запущен${NC}"
 
@@ -659,7 +443,7 @@ echo ""
 # Статус сервисов
 echo -e "  ${BOLD}Статус сервисов:${NC}"
 echo -e "  hy-webhook             $(echo -e "$HW_STATUS")"
-echo -e "  subscription-page      $(echo -e "$SP_STATUS")"
+  echo -e "  remna-sub-injector     $(echo -e \"$INJECTOR_STATUS\")"
 echo -e "  remnawave              $(echo -e "$RW_STATUS")"
 echo ""
 
@@ -683,14 +467,18 @@ echo ""
 
 echo -e "${BOLD}${WHITE}  Проверка${NC}"
 echo -e "  ${DIM}────────────────────────────${NC}"
-echo -e "  ${DIM}Health:    ${NC}curl -s http://127.0.0.1:8766/health"
-echo -e "  ${DIM}Логи:      ${NC}journalctl -u hy-webhook -f"
-echo -e "  ${DIM}Контейнер: ${NC}docker logs remnawave-subscription-page"
+echo -e "  ${DIM}Webhook health:   ${NC}curl -s http://127.0.0.1:8766/health"
+echo -e "  ${DIM}Test URI endpoint:${NC}curl -s http://127.0.0.1:8766/uri/TEST_SHORT_UUID"
+echo -e "  ${DIM}Injector health:  ${NC}curl -s http://127.0.0.1:3020/health"
+echo -e "  ${DIM}Логи webhook:     ${NC}journalctl -u hy-webhook -f"
+echo -e "  ${DIM}Логи injector:    ${NC}journalctl -u remna-sub-injector -f"
 echo ""
 
 echo -e "${BOLD}${WHITE}  Что дальше${NC}"
 echo -e "  ${DIM}────────────────────────────${NC}"
 echo -e "  ${DIM}Подписка: ${NC}https://${SUB_DOMAIN}/ТОКЕН"
-echo -e "  • Новые пользователи получат Hysteria2 URI автоматически"
-echo -e "  • Существующим — попросите обновить подписку в клиенте"
+echo -e "  • Новые пользователи получат персональный hy2:// URI автоматически"
+echo -e "  • Клиенты Hiddify/v2rayNG получают URI через remna-sub-injector"
+echo -e "  • Clash/Sing-Box — YAML конфиги проходят без изменений"
+echo -e "  • Существующим пользователям — попросите обновить подписку"
 echo ""
