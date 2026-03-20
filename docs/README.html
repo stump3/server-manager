@@ -1052,18 +1052,60 @@ ssh root@NEW_IP systemctl restart hysteria-server</pre>
     <div class="sec-title">Требования</div>
   </div>
 
+  <h3>Система и порты</h3>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Параметр</th><th>Значение</th></tr></thead>
       <tbody>
-        <tr><td>ОС</td><td>Ubuntu 22.04 / 24.04, Debian 11 / 12</td></tr>
+        <tr><td>ОС</td><td>Ubuntu 20.04+ / Debian 11+</td></tr>
         <tr><td>Права</td><td>root</td></tr>
-        <tr><td>Hysteria2: домен</td><td>Отдельный от Panel и MTProxy, A-запись на IP сервера</td></tr>
-        <tr><td>Hysteria2: порт 80</td><td>Скрипт открывает автоматически для ACME и закрывает после</td></tr>
-        <tr><td>Panel: порт 443</td><td>Свободен до установки</td></tr>
-        <tr><td>MTProxy: порт</td><td>8443 или другой из списка Telegram</td></tr>
+        <tr><td>443 TCP</td><td>Xray (selfsteal) + nginx — должен быть свободен до установки</td></tr>
+        <tr><td>8443 UDP</td><td>Hysteria2</td></tr>
+        <tr><td>80 TCP</td><td>certbot — открывается на время SSL, потом закрывается</td></tr>
+        <tr><td>2222 TCP</td><td>remnanode — только из Docker сети 172.30.0.0/16</td></tr>
+        <tr><td>Зависимости</td><td>Docker, docker-compose, jq, certbot, openssl</td></tr>
       </tbody>
     </table>
+  </div>
+
+  <h3>RAM</h3>
+  <div class="alert al-warn">
+    <span class="alert-icon">⚠️</span>
+    <div>Минимум <strong>2 GB RAM</strong> для полного стека. Рекомендуется <strong>4 GB</strong>. При 2 GB сервисы в пике уходят в swap.</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Компонент</th><th>RAM (факт)</th><th>Peak</th><th>Тип</th></tr></thead>
+      <tbody>
+        <tr><td>remnawave (NestJS)</td><td>~395 MB</td><td>~400 MB</td><td><span class="badge b-blue">Docker</span></td></tr>
+        <tr><td>remnawave-db (Postgres)</td><td>~50 MB + ~195 MB workers</td><td>~260 MB</td><td><span class="badge b-blue">Docker</span></td></tr>
+        <tr><td>remnanode (Xray rw-core)</td><td>~88 MB</td><td>~90 MB</td><td><span class="badge b-blue">Docker</span></td></tr>
+        <tr><td>subscription-page</td><td>~76 MB</td><td>~80 MB</td><td><span class="badge b-blue">Docker</span></td></tr>
+        <tr><td>telemt</td><td>~18 MB</td><td>~84 MB</td><td><span class="badge b-green">systemd</span></td></tr>
+        <tr><td>hysteria2</td><td>~17 MB</td><td>~53 MB</td><td><span class="badge b-green">systemd</span></td></tr>
+        <tr><td>nginx + redis</td><td>~10 MB</td><td>~15 MB</td><td><span class="badge b-blue">Docker</span></td></tr>
+        <tr><td>hy-webhook</td><td>~1 MB</td><td>~12 MB</td><td><span class="badge b-green">systemd</span></td></tr>
+        <tr><td><strong>Итого</strong></td><td><strong>~850 MB</strong></td><td><strong>~1 GB</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="alert al-info">
+    <span class="alert-icon">ℹ️</span>
+    <div>395 MB для remnawave — это <strong>норма</strong> для NestJS + BullMQ + TypeORM стека. Другие скрипты на базе <code>remnawave/backend:2</code> (включая eGames) показывают те же цифры — конфиги идентичны.</div>
+  </div>
+
+  <h3>Swap</h3>
+  <p>Рекомендуется минимум <strong>1 GB swap</strong>. При 2 GB RAM telemt и hysteria2 в пике уходят в swap (47–83 MB). Без достаточного swap OOM killer может убивать контейнеры.</p>
+
+  <div class="code-block">
+    <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">bash — добавить 2GB swap</span></div>
+    <pre><span class="cf">fallocate</span> -l 2G /swapfile
+<span class="cf">chmod</span> 600 /swapfile
+<span class="cf">mkswap</span> /swapfile
+<span class="cf">swapon</span> /swapfile
+<span class="cf">echo</span> <span class="cs">'/swapfile none swap sw 0 0'</span> >> /etc/fstab</pre>
   </div>
 </section>
 
