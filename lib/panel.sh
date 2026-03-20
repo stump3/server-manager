@@ -1245,20 +1245,39 @@ panel_update_script() {
     info "Скачиваем обновление..."
     local tmp_dir; tmp_dir=$(mktemp -d)
 
-    # Скачиваем архив репозитория (содержит server-manager.sh + lib/*.sh)
+    # Скачиваем полный архив репозитория
     if curl -fsSL "$archive_url" -o "${tmp_dir}/archive.tar.gz" 2>/dev/null; then
         tar -xzf "${tmp_dir}/archive.tar.gz" -C "$tmp_dir" 2>/dev/null
         local extracted; extracted=$(find "$tmp_dir" -maxdepth 1 -type d -name "server-manager-*" | head -1)
         if [ -n "$extracted" ]; then
             # Обновляем loader
             cp "${extracted}/server-manager.sh" "$script_path" && chmod +x "$script_path"
-            # Обновляем все модули
-            if [ -d "${script_dir}/lib" ]; then
-                cp "${extracted}/lib/"*.sh "${script_dir}/lib/" 2>/dev/null && ok "Модули обновлены: ${script_dir}/lib/"
-            else
-                warn "Директория lib/ не найдена рядом со скриптом — модули не обновлены"
-                warn "Создайте ${script_dir}/lib/ и скопируйте модули вручную"
-            fi
+
+            # Синхронизируем все папки из репозитория кроме служебных
+            # Пропускаем: .git, docs (документация не нужна на сервере)
+            # Данные и конфиги пользователя (*.toml, *.env, *.json) не трогаем
+            local updated_dirs=()
+            for src_dir in "${extracted}"/*/; do
+                local dir_name; dir_name=$(basename "$src_dir")
+                # Пропускаем служебные директории
+                case "$dir_name" in
+                    .git|docs) continue ;;
+                esac
+                local dst_dir="${script_dir}/${dir_name}"
+                mkdir -p "$dst_dir"
+                # rsync-подобная логика через find+cp: обновляем только файлы из репо
+                # не удаляем файлы которых нет в репо (сохраняем локальные данные)
+                find "$src_dir" -type f | while IFS= read -r src_file; do
+                    local rel_path="${src_file#${src_dir}}"
+                    local dst_file="${dst_dir}/${rel_path}"
+                    mkdir -p "$(dirname "$dst_file")"
+                    cp "$src_file" "$dst_file"
+                done
+                updated_dirs+=("$dir_name/")
+            done
+
+            [ ${#updated_dirs[@]} -gt 0 ] && ok "Обновлены: ${updated_dirs[*]}"
+
             rm -rf "$tmp_dir"
             ok "Скрипт обновлён → $script_path"
             warn "Перезапустите: bash $script_path"
