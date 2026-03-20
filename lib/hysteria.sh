@@ -1087,7 +1087,7 @@ hysteria_menu() {
             echo ""
         fi
         echo -e "  ${BOLD}1)${RESET}  🔧  Установка"
-        echo -e "  ${BOLD}2)${RESET}  ⚙️   Управление"
+        echo -e "  ${BOLD}2)${RESET}  ⚙️  Управление"
         echo -e "  ${BOLD}3)${RESET}  👥  Пользователи"
         echo -e "  ${BOLD}4)${RESET}  🔗  Подписка"
         echo -e "  ${BOLD}5)${RESET}  📦  Миграция на другой сервер"
