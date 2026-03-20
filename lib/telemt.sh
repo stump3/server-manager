@@ -8,7 +8,7 @@ telemt_choose_mode() {
     echo -e "  ${BOLD}1)${RESET} ${BOLD}systemd${RESET} — бинарник с GitHub"
     echo -e "     ${CYAN}Рекомендуется:${RESET} hot reload, меньше RAM, миграция"
     echo ""
-    echo -e "  ${BOLD}2)${RESET} ${BOLD}Docker${RESET} — образ с Docker Hub"
+    echo -e "  ${BOLD}2)${RESET} ${BOLD}Docker${RESET} — образ с GitHub Container Registry"
     echo ""
     echo -e "  ${BOLD}0)${RESET} Назад"
     echo ""
@@ -40,6 +40,19 @@ telemt_is_running() {
     else
         docker compose -f "$TELEMT_COMPOSE_FILE" ps --status running 2>/dev/null | grep -q "telemt"
     fi
+}
+
+# Ждёт готовности API, возвращает 0 при успехе
+telemt_wait_api() {
+    local attempts="${1:-15}"
+    local i=0
+    while [ $i -lt "$attempts" ]; do
+        local resp; resp=$(curl -s --max-time 3 "http://127.0.0.1:9091/v1/health" 2>/dev/null || true)
+        echo "$resp" | grep -q '"ok":true' && return 0
+        i=$((i+1)); sleep 2; echo -n "."
+    done
+    echo ""
+    return 1
 }
 
 TELEMT_CHOSEN_VERSION="latest"
@@ -158,13 +171,16 @@ telemt_write_compose() {
     cat > "$TELEMT_COMPOSE_FILE" <<EOF
 services:
   telemt:
-    image: whn0thacked/telemt-docker:latest
+    image: ghcr.io/telemt/telemt:latest
     container_name: telemt
     restart: unless-stopped
+    working_dir: /run/telemt
     environment:
       RUST_LOG: "info"
     volumes:
-      - ./telemt.toml:/etc/telemt.toml:ro
+      - ./telemt.toml:/run/telemt/config.toml:ro
+    tmpfs:
+      - /run/telemt:rw,mode=1777,size=1m
     ports:
       - "${port}:${port}/tcp"
       - "127.0.0.1:9091:9091/tcp"
@@ -172,22 +188,41 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     read_only: true
-    tmpfs: [/tmp:rw,nosuid,nodev,noexec,size=16m]
     ulimits: {nofile: {soft: 65536, hard: 65536}}
     logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
 EOF
 }
 
+# ── API: запрос с обработкой ошибок ──────────────────────────────
+telemt_api() {
+    local method="$1" path="$2" body="${3:-}"
+    local url="http://127.0.0.1:9091${path}"
+    if [ -n "$body" ]; then
+        curl -s --max-time 10 -X "$method" -H "Content-Type: application/json" -d "$body" "$url" 2>/dev/null
+    else
+        curl -s --max-time 10 -X "$method" "$url" 2>/dev/null
+    fi
+}
+
+telemt_api_ok() {
+    echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('ok') else 1)" 2>/dev/null
+}
+
+telemt_api_error() {
+    echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); e=d.get('error',{}); print(e.get('message','неизвестная ошибка'))" 2>/dev/null
+}
+
+# ── Показ пользователей ───────────────────────────────────────────
 telemt_fetch_links() {
     local attempt=0
     info "Запрашиваю данные через API..."
     while [ $attempt -lt 15 ]; do
-        local resp; resp=$(curl -s --max-time 5 "$TELEMT_API_URL" 2>/dev/null || true)
+        local resp; resp=$(telemt_api GET "/v1/users" || true)
         if echo "$resp" | grep -q "tg://proxy"; then
             echo ""
             echo "$resp" | python3 -c "
 import sys, json
-BOLD='\\033[1m'; CYAN='\\033[0;36m'; GREEN='\\033[0;32m'; GRAY='\\033[0;37m'; RESET='\\033[0m'
+BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; GRAY='\033[0;37m'; RESET='\033[0m'
 def fmt_bytes(b):
     if not b: return '0 B'
     for u in ('B','KB','MB','GB','TB'):
@@ -224,8 +259,22 @@ for u in users:
         fi
         attempt=$((attempt+1)); sleep 2; echo -n "."
     done
-    echo ""; warn "API не ответил. Попробуй: curl -s $TELEMT_API_URL"
+    echo ""; warn "API не ответил. Попробуй: curl -s http://127.0.0.1:9091/v1/users"
     return 1
+}
+
+# ── Получить количество пользователей ────────────────────────────
+telemt_user_count() {
+    local resp; resp=$(telemt_api GET "/v1/users" 2>/dev/null || true)
+    echo "$resp" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    users=d if isinstance(d,list) else d.get('data',d.get('users',[]))
+    if isinstance(users,dict): users=list(users.values())
+    print(len(users))
+except: print('')
+" 2>/dev/null || true
 }
 
 telemt_ask_users() {
@@ -277,53 +326,77 @@ telemt_menu_install() {
     telemt_fetch_links
 }
 
+# ── Добавить пользователя через API ──────────────────────────────
 telemt_menu_add_user() {
     header "Добавить пользователя"
     [ "$TELEMT_MODE" = "systemd" ] && need_root
     [ ! -f "$TELEMT_CONFIG_FILE" ] && die "Конфиг не найден. Сначала выполни установку."
-    local uname; read -rp "  Имя: " uname; [ -z "$uname" ] && die "Имя не может быть пустым" < /dev/tty
-    grep -q "^${uname} = " "$TELEMT_CONFIG_FILE" && die "Пользователь '$uname' уже существует"
+    telemt_is_running || die "Сервис не запущен. Запусти telemt и попробуй снова."
+
+    local uname; read -rp "  Имя: " uname < /dev/tty
+    [ -z "$uname" ] && die "Имя не может быть пустым"
     local secret; read -rp "  Секрет [Enter = сгенерировать]: " secret < /dev/tty
     [ -z "$secret" ] && { secret=$(gen_secret); ok "Секрет: $secret"; } \
         || echo "$secret" | grep -qE '^[0-9a-fA-F]{32}$' || die "Секрет должен быть 32 hex"
+
     echo ""; echo -e "${BOLD}Ограничения (Enter = пропустить):${RESET}"
     local mc mi qg ed
     read -rp "  Макс. подключений:    " mc < /dev/tty
     read -rp "  Макс. уникальных IP:  " mi < /dev/tty
     read -rp "  Квота трафика (ГБ):   " qg < /dev/tty
     read -rp "  Срок действия (дней): " ed < /dev/tty
-    echo "$uname = \"$secret\"" >> "$TELEMT_CONFIG_FILE"
-    local has=0 block=""
-    [ -n "$mc" ] && { block+="\nmax_tcp_conns = $mc"; has=1; }
-    [ -n "$mi" ] && { block+="\nmax_unique_ips = $mi"; has=1; }
-    [ -n "$qg" ] && { local qb; qb=$(python3 -c "print(int($qg*1024**3))"); block+="\ndata_quota_bytes = $qb"; has=1; }
-    [ -n "$ed" ] && { local exp; exp=$(python3 -c "from datetime import datetime,timezone,timedelta; dt=datetime.now(timezone.utc)+timedelta(days=int($ed)); print(dt.strftime('%Y-%m-%dT%H:%M:%SZ'))"); block+="\nexpiration_rfc3339 = \"$exp\""; has=1; }
-    [ "$has" -eq 1 ] && { printf "\n[access.user_limits.$uname]$block\n" >> "$TELEMT_CONFIG_FILE"; ok "Ограничения применены"; }
-    ok "Пользователь '$uname' добавлен"
-    telemt_is_running && {
-        if [ "$TELEMT_MODE" = "systemd" ]; then
-            info "Hot reload..."
-            systemctl reload telemt 2>/dev/null || systemctl restart telemt
-        else
-            cd "$TELEMT_WORK_DIR_DOCKER" && docker compose restart telemt
-        fi; sleep 2
-    }
-    header "Ссылки"; telemt_fetch_links
+
+    # Формируем JSON для API
+    local body; body=$(python3 -c "
+import json, sys
+d = {'username': '$uname', 'secret': '$secret'}
+mc='$mc'; mi='$mi'; qg='$qg'; ed='$ed'
+if mc: d['max_tcp_conns'] = int(mc)
+if mi: d['max_unique_ips'] = int(mi)
+if qg: d['data_quota_bytes'] = int(float(qg) * 1024**3)
+if ed:
+    from datetime import datetime, timezone, timedelta
+    dt = datetime.now(timezone.utc) + timedelta(days=int(ed))
+    d['expiration_rfc3339'] = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+print(json.dumps(d))
+" 2>/dev/null)
+
+    info "Создаю пользователя через API..."
+    local resp; resp=$(telemt_api POST "/v1/users" "$body")
+    if telemt_api_ok "$resp"; then
+        ok "Пользователь '$uname' добавлен"
+        echo ""
+        header "Ссылки"
+        telemt_fetch_links
+    else
+        local errmsg; errmsg=$(telemt_api_error "$resp")
+        die "Ошибка API: $errmsg"
+    fi
 }
 
+# ── Удалить пользователя через API ───────────────────────────────
 telemt_menu_delete_user() {
     header "Удалить пользователя"
     [ ! -f "$TELEMT_CONFIG_FILE" ] && die "Конфиг не найден."
+    telemt_is_running || die "Сервис не запущен."
 
-    # Собираем список пользователей из [access.users]
+    # Получаем список из API
+    local resp; resp=$(telemt_api GET "/v1/users" || true)
     local -a users=()
-    while IFS= read -r line; do
-        local u; u=$(echo "$line" | sed 's/ =.*//' | tr -d ' ')
+    while IFS= read -r u; do
         [ -n "$u" ] && users+=("$u")
-    done < <(awk '/^\[access\.users\]/{f=1;next} f&&/^\[/{exit} f&&/=/{print}' "$TELEMT_CONFIG_FILE")
+    done < <(echo "$resp" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    us=d if isinstance(d,list) else d.get('data',d.get('users',[]))
+    if isinstance(us,dict): us=list(us.values())
+    for u in us: print(u.get('username',''))
+except: pass
+" 2>/dev/null || true)
 
     if [ ${#users[@]} -eq 0 ]; then
-        warn "Пользователи не найдены в конфиге"; return 1
+        warn "Пользователи не найдены"; return 1
     fi
 
     echo -e "  ${WHITE}Выберите пользователя для удаления:${NC}"
@@ -333,6 +406,7 @@ telemt_menu_delete_user() {
         echo -e "  ${BOLD}${i})${RESET} ${u}"
         i=$((i+1))
     done
+    echo ""
     echo -e "  ${BOLD}0)${RESET} Назад"
     echo ""
     local ch; read -rp "  Выбор: " ch < /dev/tty
@@ -345,32 +419,104 @@ telemt_menu_delete_user() {
     read -rp "  Удалить '${selected}'? (y/N): " _yn < /dev/tty
     [[ "${_yn:-N}" =~ ^[yY]$ ]] || { warn "Отменено"; return; }
 
-    # Удаляем строку пользователя из [access.users]
-    sed -i "/^${selected} = /d" "$TELEMT_CONFIG_FILE"
-    # Удаляем секцию [access.user_limits.USERNAME] если есть
-    sed -i "/^\[access\.user_limits\.${selected}\]/,/^\[/{/^\[access\.user_limits\.${selected}\]/d; /^\[/!{/^$/d; d}}" "$TELEMT_CONFIG_FILE"
-
-    ok "Пользователь '${selected}' удалён"
-
-    # Hot reload
-    if telemt_is_running; then
-        if [ "$TELEMT_MODE" = "systemd" ]; then
-            info "Hot reload..."
-            systemctl reload telemt 2>/dev/null || systemctl restart telemt
-        else
-            cd "$TELEMT_WORK_DIR_DOCKER" && docker compose restart telemt >/dev/null 2>&1
-        fi
-        sleep 1
-        ok "Конфиг применён"
+    info "Удаляю через API..."
+    local dresp; dresp=$(telemt_api DELETE "/v1/users/${selected}")
+    if telemt_api_ok "$dresp"; then
+        ok "Пользователь '${selected}' удалён"
+    else
+        local errmsg; errmsg=$(telemt_api_error "$dresp")
+        die "Ошибка API: $errmsg"
     fi
 }
 
-telemt_menu_links()  { header "Пользователи и ссылки"; telemt_is_running || die "Сервис не запущен."; telemt_fetch_links; }
+telemt_menu_links() {
+    header "Пользователи и ссылки"
+    telemt_is_running || die "Сервис не запущен."
+    telemt_fetch_links
+}
 
+# ── Статус: systemctl + данные из API ────────────────────────────
 telemt_menu_status() {
     header "Статус"
     if [ "$TELEMT_MODE" = "systemd" ]; then
-        systemctl status telemt --no-pager||true; echo ""; info "Последние логи:"; journalctl -u telemt --no-pager -n 30
+        systemctl status telemt --no-pager || true
+        echo ""
+
+        # Блок из API если запущен
+        if telemt_is_running; then
+            local summary; summary=$(telemt_api GET "/v1/stats/summary" 2>/dev/null || true)
+            local gates;   gates=$(telemt_api GET "/v1/runtime/gates" 2>/dev/null || true)
+            local sysinfo; sysinfo=$(telemt_api GET "/v1/system/info" 2>/dev/null || true)
+
+            echo "$summary $gates $sysinfo" | python3 -c "
+import sys, json, os
+
+BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+GRAY='\033[0;90m'; YELLOW='\033[1;33m'; RESET='\033[0m'
+
+raw = sys.stdin.read().strip()
+# три отдельных JSON через пробел — разбираем каждый
+parts = []
+depth = 0; buf = ''
+for ch in raw:
+    if ch == '{': depth += 1
+    if depth > 0: buf += ch
+    if ch == '}':
+        depth -= 1
+        if depth == 0:
+            try: parts.append(json.loads(buf))
+            except: pass
+            buf = ''
+
+def get(d, *keys):
+    for k in keys:
+        if isinstance(d, dict): d = d.get(k, {})
+        else: return None
+    return d if d != {} else None
+
+sm = parts[0].get('data', {}) if len(parts) > 0 else {}
+gt = parts[1].get('data', {}) if len(parts) > 1 else {}
+si = parts[2].get('data', {}) if len(parts) > 2 else {}
+
+def fmt_uptime(s):
+    if not s: return '—'
+    s = int(s)
+    d, s = divmod(s, 86400); h, s = divmod(s, 3600); m, s = divmod(s, 60)
+    parts = []
+    if d: parts.append(f'{d}д')
+    if h: parts.append(f'{h}ч')
+    if m: parts.append(f'{m}м')
+    if not parts: parts.append(f'{s}с')
+    return ' '.join(parts)
+
+version    = si.get('version', '')
+uptime     = fmt_uptime(sm.get('uptime_seconds'))
+conns      = sm.get('connections_total', '—')
+bad_conns  = sm.get('connections_bad_total', 0)
+users      = sm.get('configured_users', '—')
+me_ready   = gt.get('me_runtime_ready')
+startup    = gt.get('startup_status', '')
+use_me     = gt.get('use_middle_proxy')
+
+print(f'  {GRAY}────────────────────────────────────────{RESET}')
+if version:    print(f'  {GRAY}Версия         {RESET}{version}')
+print(         f'  {GRAY}Uptime         {RESET}{uptime}')
+print(         f'  {GRAY}Подключений    {RESET}{conns}' + (f'  {GRAY}(плохих: {bad_conns}){RESET}' if bad_conns else ''))
+print(         f'  {GRAY}Пользователей  {RESET}{users}')
+if use_me is not None:
+    mode_str = 'middle-proxy' if use_me else 'direct'
+    print(     f'  {GRAY}Режим          {RESET}{mode_str}')
+if me_ready is not None:
+    status_str = f'{GREEN}готов{RESET}' if me_ready else f'{YELLOW}инициализация{RESET}'
+    if startup: status_str += f'  {GRAY}({startup}){RESET}'
+    print(     f'  {GRAY}ME Pool        {RESET}{status_str}')
+print(f'  {GRAY}────────────────────────────────────────{RESET}')
+" 2>/dev/null || true
+            echo ""
+        fi
+
+        info "Последние логи:"
+        journalctl -u telemt --no-pager -n 30
     else
         cd "$TELEMT_WORK_DIR_DOCKER" 2>/dev/null || die "Директория не найдена"
         docker compose ps; echo ""; info "Последние логи:"; docker compose logs --tail=20
@@ -381,7 +527,7 @@ telemt_menu_update() {
     header "Обновление"
     if [ "$TELEMT_MODE" = "systemd" ]; then
         need_root
-        info "Текущая версия: $($TELEMT_BIN --version 2>/dev/null||echo неизвестна)"
+        info "Текущая версия: $($TELEMT_BIN --version 2>/dev/null || echo неизвестна)"
         telemt_pick_version; systemctl stop telemt
         telemt_download_binary "$TELEMT_CHOSEN_VERSION"; systemctl start telemt
     else
@@ -515,7 +661,7 @@ REMOTE_INSTALL
     if echo "$nl" | grep -q "tg://proxy"; then
         echo "$nl" | python3 -c "
 import sys,json
-BOLD='\\033[1m'; CYAN='\\033[0;36m'; RESET='\\033[0m'
+BOLD='\033[1m'; CYAN='\033[0;36m'; RESET='\033[0m'
 data=json.load(sys.stdin); users=data if isinstance(data,list) else data.get('users',data.get('data',[]))
 if isinstance(users,dict): users=list(users.values())
 for u in users:
@@ -544,7 +690,8 @@ telemt_menu_migrate_docker() {
     ask_ssh_target
     init_ssh_helpers telemt
     RRUN() { RUN "$@"; }
-    RSCP() { sshpass -p "$_SSH_PASS" scp -P "$_SSH_PORT"         -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$1" "${_SSH_USER}@${_SSH_IP}:$2"; }
+    RSCP() { sshpass -p "$_SSH_PASS" scp -P "$_SSH_PORT" \
+        -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$1" "${_SSH_USER}@${_SSH_IP}:$2"; }
     check_ssh_connection || return 1
     local nh="$_SSH_IP" np="$_SSH_PORT" nu="$_SSH_USER"
 
@@ -557,7 +704,6 @@ telemt_menu_migrate_docker() {
     read -rp "  Порт на новом сервере [Enter=$cur_port]: " new_pp; new_pp="${new_pp:-$cur_port}" < /dev/tty
     read -rp "  Домен-маскировка [Enter=$cur_domain]: " new_dom; new_dom="${new_dom:-$cur_domain}" < /dev/tty
 
-    # Обновляем порт и домен в конфиге если изменились
     local config_to_send
     config_to_send=$(sed "s/^port = .*/port = $new_pp/; s/tls_domain.*=.*/tls_domain    = \"$new_dom\"/" "$TELEMT_CONFIG_FILE")
 
@@ -573,12 +719,11 @@ telemt_menu_migrate_docker() {
     ok "Файлы скопированы"
 
     info "Запускаю контейнер на новом сервере..."
-    RRUN "cd $(dirname "$TELEMT_COMPOSE_FILE") && docker compose pull -q && docker compose up -d"         && ok "Контейнер запущен" || die "Ошибка запуска контейнера"
+    RRUN "cd $(dirname "$TELEMT_COMPOSE_FILE") && docker compose pull -q && docker compose up -d" \
+        && ok "Контейнер запущен" || die "Ошибка запуска контейнера"
 
-    # Открываем порт
     RRUN "command -v ufw &>/dev/null && ufw allow ${new_pp}/tcp &>/dev/null || true"
 
-    # Проверяем ссылки
     ok "Миграция завершена!"
     header "Новые ссылки"
     echo -e "${BOLD}Новый IP:${RESET} $nh"
@@ -606,8 +751,8 @@ for u in users:
     fi
 }
 
+# ── Главное меню ──────────────────────────────────────────────────
 telemt_main_menu() {
-    # Загружаем версию и порт один раз при входе
     local mode_label ver telemt_port
     mode_label=""; [ "$TELEMT_MODE" = "systemd" ] && mode_label="systemd" || mode_label="Docker"
     ver=$(get_telemt_version 2>/dev/null || true)
@@ -625,9 +770,21 @@ telemt_main_menu() {
         fi
         echo -e "  ${BOLD}1)${RESET} 🔧  Установка"
         echo -e "  ${BOLD}2)${RESET} ⚙️  Управление"
-        echo -e "  ${BOLD}3)${RESET} 👥  Пользователи"
+
+        # Пункт Пользователи с количеством если сервис запущен
+        local user_count=""
+        if telemt_is_running 2>/dev/null; then
+            user_count=$(telemt_user_count 2>/dev/null || true)
+        fi
+        if [ -n "$user_count" ]; then
+            echo -e "  ${BOLD}3)${RESET} 👥  Пользователи  ${GRAY}${user_count}${NC}"
+        else
+            echo -e "  ${BOLD}3)${RESET} 👥  Пользователи"
+        fi
+
         echo -e "  ${BOLD}4)${RESET} 📦  Миграция на другой сервер"
         echo -e "  ${BOLD}5)${RESET} 🔀  Сменить режим (systemd ↔ Docker)"
+        echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
@@ -654,6 +811,7 @@ telemt_submenu_manage() {
         echo -e "  ${BOLD}1)${RESET} 📊  Статус и логи"
         echo -e "  ${BOLD}2)${RESET} 🔄  Обновить"
         echo -e "  ${BOLD}3)${RESET} ⏹️  Остановить"
+        echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
@@ -667,13 +825,25 @@ telemt_submenu_manage() {
     done
 }
 
+# ── Подменю пользователей с количеством ──────────────────────────
 telemt_submenu_users() {
     while true; do
+        # Получаем количество пользователей для заголовка
+        local user_count=""
+        if telemt_is_running 2>/dev/null; then
+            user_count=$(telemt_user_count 2>/dev/null || true)
+        fi
+
         clear
-        header "MTProxy — Пользователи"
+        echo ""
+        echo -e "${BOLD}${WHITE}  MTProxy — Пользователи${NC}" \
+            $([ -n "$user_count" ] && echo -e "${GRAY}  ${user_count}${NC}" || true)
+        echo -e "${GRAY}  ────────────────────────────────────────${NC}"
+        echo ""
         echo -e "  ${BOLD}1)${RESET} ➕  Добавить пользователя"
         echo -e "  ${BOLD}2)${RESET} ➖  Удалить пользователя"
         echo -e "  ${BOLD}3)${RESET} 👥  Пользователи и ссылки"
+        echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
