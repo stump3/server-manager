@@ -226,10 +226,37 @@ WEBHOOK_SECRET_HEADER=<hex64>
 
 ## Требования
 
+### Система
 - Ubuntu 20.04+ / Debian 11+
 - Root доступ
-- Открытые порты: 80 (certbot), 443 TCP (Xray/nginx), 8443 UDP (Hysteria2)
 - Docker, docker-compose, jq, certbot, openssl
+
+### Порты
+- `80` TCP — certbot (открывается на время выпуска SSL, потом закрывается)
+- `443` TCP — Xray/nginx (Remnawave Panel + selfsteal)
+- `8443` UDP — Hysteria2
+- `2222` TCP — remnanode (только из Docker сети 172.30.0.0/16)
+
+### RAM
+
+Минимум **2 GB RAM** для полного стека. Рекомендуется **4 GB**.
+
+| Компонент | Потребление | Тип |
+|---|---|---|
+| remnawave (NestJS) | ~395 MB | Docker |
+| remnanode (Xray) | ~88 MB | Docker |
+| subscription-page | ~76 MB | Docker |
+| remnawave-db (Postgres) | ~50 MB + ~195 MB workers | Docker |
+| hysteria2 | ~17 MB (peak 53 MB) | systemd |
+| telemt | ~18 MB (peak 83 MB) | systemd |
+| hy-webhook | ~1 MB | systemd |
+| nginx + redis | ~10 MB | Docker |
+| **Итого** | **~850 MB** | |
+
+> **Примечание:** 395 MB для remnawave — норма для NestJS + BullMQ + TypeORM стека. eGames и другие скрипты на базе remnawave/backend:2 показывают те же цифры.
+
+### Swap
+Рекомендуется минимум **1 GB swap**. При 2 GB RAM telemt и другие сервисы в пике уходят в swap (~47-83 MB).
 
 ---
 

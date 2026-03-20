@@ -385,3 +385,68 @@ git push
 | 2026-03-20 | Python heredoc: quoted markers | bash парсил Python как bash-код |
 | 2026-03-19 | Нода с activeInbounds через API | Без activeInbounds нода получала пустой конфиг |
 | 2026-03-18 | API URL: by-short-uuid вместо get-by | Устаревший URL в исходниках subscription-page |
+
+---
+
+## Потребление RAM — анализ
+
+### Реальные данные (сервер 1.92 GB RAM, полный стек)
+
+```
+docker stats (фактическое потребление):
+  remnawave (NestJS)         395 MB   ← главный потребитель
+  remnanode (Xray rw-core)    88 MB
+  subscription-page           76 MB
+  remnawave-db (Postgres)     50 MB
+  remnawave-redis              6 MB
+  remnawave-nginx              5 MB
+
+systemctl (systemd сервисы):
+  telemt                      18 MB   (peak 84 MB, swap 47 MB)
+  hysteria2                   17 MB   (peak 53 MB, swap  4 MB)
+  hy-webhook (python3)         1 MB   (peak 12 MB, swap 10 MB)
+
+postgres worker processes (хост):
+  13 процессов × ~15 MB     195 MB   ← max_connections=100 по умолчанию
+
+Итого: ~850 MB из 1.92 GB (44%)
+swap использован: ~146 MB
+```
+
+### Сравнение с eGames
+
+**Различий нет.** eGames и server-manager генерируют идентичный docker-compose:
+- те же образы (`remnawave/backend:2`, `postgres:18.1`, `valkey/valkey:9.0.0-alpine`)
+- те же `ulimits: nofile: 1048576`
+- нет `mem_limit` ни там ни тут
+- нет `NODE_OPTIONS` ни там ни тут
+- нет postgres-настроек (`max_connections`, `shared_buffers`) ни там ни тут
+
+395 MB для remnawave — норма для NestJS + BullMQ + TypeORM + PM2 cluster. Снизить невозможно без изменения самого образа.
+
+### Источник данных RAM в панели
+
+Панель показывает RAM через **Xray gRPC Stats API**:
+```
+remnanode → GetSysStats (:61000) → /proc/meminfo хоста
+```
+`remnanode` работает с `network_mode: host`, поэтому видит `/proc/meminfo` хоста напрямую. Это системная RAM — всё что занято на хосте, включая Docker, systemd, ядро, buff/cache.
+
+### Потенциальные оптимизации (не реализованы в скрипте)
+
+| Оптимизация | Экономия | Как |
+|---|---|---|
+| `max_connections=25` в Postgres | ~120 MB | `command: postgres -c max_connections=25 -c shared_buffers=32MB` в docker-compose |
+| Swap 2 GB | 0 MB (но предотвращает OOM) | `fallocate -l 2G /swapfile` |
+| `mem_limit: 256m` для subscription-page | 0 MB (safety net) | docker-compose |
+
+> Postgres workers — самая реальная экономия. 13 процессов при max_connections=100 это дефолт. Remnawave использует PgBouncer или прямой TypeORM pool — хватит 20-25 соединений.
+
+### Рекомендации по серверу
+
+| RAM | Стек | Комментарий |
+|---|---|---|
+| 1 GB | ❌ | Не хватит — только remnawave требует ~400 MB |
+| 2 GB | ⚠️ | Работает, но в пике уходит в swap. Нужен swap ≥1 GB |
+| 4 GB | ✅ | Комфортно для полного стека + запас |
+| 8 GB | ✅✅ | Для нескольких нод или высокой нагрузки |
