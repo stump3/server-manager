@@ -9,8 +9,8 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ```
 
 [![Docs](https://img.shields.io/badge/docs-интерактивные-3b82f6?style=flat-square)](https://stump3.github.io/server-manager/README.html)
-[![Changelog](https://img.shields.io/badge/changelog-v2.1.0-22c55e?style=flat-square)](docs/CHANGELOG.md)
-[![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](docs/ENGINEER.md)
+[![Changelog](https://img.shields.io/badge/changelog-v2.2.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md)
+[![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md)
 
 </div>
 
@@ -20,9 +20,10 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 
 | Файл | Описание |
 |---|---|
-| 📖 [docs/README.html](docs/README.html) | Интерактивная документация — тёмная тема, навигация, схемы архитектуры |
-| 📋 [docs/CHANGELOG.md](docs/CHANGELOG.md) | История изменений по версиям |
-| 🔧 [docs/ENGINEER.md](docs/ENGINEER.md) | Для разработчиков — архитектура, API, диагностика, анализ кода |
+| 📖 [docs/README.html](https://stump3.github.io/server-manager/README.html) | Интерактивная документация — тёмная тема, навигация, схемы архитектуры |
+| 📋 [CHANGELOG.md](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md) | История изменений по версиям |
+| 🔧 [docs/ENGINEER.md](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md) | Для разработчиков — архитектура, API, диагностика |
+| 📡 [docs/TELEMT_CONFIG.md](https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md) | Справочник всех параметров конфига telemt (MTProxy) |
 
 ---
 
@@ -167,6 +168,8 @@ https://panel.example.com/auth/login?KEY=VALUE
 
 Hot reload пользователей без перезапуска сервиса.
 
+> 📖 Полный справочник параметров конфига: [docs/TELEMT_CONFIG.md](docs/TELEMT_CONFIG.md)
+
 ---
 
 ## Hysteria2
@@ -212,64 +215,6 @@ Remnawave  ──POST /webhook──►  hy-webhook :8766
                             Hysteria2 reload
                                     │
 subscription-page  ◄──  читает users.json  ──►  hy2:// URI в подписку
-```
-
-### Обновление
-
-### Вариант 1 — через меню (рекомендуется)
-
-Если скрипт уже установлен и запущен:
-
-```
-Главное меню → 5) Обновить скрипт
-```
-
-Скачивает свежий архив с GitHub и обновляет все модули `lib/*.sh`.
-
----
-
-### Вариант 2 — полная переустановка с нуля
-
-Если скрипта ещё нет или нужна чистая установка:
-
-```bash
-mkdir -p /root/lib
-
-for mod in common panel telemt hysteria migrate; do
-    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/${mod}.sh" \
-        -o "/root/lib/${mod}.sh"
-done
-
-curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh" \
-    -o /root/server-manager.sh && chmod +x /root/server-manager.sh
-
-bash /root/server-manager.sh
-```
-
----
-
-### Вариант 3 — обновить один модуль
-
-Если нужно обновить только конкретный компонент:
-
-```bash
-# Заменить panel.sh (Remnawave Panel)
-curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/panel.sh" \
-    -o /root/lib/panel.sh
-
-# Или через tar-архив (все модули сразу)
-curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz \
-    | tar -xz --strip-components=2 -C /root/lib server-manager-main/lib
-```
-
----
-
-### После обновления
-
-Скрипт управления `remnawave_panel` (команда `rp`) хранится отдельно в `/usr/local/bin/remnawave_panel`. Он не обновляется автоматически. Чтобы применить изменения:
-
-```
-Главное меню → 1) Remnawave Panel → 2) Управление → 12) Переустановить скрипт (rp)
 ```
 
 ---
