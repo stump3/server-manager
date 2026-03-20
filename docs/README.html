@@ -216,8 +216,9 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
   </div>
   <div class="nav-group">
     <div class="nav-label">Ещё</div>
-    <a href="CHANGELOG.md" class="nav-link"><span class="nav-dot" style="background:#22c55e"></span> Changelog</a>
-    <a href="ENGINEER.md" class="nav-link"><span class="nav-dot" style="background:#f59e0b"></span> Для инженеров</a>
+    <a href="https://github.com/stump3/server-manager/blob/main/CHANGELOG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#22c55e"></span> Changelog ↗</a>
+    <a href="https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#f59e0b"></span> Для инженеров ↗</a>
+    <a href="https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#a78bfa"></span> Конфиг telemt ↗</a>
     <a href="https://github.com/stump3/server-manager" class="nav-link" target="_blank"><span class="nav-dot" style="background:#3d5068"></span> GitHub ↗</a>
   </div>
 </nav>
@@ -515,6 +516,11 @@ map <span class="cs">"$auth_cookie$auth_query"</span> $authorized {
   <div class="alert al-success">
     <span class="alert-icon">✅</span>
     <div>Добавление пользователя применяется через hot reload — существующие соединения не прерываются.</div>
+  </div>
+
+  <div class="alert al-info">
+    <span class="alert-icon">📖</span>
+    <div>Полный справочник всех параметров конфига telemt (222 параметра, секции [general], [server], [access], [censorship], [[upstreams]] и другие): <a href="https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md" target="_blank" style="color:var(--accent)">docs/TELEMT_CONFIG.md ↗</a></div>
   </div>
 </section>
 
