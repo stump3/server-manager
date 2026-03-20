@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ```
 
 [![Docs](https://img.shields.io/badge/docs-интерактивные-3b82f6?style=flat-square)](https://stump3.github.io/server-manager/README.html)
-[![Changelog](https://img.shields.io/badge/changelog-v2.3.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/changelog-v2.4.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md)
 [![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md)
 
 </div>
@@ -48,9 +48,13 @@ server-manager/
 │   ├── telemt.sh               # MTProxy (telemt)
 │   ├── hysteria.sh             # Hysteria2 (1213 строк)
 │   └── migrate.sh              # Перенос сервисов (248 строк)
-└── integrations/
-    ├── hy-sub-install.sh       # Интеграция Hysteria2 → подписка Remnawave
-    └── hy-webhook.py           # Webhook синхронизации пользователей
+├── integrations/
+│   ├── hy-sub-install.sh       # Установка интеграции Hysteria2 → Remnawave
+│   └── hy-webhook.py           # Webhook-сервис + reverse-proxy с инъекцией URI
+└── sub-injector/
+    ├── src/main.rs             # Rust/Axum reverse-proxy с per-user инъекцией
+    ├── Cargo.toml
+    └── config.toml.example     # Пример конфига
 ```
 
 ---
@@ -308,7 +312,7 @@ URI клиента: `hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3`
 
 ## Интеграция Hysteria2 → Подписка Remnawave
 
-Добавляет `hy2://` URI в подписку Remnawave автоматически при создании/изменении пользователя.
+Добавляет персональный `hy2://` URI в подписку Remnawave автоматически при создании/изменении пользователя. Каждый пользователь получает уникальный URI со своим именем и паролем.
 
 ```bash
 # Путь: Главное меню → 3) Hysteria2 → 4) Подписка → 3) Интеграция с Remnawave
@@ -322,9 +326,31 @@ Remnawave  ──POST /webhook──►  hy-webhook :8766
                             обновляет config.yaml
                                     │
                             Hysteria2 reload
-                                    │
-subscription-page  ◄──  читает users.json  ──►  hy2:// URI в подписку
+
+Клиент (Hiddify/v2rayNG)
+    ↓  GET /sub/TOKEN
+remna-sub-injector :3020
+    ↓  GET /uri/TOKEN  ──►  hy-webhook :8766  ──►  Remnawave API
+    ←  hy2://user:pass@domain:port?sni=...
+    ↓  проксирует на upstream :3010
+    ←  base64 ответ + hy2:// URI (инъекция)
+
+Клиент (Clash/Sing-Box)  →  YAML/JSON конфиг без изменений
 ```
+
+### Компоненты
+
+| Компонент | Тип | Описание |
+|---|---|---|
+| `hy-webhook.py` | Python systemd | Вебхук-сервис + `GET /uri/:shortUuid` + proxy :3020 |
+| `sub-injector` | Rust бинарник | Reverse-proxy с per-user инъекцией URI по UA |
+
+### Преимущества новой архитектуры
+
+- Нет форка TypeScript и пересборки Docker образа — установка занимает ~1 минуту
+- Клиенты Clash/Sing-Box получают YAML без изменений (проверка Content-Type)
+- Разные наборы URI для разных клиентов через User-Agent фильтрацию
+- sub-injector — независимый сервис, не зависит от версии subscription-page
 
 ---
 
@@ -360,6 +386,17 @@ subscription-page  ◄──  читает users.json  ──►  hy2:// URI в 
 | `/etc/systemd/system/hy-webhook.service` | Systemd unit webhook-синхронизации |
 | `/root/hysteria-{домен}.txt` | URI подключения |
 | `/root/hysteria-{домен}-users.txt` | URI всех пользователей |
+
+### Интеграция (hy-webhook + sub-injector)
+
+| Путь | Назначение |
+|---|---|
+| `/opt/hy-webhook/hy-webhook.py` | Python сервис |
+| `/etc/hy-webhook.env` | Конфиг и секреты (права 600) |
+| `/var/lib/hy-webhook/users.json` | База пользователей |
+| `/opt/remna-sub-injector/sub-injector` | Бинарник sub-injector |
+| `/opt/remna-sub-injector/config.toml` | Конфиг инжектора |
+| `/etc/systemd/system/remna-sub-injector.service` | Systemd unit sub-injector |
 
 ---
 
@@ -478,6 +515,7 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
 | `2222` | TCP | remnanode | Только из Docker сети 172.30.0.0/16 |
 | `8766` | TCP | hy-webhook | Только из Docker сети 172.16.0.0/12 |
 | `9091` | TCP | telemt API | Только localhost — управление через REST |
+| `3020` | TCP | sub-injector | Reverse-proxy подписок с инъекцией URI |
 
 ### RAM
 
@@ -492,6 +530,7 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
 | hysteria2 | ~17 MB (peak 53 MB) | systemd |
 | telemt | ~18 MB (peak 83 MB) | systemd |
 | hy-webhook | ~1 MB | systemd |
+| sub-injector | ~3 MB | systemd |
 | nginx + redis | ~10 MB | Docker |
 | **Итого** | **~850 MB** | |
 
