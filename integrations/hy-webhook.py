@@ -151,8 +151,16 @@ def update_hysteria_config(users):
 def verify_signature(body, signature):
     if not WEBHOOK_SECRET:
         return True
-    expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature.lower().replace("sha256=", ""))
+    # Remnawave шлёт WEBHOOK_SECRET_HEADER как plain-text значение заголовка,
+    # а не как HMAC подпись. Сравниваем напрямую.
+    if hmac.compare_digest(WEBHOOK_SECRET, signature):
+        return True
+    # Fallback: поддержка HMAC-SHA256 на случай других клиентов
+    try:
+        expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature.lower().replace("sha256=", ""))
+    except Exception:
+        return False
 
 def get_hy_domain_port():
     domain, port = HY_DOMAIN, HY_PORT
