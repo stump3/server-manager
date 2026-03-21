@@ -1257,22 +1257,23 @@ panel_update_script() {
             # Пропускаем: .git, docs (документация не нужна на сервере)
             # Данные и конфиги пользователя (*.toml, *.env, *.json) не трогаем
             local updated_dirs=()
+            local dir_name dst_dir src_file rel_path dst_file
             for src_dir in "${extracted}"/*/; do
-                local dir_name; dir_name=$(basename "$src_dir")
+                dir_name=$(basename "$src_dir")
                 # Пропускаем служебные директории
                 case "$dir_name" in
                     .git|docs) continue ;;
                 esac
-                local dst_dir="${script_dir}/${dir_name}"
+                dst_dir="${script_dir}/${dir_name}"
                 mkdir -p "$dst_dir"
-                # rsync-подобная логика через find+cp: обновляем только файлы из репо
-                # не удаляем файлы которых нет в репо (сохраняем локальные данные)
-                find "$src_dir" -type f | while IFS= read -r src_file; do
-                    local rel_path="${src_file#${src_dir}}"
-                    local dst_file="${dst_dir}/${rel_path}"
+                # Используем process substitution вместо pipe чтобы избежать subshell
+                # find ... | while создаёт subshell — updated_dirs не обновляется
+                while IFS= read -r src_file; do
+                    rel_path="${src_file#${src_dir}}"
+                    dst_file="${dst_dir}/${rel_path}"
                     mkdir -p "$(dirname "$dst_file")"
                     cp "$src_file" "$dst_file"
-                done
+                done < <(find "$src_dir" -type f)
                 updated_dirs+=("$dir_name/")
             done
 
