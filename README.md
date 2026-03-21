@@ -101,8 +101,6 @@ bash /root/server-manager/server-manager.sh
   4)  📦  Перенос
 
   5)  🔄  Обновить скрипт
-
-  0)  Выход
 ```
 
 ---
