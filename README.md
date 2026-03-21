@@ -196,8 +196,6 @@ https://panel.example.com/auth/login?KEY=VALUE
 
   4)  📦  Миграция на другой сервер
   5)  🔀  Сменить режим (systemd ↔ Docker)
-
-  0)  ◀️  Назад
 ```
 
 ```
@@ -208,8 +206,6 @@ https://panel.example.com/auth/login?KEY=VALUE
   2)  🔄  Обновить
   3)  ⏹️  Остановить
   4)  🔀  Режим подключения  direct
-
-  0)  ◀️  Назад
 ```
 
 ### Параметры установки
