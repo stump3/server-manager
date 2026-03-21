@@ -12,16 +12,10 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-# Версия обновляется автоматически при каждом сохранении файла
-# Версия — дата последнего коммита. Обновляется автоматически
-# через GitHub Actions (update-version.yml) при каждом push в main.
-SCRIPT_VERSION_STATIC="v2603.210726"
-# Обновляется автоматически Actions при push в main — не редактировать вручную
-SCRIPT_VERSION=$(
-    git -C "$(dirname "${BASH_SOURCE[0]:-$0}")" log -1 \
-        --format='v%cd' --date='format:%y%m.%d%H%M' 2>/dev/null \
-    || echo "$SCRIPT_VERSION_STATIC"
-)
+# Версия обновляется автоматически через GitHub Actions (update-version.yml)
+# при каждом push в main. Не редактировать вручную.
+SCRIPT_VERSION_STATIC="v2603.210034"
+SCRIPT_VERSION="$SCRIPT_VERSION_STATIC"
 
 # ═══════════════════════════════════════════════════════════════════
 # ЦВЕТА И ОБЩИЕ УТИЛИТЫ
