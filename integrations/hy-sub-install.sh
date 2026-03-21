@@ -342,17 +342,43 @@ if curl -fsSL "$INJECTOR_URL" -o "$INJECTOR_BIN" 2>/dev/null; then
     ok "sub-injector установлен: $INJECTOR_BIN"
 else
     warn "Бинарник недоступен — собираем из sub-injector/ репозитория"
+    # Устанавливаем Rust если нет, или подключаем уже установленный
+    if ! command -v cargo &>/dev/null; then
+        if [ -f "$HOME/.cargo/env" ]; then
+            # Rust установлен но не в PATH — подключаем
+            # shellcheck source=/dev/null
+            source "$HOME/.cargo/env"
+        fi
+    fi
     if ! command -v cargo &>/dev/null; then
         info "Устанавливаем Rust (потребуется 2-3 минуты)..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path             || err "Не удалось установить Rust"
+        # shellcheck source=/dev/null
+        source "$HOME/.cargo/env"
         export PATH="$HOME/.cargo/bin:$PATH"
     fi
-    INJECTOR_SRC="/tmp/sm-sub-injector"
+    command -v cargo &>/dev/null || err "cargo не найден после установки Rust"
+
+    # Используем локальные исходники если есть, иначе скачиваем
+    local SCRIPT_REPO_DIR; SCRIPT_REPO_DIR="$(dirname "$0")/.."
+    local INJECTOR_SRC="/tmp/sm-sub-injector"
     rm -rf "$INJECTOR_SRC" && mkdir -p "$INJECTOR_SRC/src"
-    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector/Cargo.toml"         -o "$INJECTOR_SRC/Cargo.toml" || err "Не удалось скачать Cargo.toml"
-    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector/src/main.rs"         -o "$INJECTOR_SRC/src/main.rs" || err "Не удалось скачать main.rs"
+
+    if [ -f "${SCRIPT_REPO_DIR}/sub-injector/src/main.rs" ]; then
+        cp "${SCRIPT_REPO_DIR}/sub-injector/Cargo.toml" "$INJECTOR_SRC/"
+        cp "${SCRIPT_REPO_DIR}/sub-injector/src/main.rs" "$INJECTOR_SRC/src/"
+        info "Используются локальные исходники sub-injector"
+    else
+        curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector/Cargo.toml"             -o "$INJECTOR_SRC/Cargo.toml" || err "Не удалось скачать Cargo.toml"
+        curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector/src/main.rs"             -o "$INJECTOR_SRC/src/main.rs" || err "Не удалось скачать main.rs"
+    fi
+
+    info "Сборка sub-injector (2-5 минут)..."
     cd "$INJECTOR_SRC"
-    cargo build --release 2>&1 | tail -5
+    if ! cargo build --release 2>&1 | tail -10; then
+        err "Сборка sub-injector завершилась с ошибкой"
+    fi
+    [ -f "target/release/sub-injector" ] || err "Бинарник не найден после сборки"
     cp target/release/sub-injector "$INJECTOR_BIN"
     chmod +x "$INJECTOR_BIN"
     ok "sub-injector собран из исходников"
