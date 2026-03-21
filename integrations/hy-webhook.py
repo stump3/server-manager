@@ -429,8 +429,11 @@ def main():
         log.info(f"Загружено {len(users)} пользователей")
         update_hysteria_config(users)
 
-    # Proxy в отдельном потоке
-    threading.Thread(target=run_proxy, daemon=True).start()
+    # Proxy в отдельном потоке (отключается если PROXY_PORT=0)
+    if PROXY_PORT > 0:
+        threading.Thread(target=run_proxy, daemon=True).start()
+    else:
+        log.info("Встроенный proxy отключён (PROXY_PORT=0) — используется внешний sub-injector")
 
     # Webhook сервер в главном потоке
     server = HTTPServer(("127.0.0.1", LISTEN_PORT), WebhookHandler)
