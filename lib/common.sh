@@ -15,13 +15,13 @@ export DEBIAN_FRONTEND=noninteractive
 # Версия обновляется автоматически при каждом сохранении файла
 # Версия — дата последнего коммита. Обновляется автоматически
 # через GitHub Actions (update-version.yml) при каждом push в main.
+SCRIPT_VERSION_STATIC="v2603.210034"
+# Обновляется автоматически Actions при push в main — не редактировать вручную
 SCRIPT_VERSION=$(
     git -C "$(dirname "${BASH_SOURCE[0]:-$0}")" log -1 \
         --format='v%cd' --date='format:%y%m.%d%H%M' 2>/dev/null \
     || echo "$SCRIPT_VERSION_STATIC"
 )
-# Обновляется автоматически Actions при push в main — не редактировать вручную
-SCRIPT_VERSION_STATIC="v2603.210528"
 
 # ═══════════════════════════════════════════════════════════════════
 # ЦВЕТА И ОБЩИЕ УТИЛИТЫ
@@ -101,14 +101,11 @@ confirm() {
     esac
     while true; do
         read -rp "  $prompt $hint: " r < /dev/tty
-        # Убираем пробелы и  (Windows line endings)
-        r="${r//[$'\t\r\n ']/}"
         r="${r:-$default}"
         case "$r" in
             y|Y) return 0 ;;
             n|N) return 1 ;;
-            "")  [ -n "$default" ] || warn "Введите y или n" ;;
-            *)   warn "Введите y или n" ;;
+            *)   [ -z "$r" ] || warn "Введите y или n" ;;
         esac
     done
 }
