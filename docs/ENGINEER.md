@@ -208,37 +208,61 @@ print(json.dumps(json.loads(body).get(\"inbounds\",[]), indent=2))
 Remnawave (user.created/deleted/disabled/enabled)
     │
     ▼ POST http://172.30.0.1:8766/webhook
-    │  Header: X-Remnawave-Signature: <hex(HMAC-SHA256)>
+    │  Header: X-Remnawave-Signature: HMAC-SHA256(body, secret)
     │
-hy-webhook.py (systemd, :8766 на 127.0.0.1)
-    │  1. Verify signature: HMAC-SHA256(body, WEBHOOK_SECRET)
+hy-webhook.py (systemd, :8766 на 0.0.0.0)
+    │  1. Verify: HMAC-SHA256(body, WEBHOOK_SECRET) == X-Remnawave-Signature
     │  2. gen_password(username, secret): sha256(u:s)[:32]
     │  3. update users.json
-    │  4. update /etc/hysteria/config.yaml (userpass block)
-    │  5. systemctl reload-or-restart hysteria-server
+    │  4. _respond(200) — немедленный ответ Remnawave (фоновая обработка)
+    │  5. НЕТ перезапуска hysteria (HTTP auth mode)
     │  6. TTL-кэш URI сбрасывается (_uri_cache.clear())
+    │
+    │  POST /auth (вызывается Hysteria2 при каждом подключении клиента)
+    │  1. body: {"addr": "ip:port", "auth": "username:password", "tx": N}
+    │  2. Читает users.json, проверяет password
+    │  3. Возвращает {"ok": true, "id": username} или {"ok": false}
+    │  Преимущество: пользователи добавляются БЕЗ перезапуска hysteria
     │
     │  GET /uri/:shortUuid (вызывается sub-injector)
     │  1. TTL-кэш: URI_CACHE_TTL (по умолчанию 60 сек)
     │  2. GET {REMNAWAVE_URL}/api/users/by-short-uuid/:uuid
-    │  3. Читает /var/lib/hy-webhook/users.json
+    │     Заголовки: Authorization, X-Forwarded-For, X-Forwarded-Proto
+    │  3. Читает users.json, находит пароль по username
     │  4. Возвращает hy2://username:pass@domain:port?sni=...&alpn=h3
     │  5. 204 если пользователь не найден
     │
-    │  Proxy :3020 (встроенный reverse-proxy)
+    │  Proxy :3020 (встроенный reverse-proxy, PROXY_PORT=0 = выключен)
     │  1. Принимает запросы клиентов
     │  2. Проверяет User-Agent по INJECT_UA_PATTERNS
-    │  3. Если UA совпал + не YAML/JSON → вызывает GET /uri/TOKEN
+    │  3. Если UA совпал + не YAML/JSON → GET /uri/TOKEN
     │  4. Инжектирует hy2:// URI в base64 ответ
     │  5. Проксирует на UPSTREAM_URL (:3010)
 
-    ─── Параллельно: sub-injector (Rust, :3020) ───────────────
-    │  Альтернатива встроенному proxy: читает конфиг config.toml
-    │  [[injections]] с per_user_url = "http://127.0.0.1:8766/uri"
-    │  Инжектор извлекает token из пути /sub/TOKEN
-    │  GET http://127.0.0.1:8766/uri/TOKEN → персональный URI
+sub-injector (Rust/Tokio, :3020)
+    │  Основной proxy — заменяет встроенный Python proxy
+    │  per_user_url = "http://127.0.0.1:8766/uri"
+    │  Извлекает token из пути /TOKEN, GET /uri/TOKEN → URI
 
-nginx sub домен (:3020) → hy-webhook proxy или sub-injector
+nginx sub домен → :3020 (sub-injector или hy-webhook proxy)
+```
+
+### HTTP auth vs userpass — почему это важно
+
+При `userpass` режиме: каждое изменение `config.yaml` требует `systemctl restart hysteria-server`.
+Перезапуск занимает ~1с, но **разрывает все активные QUIC/UDP соединения**.
+Если клиент подключён к панели через Hysteria VPN — браузер теряет связь на 20-30с.
+
+При `http` режиме: hysteria делает `POST /auth` к hy-webhook при каждом новом подключении.
+Пользователи добавляются/удаляются мгновенно, без перезапуска сервиса.
+
+Конфиг `/etc/hysteria/config.yaml`:
+```yaml
+auth:
+  type: http
+  http:
+    url: http://127.0.0.1:8766/auth
+    insecure: false
 ```
 
 ### Два режима proxy: встроенный Python vs sub-injector (Rust)
@@ -495,6 +519,10 @@ git push
 
 | Дата | Решение | Причина |
 |---|---|---|
+| 2026-03-21 | HTTP auth в hysteria вместо userpass | Перезапуск hysteria разрывал VPN соединения на 30с |
+| 2026-03-21 | `POST /auth` эндпоинт в hy-webhook | hysteria проверяет пользователей без перезапуска |
+| 2026-03-21 | `X-Forwarded-For/Proto` в API запросах | Remnawave отклонял запросы без reverse proxy заголовков |
+| 2026-03-21 | `_respond(200)` до фоновой обработки | Remnawave получал ответ через 3-5с вместо мгновенного |
 | 2026-03-21 | `ThreadedHTTPServer` в hy-webhook | Панель зависала на 3-5с при создании пользователя |
 | 2026-03-21 | `reload_hysteria()` в daemon-потоке | HTTP ответ не должен ждать перезапуска Hysteria2 |
 | 2026-03-21 | Заголовок `X-Remnawave-Signature` | Remnawave использует этот заголовок, не `X-Webhook-Signature` |

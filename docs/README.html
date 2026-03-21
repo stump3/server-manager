@@ -216,7 +216,7 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
   </div>
   <div class="nav-group">
     <div class="nav-label">Ещё</div>
-    <a href="https://github.com/stump3/server-manager/blob/main/docs/CHANGELOG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#22c55e"></span> Changelog ↗</a>
+    <a href="https://github.com/stump3/server-manager/blob/main/CHANGELOG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#22c55e"></span> Changelog ↗</a>
     <a href="https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#f59e0b"></span> Для инженеров ↗</a>
     <a href="https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#a78bfa"></span> Конфиг telemt ↗</a>
     <a href="https://github.com/stump3/server-manager" class="nav-link" target="_blank"><span class="nav-dot" style="background:#3d5068"></span> GitHub ↗</a>
@@ -916,11 +916,17 @@ docker logs remnanode --tail=5 | grep "inbounds"
     <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">flow</span></div>
     <pre><span class="tg">Remnawave</span> (user.created / deleted / disabled)
     ↓  POST http://172.30.0.1:8766/webhook
-    ↓  X-Remnawave-Signature: HMAC-SHA256
-<span class="tb">hy-webhook</span> (systemd, :8766, 127.0.0.1)
-    ↓  verify → gen_password → update users.json
-    ↓  update /etc/hysteria/config.yaml
-    ↓  systemctl reload-or-restart hysteria-server
+    ↓  X-Remnawave-Signature: HMAC-SHA256(body, secret)
+<span class="tb">hy-webhook</span> (systemd, :8766, 0.0.0.0)
+    ↓  verify HMAC → gen_password → update users.json
+    ↓  ответ 200 немедленно (обработка в фоне)
+    ↓  НЕТ перезапуска hysteria (HTTP auth mode)
+
+<span class="tg">Hysteria2</span> (при каждом подключении клиента)
+    ↓  POST http://127.0.0.1:8766/auth
+    ↓  {"addr": "...", "auth": "user:pass", "tx": N}
+<span class="tb">hy-webhook</span>  →  проверяет users.json
+    ←  {"ok": true, "id": "username"}
 
 <span class="tw">Клиент (Hiddify/v2rayNG)</span>
     ↓  GET /sub/TOKEN
@@ -932,6 +938,10 @@ docker logs remnanode --tail=5 | grep "inbounds"
     ←  base64 ответ + hy2:// URI
 
 <span class="tw">Клиент (Clash/Sing-Box)</span>  →  YAML конфиг без изменений</pre>
+  </div>
+  <div class="alert al-info">
+    <span class="alert-icon">💡</span>
+    <div><strong>HTTP auth</strong> — пользователи добавляются без перезапуска Hysteria2. Активные VPN соединения не разрываются при изменении списка пользователей.</div>
   </div>
 
   <h3>Требования</h3>
