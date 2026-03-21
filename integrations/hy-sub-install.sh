@@ -536,3 +536,4 @@ echo -e "  • Клиенты Hiddify/v2rayNG получают URI через re
 echo -e "  • Clash/Sing-Box — YAML конфиги проходят без изменений"
 echo -e "  • Существующим пользователям — попросите обновить подписку"
 echo ""
+read -rp "  Нажмите Enter для продолжения..." < /dev/tty 2>/dev/null || true
