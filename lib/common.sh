@@ -21,7 +21,7 @@ SCRIPT_VERSION=$(
     || echo "$SCRIPT_VERSION_STATIC"
 )
 # Обновляется автоматически Actions при push в main — не редактировать вручную
-SCRIPT_VERSION_STATIC="v2603.210526"
+SCRIPT_VERSION_STATIC="v2603.210528"
 
 # ═══════════════════════════════════════════════════════════════════
 # ЦВЕТА И ОБЩИЕ УТИЛИТЫ
