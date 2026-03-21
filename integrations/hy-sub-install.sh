@@ -149,6 +149,7 @@ if $HAS_PORT_HOPPING; then
         *) info "Port Hopping оставлен без изменений" ;;
     esac
 else
+    NEW_RANGE=""
     case "$hop_ch" in
         0) info "Порт оставлен без изменений" ;;
         1) NEW_RANGE="20000-29999" ;;
@@ -160,7 +161,7 @@ else
             ;;
         *) info "Порт оставлен без изменений" ;;
     esac
-    if [ "${hop_ch:-0}" != "0" ]; then
+    if [ -n "$NEW_RANGE" ]; then
         sed -i "s|^listen:.*|listen: 0.0.0.0:${MAIN_PORT},${NEW_RANGE}|" /etc/hysteria/config.yaml
         START_PORT=$(echo "$NEW_RANGE" | cut -d'-' -f1)
         END_PORT=$(echo "$NEW_RANGE" | cut -d'-' -f2)
@@ -443,7 +444,7 @@ echo ""
 # Статус сервисов
 echo -e "  ${BOLD}Статус сервисов:${NC}"
 echo -e "  hy-webhook             $(echo -e "$HW_STATUS")"
-  echo -e "  remna-sub-injector     $(echo -e \"$INJECTOR_STATUS\")"
+echo -e "  remna-sub-injector     $(echo -e \"$INJECTOR_STATUS\")"
 echo -e "  remnawave              $(echo -e "$RW_STATUS")"
 echo ""
 
