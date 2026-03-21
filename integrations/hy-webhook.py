@@ -189,11 +189,13 @@ def get_hy_domain_port():
     return domain, port
 
 def remnawave_get_username(short_uuid):
-    url = f"{REMNAWAVE_URL}/api/users/get-by/short-uuid/{short_uuid}"
+    url = f"{REMNAWAVE_URL}/api/users/by-short-uuid/{short_uuid}"
     try:
         req = urllib.request.Request(url)
         if REMNAWAVE_TOKEN:
             req.add_header("Authorization", f"Bearer {REMNAWAVE_TOKEN}")
+        req.add_header("X-Forwarded-For", "127.0.0.1")
+        req.add_header("X-Forwarded-Proto", "https")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             return (data.get("response") or {}).get("username")
