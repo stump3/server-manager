@@ -1290,6 +1290,14 @@ panel_update_script() {
 
             [ ${#updated_dirs[@]} -gt 0 ] && ok "Обновлены: ${updated_dirs[*]}"
 
+            # Применяем обновлённые интеграции к установленным сервисам
+            local hy_webhook_src="${script_dir}/integrations/hy-webhook.py"
+            if [ -f "$hy_webhook_src" ] && [ -f "/opt/hy-webhook/hy-webhook.py" ]; then
+                cp "$hy_webhook_src" /opt/hy-webhook/hy-webhook.py
+                systemctl restart hy-webhook 2>/dev/null || true
+                ok "hy-webhook обновлён и перезапущен"
+            fi
+
             rm -rf "$tmp_dir"
             ok "Скрипт обновлён → $script_path"
             warn "Перезапустите: bash $script_path"
