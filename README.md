@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ```
 
 [![Docs](https://img.shields.io/badge/docs-интерактивные-3b82f6?style=flat-square)](https://stump3.github.io/server-manager/README.html)
-[![Changelog](https://img.shields.io/badge/changelog-v2.4.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/changelog-v2.6.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md)
 [![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md)
 
 </div>
@@ -331,9 +331,12 @@ URI клиента: `hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3`
 ```
 Remnawave  ──POST /webhook──►  hy-webhook :8766
                                     │
-                            обновляет config.yaml
+                            обновляет users.json
+                                    │  (НЕТ перезапуска hysteria)
                                     │
-                            Hysteria2 reload
+Hysteria2  ──POST /auth──►  hy-webhook :8766
+                                    │  при каждом подключении клиента
+                            проверяет users.json → ok/fail
 
 Клиент (Hiddify/v2rayNG)
     ↓  GET /sub/TOKEN
@@ -345,6 +348,8 @@ remna-sub-injector :3020
 
 Клиент (Clash/Sing-Box)  →  YAML/JSON конфиг без изменений
 ```
+
+> **HTTP auth** — ключевое преимущество: добавление/удаление пользователей не требует перезапуска Hysteria2. Соединения активных клиентов не разрываются.
 
 ### Компоненты
 
