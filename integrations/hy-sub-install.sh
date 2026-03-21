@@ -33,9 +33,17 @@ step() {
 # ── Очистка при ошибке ────────────────────────────────────────────
 cleanup() {
     local line="${1:-?}" cmd="${2:-?}"
-    echo -e "${RED}✗ Ошибка на строке ${line}: ${cmd}${NC}"
-    echo -e "${RED}  Установка прервана${NC}"
+    echo ""
+    echo -e "${RED}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║  ✗  Ошибка — установка прервана                         ║${NC}"
+    echo -e "${RED}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${RED}  Строка ${line}: ${cmd}${NC}"
+    echo ""
+    echo -e "${YELLOW}  Подробности: journalctl -u hy-webhook -n 20 --no-pager${NC}"
+    echo ""
     rm -rf /tmp/hy_patch_*.py 2>/dev/null || true
+    read -rp "  Нажмите Enter для выхода..." < /dev/tty 2>/dev/null || true
     exit 1
 }
 trap 'cleanup $LINENO "$BASH_COMMAND"' ERR
@@ -369,8 +377,8 @@ else
     command -v cargo &>/dev/null || err "cargo не найден после установки Rust"
 
     # Используем локальные исходники если есть, иначе скачиваем
-    local SCRIPT_REPO_DIR; SCRIPT_REPO_DIR="$(dirname "$0")/.."
-    local INJECTOR_SRC="/tmp/sm-sub-injector"
+    SCRIPT_REPO_DIR="$(dirname "$0")/.."
+    INJECTOR_SRC="/tmp/sm-sub-injector"
     rm -rf "$INJECTOR_SRC" && mkdir -p "$INJECTOR_SRC/src"
 
     if [ -f "${SCRIPT_REPO_DIR}/sub-injector/src/main.rs" ]; then
