@@ -13,6 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+export SCRIPT_DIR
 REPO_RAW="https://raw.githubusercontent.com/stump3/server-manager/main"
 REPO_URL="https://github.com/stump3/server-manager"
 INSTALL_DIR="/root/server-manager"
