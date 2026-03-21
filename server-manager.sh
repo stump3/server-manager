@@ -5,8 +5,12 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 #
 # Использование:
-#   bash server-manager.sh
-#   curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
+#   Рекомендуется (полная установка с integrations/ и sub-injector/):
+#     git clone https://github.com/stump3/server-manager /root/server-manager
+#     bash /root/server-manager/server-manager.sh
+#
+#   Быстрый запуск (только основные модули, без integrations/):
+#     curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 #
 set -euo pipefail
 

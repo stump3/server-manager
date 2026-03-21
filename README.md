@@ -62,16 +62,21 @@ server-manager/
 ## Быстрый старт
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
+git clone https://github.com/stump3/server-manager /root/server-manager
+bash /root/server-manager/server-manager.sh
 ```
 
-Или локально:
+Это установит всё в `/root/server-manager/` — модули, интеграции и sub-injector будут рядом со скриптом. Обновление через меню `5) Обновить скрипт` подтянет все изменения из репозитория.
+
+Опционально — симлинк для удобного запуска:
 
 ```bash
-git clone https://github.com/stump3/server-manager
-cd server-manager
-bash server-manager.sh
+ln -sf /root/server-manager/server-manager.sh /usr/local/bin/server-manager
 ```
+
+После чего запускать просто: `server-manager`
+
+> **`curl | bash`** тоже работает, но скачивает только основные модули (`lib/*.sh`). Папки `integrations/` и `sub-injector/` при этом не устанавливаются — они нужны для интеграции Hysteria2 → Remnawave.
 
 ---
 
