@@ -32,6 +32,7 @@ WEBHOOK_SECRET  = os.environ.get("WEBHOOK_SECRET", "")
 HYSTERIA_CONFIG = os.environ.get("HYSTERIA_CONFIG", "/etc/hysteria/config.yaml")
 USERS_DB        = os.environ.get("USERS_DB", "/var/lib/hy-webhook/users.json")
 LISTEN_PORT     = int(os.environ.get("LISTEN_PORT", "8766"))
+LISTEN_HOST     = os.environ.get("LISTEN_HOST", "0.0.0.0")
 HYSTERIA_SVC    = os.environ.get("HYSTERIA_SVC", "hysteria-server")
 REMNAWAVE_URL   = os.environ.get("REMNAWAVE_URL", "http://127.0.0.1:3000")
 REMNAWAVE_TOKEN = os.environ.get("REMNAWAVE_TOKEN", "")
@@ -305,7 +306,7 @@ def process_event(payload):
         if update_hysteria_config(users):
             reload_hysteria()
 
-# ── Webhook сервер (127.0.0.1:8766) ──────────────────────────────
+# ── Webhook сервер (:8766) ──────────────────────────────────────
 
 class WebhookHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -436,7 +437,7 @@ def main():
         log.info("Встроенный proxy отключён (PROXY_PORT=0) — используется внешний sub-injector")
 
     # Webhook сервер в главном потоке
-    server = HTTPServer(("127.0.0.1", LISTEN_PORT), WebhookHandler)
+    server = HTTPServer((LISTEN_HOST, LISTEN_PORT), WebhookHandler)
     log.info("Готов")
     try:
         server.serve_forever()
