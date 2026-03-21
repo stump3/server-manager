@@ -1237,13 +1237,14 @@ panel_update_script() {
         if ! confirm "Обновить до ${remote_ver:-последней версии}?" y; then return; fi
     fi
 
-    # SCRIPT_DIR задан в server-manager.sh и содержит корень репозитория.
-    # Используем его напрямую — BASH_SOURCE[0] внутри модуля указывает на panel.sh.
+    # SCRIPT_DIR экспортируется из server-manager.sh и всегда указывает на корень репо.
+    # Не используем BASH_SOURCE[0] — внутри sourced модуля он указывает на panel.sh.
     local script_path script_dir
-    script_dir="${SCRIPT_DIR:-}"
-    if [ -z "$script_dir" ] || [ ! -d "$script_dir" ]; then
-        # Fallback если SCRIPT_DIR не задан
-        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if [ -n "${SCRIPT_DIR:-}" ] && [ -d "$SCRIPT_DIR" ]; then
+        script_dir="$SCRIPT_DIR"
+    else
+        # Fallback: идём на два уровня вверх от panel.sh (/lib/../)
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
     fi
     script_path="${script_dir}/server-manager.sh"
 
@@ -1293,6 +1294,13 @@ panel_update_script() {
             fi
 
             rm -rf "$tmp_dir"
+
+            # Синхронизируем git чтобы версия обновилась
+            if [ -d "${script_dir}/.git" ]; then
+                git -C "$script_dir" fetch origin --quiet 2>/dev/null || true
+                git -C "$script_dir" reset --hard origin/main --quiet 2>/dev/null || true
+            fi
+
             ok "Скрипт обновлён → $script_path"
             warn "Перезапустите: bash $script_path"
             return 0
