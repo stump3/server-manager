@@ -321,8 +321,9 @@ def process_event(payload):
         changed = handle_user_created(username, users)
     if changed:
         save_users(users)
-        if update_hysteria_config(users):
-            reload_hysteria()
+        # HTTP auth mode: hysteria спрашивает /auth при каждом подключении
+        # перезапуск не нужен — пользователь появится автоматически
+        update_hysteria_config(users)  # обновляем на случай fallback к userpass
 
 # ── Webhook сервер (:8766) ──────────────────────────────────────
 
@@ -341,6 +342,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "hysteria_port":   port,
                 "proxy_port":      PROXY_PORT,
                 "upstream":        UPSTREAM_URL,
+                "auth_mode":       "http",
             }).encode(), "application/json")
             return
 
@@ -358,6 +360,28 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        # ── Hysteria2 HTTP auth endpoint ──────────────────────────────
+        if self.path == "/auth":
+            length = int(self.headers.get("Content-Length", 0))
+            body   = json.loads(self.rfile.read(length))
+            addr   = body.get("addr", "")
+            auth   = body.get("auth", "")
+            # auth format: "username:password"
+            if ":" in auth:
+                username, password = auth.split(":", 1)
+            else:
+                username, password = auth, ""
+            users = load_users()
+            safe = re.sub(r"[^\w\-.]", "_", username)
+            expected = users.get(safe) or users.get(username)
+            if expected and expected == password:
+                log.debug(f"Auth OK: {username} from {addr}")
+                self._respond(200, json.dumps({"ok": True, "id": username}).encode(), "application/json")
+            else:
+                log.debug(f"Auth FAIL: {username} from {addr}")
+                self._respond(200, json.dumps({"ok": False, "id": ""}).encode(), "application/json")
+            return
+
         if self.path != "/webhook":
             self.send_response(404)
             self.end_headers()
