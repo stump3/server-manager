@@ -21,7 +21,7 @@ SCRIPT_VERSION=$(
     || echo "$SCRIPT_VERSION_STATIC"
 )
 # Обновляется автоматически Actions при push в main — не редактировать вручную
-SCRIPT_VERSION_STATIC="v2603.210450"
+SCRIPT_VERSION_STATIC="v2603.210034"
 
 # ═══════════════════════════════════════════════════════════════════
 # ЦВЕТА И ОБЩИЕ УТИЛИТЫ
@@ -101,11 +101,14 @@ confirm() {
     esac
     while true; do
         read -rp "  $prompt $hint: " r < /dev/tty
+        # Убираем пробелы и  (Windows line endings)
+        r="${r//[$'\t\r\n ']/}"
         r="${r:-$default}"
         case "$r" in
             y|Y) return 0 ;;
             n|N) return 1 ;;
-            *)   [ -z "$r" ] || warn "Введите y или n" ;;
+            "")  [ -n "$default" ] || warn "Введите y или n" ;;
+            *)   warn "Введите y или n" ;;
         esac
     done
 }

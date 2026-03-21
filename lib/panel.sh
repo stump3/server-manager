@@ -1238,8 +1238,19 @@ panel_update_script() {
     fi
 
     # Определяем директорию скрипта
+    # $0 может быть "bash" при запуске через "bash script.sh" — используем BASH_SOURCE
     local script_path script_dir
-    script_path=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
+    local _src="${BASH_SOURCE[0]:-}"
+    if [ -n "$_src" ] && [ -f "$_src" ]; then
+        script_path=$(realpath "$_src" 2>/dev/null || readlink -f "$_src" 2>/dev/null || echo "$_src")
+    else
+        # Fallback: ищем server-manager.sh рядом с panel.sh
+        script_path=$(realpath "${BASH_SOURCE[0]%/lib/panel.sh}/server-manager.sh" 2>/dev/null || echo "$0")
+    fi
+    # Финальная проверка — если всё равно получился "bash", берём из SCRIPT_DIR
+    if [ "$(basename "$script_path")" = "bash" ] || [ ! -f "$script_path" ]; then
+        script_path="${SCRIPT_DIR}/server-manager.sh"
+    fi
     script_dir=$(dirname "$script_path")
 
     info "Скачиваем обновление..."
