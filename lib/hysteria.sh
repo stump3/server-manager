@@ -1151,18 +1151,63 @@ hysteria_submenu_users() {
 # ── Интеграция Hysteria2 → Remnawave (webhook + subscription-page) ────────────
 
 hysteria_remnawave_integration() {
-    local script_url="https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh"
-    local tmp; tmp=$(mktemp /tmp/hy-sub-install.XXXXXX.sh)
+    while true; do
+        clear
+        echo ""
+        echo -e "${BOLD}${WHITE}  🪝  Интеграция Hysteria2 → Remnawave${NC}"
+        echo -e "${GRAY}  ────────────────────────────────────────${NC}"
+        echo ""
 
-    info "Скачиваем hy-sub-install.sh..."
-    if ! curl -fsSL "$script_url" -o "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        err "Не удалось скачать hy-sub-install.sh с GitHub"
-        return 1
+        local hw_status inj_status
+        systemctl is-active --quiet hy-webhook 2>/dev/null \
+            && hw_status="${GREEN}● запущен${NC}" \
+            || hw_status="${GRAY}○ не установлен${NC}"
+        systemctl is-active --quiet remna-sub-injector 2>/dev/null \
+            && inj_status="${GREEN}● запущен${NC}" \
+            || inj_status="${GRAY}○ не установлен${NC}"
+        printf "  %-24s %b\\n" "hy-webhook"         "$(echo -e "$hw_status")"
+        printf "  %-24s %b\\n" "remna-sub-injector" "$(echo -e "$inj_status")"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} 🔧  Установить / переустановить"
+        echo -e "  ${BOLD}2)${RESET} 📋  Добавить UA-паттерн клиента"
+        echo -e "  ${BOLD}3)${RESET} 🧵  Многопоточность hy-webhook"
+        echo -e "  ${BOLD}4)${RESET} 🔍  Расширенное логирование"
+        echo -e "  ${BOLD}5)${RESET} 📜  Логи hy-webhook"
+        echo -e "  ${BOLD}6)${RESET} 📜  Логи sub-injector"
+        echo ""
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1) _hy_integration_install ;;
+            2) _hy_integration_add_ua ;;
+            3) _hy_integration_threading ;;
+            4) _hy_integration_debug_log ;;
+            5) journalctl -u hy-webhook -n 50 --no-pager; read -rp "  Enter..." < /dev/tty ;;
+            6) journalctl -u remna-sub-injector -n 50 --no-pager; read -rp "  Enter..." < /dev/tty ;;
+            0) return ;;
+            *) warn "Неверный выбор" ;;
+        esac
+    done
+}
+
+_hy_integration_install() {
+    local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local install_script="${script_dir}/../integrations/hy-sub-install.sh"
+    local cleanup_tmp=false
+
+    if [ ! -f "$install_script" ]; then
+        info "Скачиваем hy-sub-install.sh..."
+        install_script=$(mktemp /tmp/hy-sub-install.XXXXXX.sh)
+        if ! curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh" \
+                -o "$install_script" 2>/dev/null; then
+            err "Не удалось скачать hy-sub-install.sh"
+            return 1
+        fi
+        chmod +x "$install_script"
+        cleanup_tmp=true
     fi
 
-    # Извлекаем данные из конфига и URI-файлов, передаём через env
-    # чтобы hy-sub-install.sh не спрашивал уже известное
     local dom port conn_name uri_file
     dom=$(hy_get_domain 2>/dev/null || true)
     port=$(hy_get_port 2>/dev/null || true)
@@ -1173,20 +1218,137 @@ hysteria_remnawave_integration() {
         [ -n "$conn_name" ] && break
     done
 
-    [ -n "$dom" ]       && info "Передаём домен:    $dom"
-    [ -n "$port" ]      && info "Передаём порт:     $port"
-    [ -n "$conn_name" ] && info "Передаём название: $conn_name"
+    HY_DOMAIN="$dom" HY_PORT="$port" HY_CONN_NAME="$conn_name" HY_CONFIG="$HYSTERIA_CONFIG" \
+        bash "$install_script"
+    [ "$cleanup_tmp" = true ] && rm -f "$install_script"
+}
+
+_hy_integration_add_ua() {
+    local cfg="/opt/remna-sub-injector/config.toml"
+    [ -f "$cfg" ] || { warn "Конфиг sub-injector не найден: $cfg"; return 1; }
+
+    header "Добавить UA-паттерн клиента"
+    echo ""
+    echo -e "  ${GRAY}Текущие паттерны:${NC}"
+    grep "contains" "$cfg" | sed 's/contains = /  /' || true
+    echo ""
+    echo -e "  ${GRAY}Примеры: clash.meta, mihomo, hiddify, v2rayn, singbox${NC}"
+    echo ""
+    read -rp "  Новый паттерн (Enter — отмена): " new_ua < /dev/tty
+    [ -z "$new_ua" ] && return
+
+    if grep -q "\"${new_ua}\"" "$cfg"; then
+        warn "Паттерн '$new_ua' уже есть"
+        read -rp "  Enter..." < /dev/tty
+        return
+    fi
+
+    sed -i "s/contains = \[/contains = [\"${new_ua}\", /" "$cfg"
+    ok "Добавлен паттерн: $new_ua"
+    systemctl restart remna-sub-injector 2>/dev/null && ok "sub-injector перезапущен" || true
+    read -rp "  Enter..." < /dev/tty
+}
+
+_hy_integration_threading() {
+    local py="/opt/hy-webhook/hy-webhook.py"
+    [ -f "$py" ] || { warn "hy-webhook.py не найден"; return 1; }
+
+    header "Многопоточность hy-webhook"
     echo ""
 
-    chmod +x "$tmp"
-    HY_DOMAIN="$dom" \
-    HY_PORT="$port" \
-    HY_CONN_NAME="$conn_name" \
-    HY_CONFIG="$HYSTERIA_CONFIG" \
-    bash "$tmp"
-    local rc=$?
-    rm -f "$tmp"
-    return $rc
+    if grep -q "ThreadedHTTPServer" "$py"; then
+        ok "Многопоточность уже включена"
+        echo ""
+        echo -e "  ${GRAY}Каждый вебхук — отдельный поток.${NC}"
+        echo -e "  ${GRAY}Панель не зависает при перезапуске Hysteria2.${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Выключить (вернуть однопоточный режим)"
+        echo -e "  ${BOLD}0)${RESET} Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        if [ "$ch" = "1" ]; then
+            sed -i 's/ThreadedHTTPServer((LISTEN_HOST/HTTPServer((LISTEN_HOST/' "$py"
+            ok "Многопоточность выключена"
+            systemctl restart hy-webhook && ok "hy-webhook перезапущен"
+        fi
+    else
+        warn "Многопоточность выключена"
+        echo ""
+        echo -e "  ${GRAY}При однопоточном режиме панель зависает на ~3с при создании${NC}"
+        echo -e "  ${GRAY}пользователя пока Hysteria2 перезапускается.${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Включить многопоточность"
+        echo -e "  ${BOLD}0)${RESET} Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        if [ "$ch" = "1" ]; then
+            python3 - << 'PYEOF'
+path = '/opt/hy-webhook/hy-webhook.py'
+with open(path) as f:
+    c = f.read()
+if 'ThreadingMixIn' not in c:
+    c = c.replace(
+        'from http.server import BaseHTTPRequestHandler, HTTPServer',
+        'from http.server import BaseHTTPRequestHandler, HTTPServer\nfrom socketserver import ThreadingMixIn\n\nclass ThreadedHTTPServer(ThreadingMixIn, HTTPServer):\n    daemon_threads = True'
+    )
+c = c.replace(
+    'server = HTTPServer((LISTEN_HOST, LISTEN_PORT), WebhookHandler)',
+    'server = ThreadedHTTPServer((LISTEN_HOST, LISTEN_PORT), WebhookHandler)'
+)
+with open(path, 'w') as f:
+    f.write(c)
+print("ok")
+PYEOF
+            systemctl restart hy-webhook && ok "hy-webhook перезапущен с многопоточностью"
+        fi
+    fi
+    read -rp "  Enter..." < /dev/tty
+}
+
+_hy_integration_debug_log() {
+    local env_file="/etc/hy-webhook.env"
+    [ -f "$env_file" ] || { warn "Файл $env_file не найден"; return 1; }
+
+    header "Расширенное логирование hy-webhook"
+    echo ""
+
+    local current; current=$(grep "^DEBUG_LOG=" "$env_file" 2>/dev/null | cut -d= -f2 || echo "0")
+    if [ "$current" = "1" ]; then
+        echo -e "  ${GREEN}● Расширенное логирование включено${NC}"
+        echo -e "  ${GRAY}  journalctl -u hy-webhook -f${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Выключить"
+    else
+        echo -e "  ${GRAY}○ Расширенное логирование выключено${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Включить"
+        echo -e "  ${GRAY}    Показывает: входящие запросы, URI кэш, детали верификации${NC}"
+    fi
+    echo ""
+    echo -e "  ${BOLD}0)${RESET} Назад"
+    echo ""
+    local ch; read -rp "  Выбор: " ch < /dev/tty
+    [ "$ch" != "1" ] && return
+
+    if [ "$current" = "1" ]; then
+        if grep -q "^DEBUG_LOG=" "$env_file"; then
+            sed -i "s/^DEBUG_LOG=.*/DEBUG_LOG=0/" "$env_file"
+        else
+            echo "DEBUG_LOG=0" >> "$env_file"
+        fi
+        ok "Расширенное логирование выключено"
+    else
+        if grep -q "^DEBUG_LOG=" "$env_file"; then
+            sed -i "s/^DEBUG_LOG=.*/DEBUG_LOG=1/" "$env_file"
+        else
+            echo "DEBUG_LOG=1" >> "$env_file"
+        fi
+        ok "Расширенное логирование включено"
+    fi
+    systemctl restart hy-webhook && ok "hy-webhook перезапущен"
+    echo ""
+    echo -e "  ${GRAY}Смотреть логи: journalctl -u hy-webhook -f${NC}"
+    read -rp "  Enter..." < /dev/tty
 }
 
 
