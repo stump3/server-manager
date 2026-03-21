@@ -1,0 +1,44 @@
+name: Update version
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'lib/common.sh'   # не запускаем если сами же обновили common.sh
+
+permissions:
+  contents: write
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Generate version from commit date
+        id: version
+        run: |
+          VERSION="v$(git log -1 --format='%cd' --date='format:%y%m.%d%H%M')"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Update SCRIPT_VERSION_STATIC in common.sh
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/^SCRIPT_VERSION_STATIC=.*/SCRIPT_VERSION_STATIC=\"${VERSION}\"/" lib/common.sh
+          grep "SCRIPT_VERSION_STATIC" lib/common.sh
+
+      - name: Commit updated version
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet lib/common.sh || {
+            git add lib/common.sh
+            git commit -m "chore: update version to ${{ steps.version.outputs.version }} [skip ci]"
+            git push
+          }
