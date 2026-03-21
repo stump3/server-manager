@@ -290,10 +290,11 @@ per_user_url = "http://127.0.0.1:8766/uri"
 
 | Переменная | Значение по умолчанию | Описание |
 |---|---|---|
-| `WEBHOOK_SECRET` | hex64 | HMAC-SHA256 ключ подписи |
+| `WEBHOOK_SECRET` | hex64 | Ключ для HMAC-SHA256 верификации подписи |
 | `HYSTERIA_CONFIG` | `/etc/hysteria/config.yaml` | Путь к конфигу |
 | `USERS_DB` | `/var/lib/hy-webhook/users.json` | База пользователей |
-| `LISTEN_PORT` | `8766` | Порт webhook-сервера (127.0.0.1) |
+| `LISTEN_PORT` | `8766` | Порт webhook-сервера |
+| `LISTEN_HOST` | `0.0.0.0` | Интерфейс (0.0.0.0 для доступа из Docker) |
 | `HYSTERIA_SVC` | `hysteria-server` | Имя systemd сервиса |
 | `REMNAWAVE_URL` | `http://127.0.0.1:3000` | URL Remnawave API |
 | `REMNAWAVE_TOKEN` | — | API токен для `/uri/:shortUuid` |
@@ -301,9 +302,31 @@ per_user_url = "http://127.0.0.1:8766/uri"
 | `HY_PORT` | `8443` | Порт Hysteria2 (в URI) |
 | `HY_NAME` | `Hysteria2` | Название в URI |
 | `URI_CACHE_TTL` | `60` | TTL кэша URI в секундах |
-| `PROXY_PORT` | `3020` | Порт встроенного proxy |
+| `PROXY_PORT` | `3020` | Порт встроенного proxy (0 = отключить) |
 | `UPSTREAM_URL` | `http://127.0.0.1:3010` | Upstream subscription-page |
-| `INJECT_UA_PATTERNS` | `hiddify,happ,...` | UA паттерны для инъекции |
+| `INJECT_UA_PATTERNS` | `hiddify,happ,...` | UA паттерны для встроенного proxy |
+| `DEBUG_LOG` | — | `1` для уровня DEBUG в journalctl |
+
+### Многопоточность и блокировка
+
+hy-webhook использует `ThreadingMixIn + HTTPServer` (`ThreadedHTTPServer`) — каждый входящий запрос обрабатывается в отдельном потоке. Это критично потому что:
+
+1. Remnawave шлёт вебхук и ждёт HTTP ответ (таймаут ~5с)
+2. После получения вебхука hy-webhook перезапускает Hysteria2 (`systemctl reload-or-restart`) — это занимает 2-4с
+3. При однопоточном сервере следующий запрос ждёт пока предыдущий не завершится → панель зависает
+
+Перезапуск Hysteria2 выполняется в daemon-потоке (`threading.Thread(daemon=True)`) — HTTP ответ `200 ok` отправляется сразу, не дожидаясь завершения перезапуска.
+
+### Верификация подписи Remnawave
+
+Remnawave отправляет подпись в заголовке `X-Remnawave-Signature` как `HMAC-SHA256(request_body, WEBHOOK_SECRET_HEADER)`. Значение `WEBHOOK_SECRET_HEADER` из `.env` панели используется как ключ HMAC.
+
+```python
+expected = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+hmac.compare_digest(expected, signature.lower())
+```
+
+**Важно:** `WEBHOOK_SECRET` в `/etc/hy-webhook.env` должен совпадать с `WEBHOOK_SECRET_HEADER` в `/opt/remnawave/.env`.
 
 ---
 
@@ -472,6 +495,11 @@ git push
 
 | Дата | Решение | Причина |
 |---|---|---|
+| 2026-03-21 | `ThreadedHTTPServer` в hy-webhook | Панель зависала на 3-5с при создании пользователя |
+| 2026-03-21 | `reload_hysteria()` в daemon-потоке | HTTP ответ не должен ждать перезапуска Hysteria2 |
+| 2026-03-21 | Заголовок `X-Remnawave-Signature` | Remnawave использует этот заголовок, не `X-Webhook-Signature` |
+| 2026-03-21 | HMAC-SHA256 верификация | Remnawave подписывает body через HMAC, не plain-text |
+| 2026-03-21 | `LISTEN_HOST=0.0.0.0` в hy-webhook | Docker не мог достучаться до `127.0.0.1:8766` хоста |
 | 2026-03-21 | sub-injector (Rust) вместо форка TypeScript | Форк ломался при каждом обновлении upstream subscription-page |
 | 2026-03-21 | `GET /uri/:shortUuid` в hy-webhook + TTL-кэш | sub-injector запрашивает персональный URI для каждого токена |
 | 2026-03-21 | Встроенный proxy :3020 в hy-webhook | Запасной вариант без установки sub-injector |
