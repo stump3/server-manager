@@ -32,13 +32,13 @@ step() {
 
 # ── Очистка при ошибке ────────────────────────────────────────────
 cleanup() {
-    echo -e "${RED}✗ Ошибка на строке $LINENO — установка прервана${NC}"
-    rm -rf /opt/hy-subpage /tmp/hy_patch_*.py 2>/dev/null || true
-    systemctl is-active --quiet hy-webhook 2>/dev/null || \
-        systemctl stop hy-webhook 2>/dev/null || true
+    local line="${1:-?}" cmd="${2:-?}"
+    echo -e "${RED}✗ Ошибка на строке ${line}: ${cmd}${NC}"
+    echo -e "${RED}  Установка прервана${NC}"
+    rm -rf /tmp/hy_patch_*.py 2>/dev/null || true
     exit 1
 }
-trap cleanup ERR
+trap 'cleanup $LINENO "$BASH_COMMAND"' ERR
 
 # ── Проверки ──────────────────────────────────────────────────────
 [ "$(id -u)" -ne 0 ] && err "Запустите от root"
@@ -195,6 +195,7 @@ step "Установка hy-webhook"
 
 mkdir -p /opt/hy-webhook /var/lib/hy-webhook
 
+# Копируем hy-webhook.py ПЕРВЫМ — до записи env и перезапуска сервиса
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${SCRIPT_DIR}/hy-webhook.py" ]; then
     cp "${SCRIPT_DIR}/hy-webhook.py" /opt/hy-webhook/hy-webhook.py
@@ -204,7 +205,7 @@ elif [ -f /root/hy-webhook.py ]; then
     info "Используется /root/hy-webhook.py"
 else
     info "Скачиваем hy-webhook.py с GitHub..."
-    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/hy-webhook.py" \
+    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-webhook.py" \
         -o /opt/hy-webhook/hy-webhook.py \
         || err "Не удалось скачать hy-webhook.py"
 fi
@@ -221,6 +222,14 @@ else
     info "Webhook secret сгенерирован"
 fi
 
+# Если sub-injector уже установлен — отключаем встроенный proxy (PROXY_PORT=0)
+# hy-webhook.py поддерживает PROXY_PORT=0 как флаг отключения встроенного proxy
+_PROXY_PORT=3020
+systemctl is-active --quiet remna-sub-injector 2>/dev/null && _PROXY_PORT=0 || true
+
+# Экранируем значения с пробелами/спецсимволами через printf
+_HY_NAME_ESC=$(printf '%s' "${HY_NAME}" | sed "s/'/'\\''/g")
+
 cat > "$SECRETS_FILE" << SECRETEOF
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
 HYSTERIA_CONFIG=/etc/hysteria/config.yaml
@@ -231,9 +240,9 @@ REMNAWAVE_URL=http://127.0.0.1:3000
 REMNAWAVE_TOKEN=${REMNAWAVE_API_TOKEN:-}
 HY_DOMAIN=${HY_DOMAIN}
 HY_PORT=${HY_PORT}
-HY_NAME=${HY_NAME}
+HY_NAME=${_HY_NAME_ESC}
 URI_CACHE_TTL=60
-PROXY_PORT=3020
+PROXY_PORT=${_PROXY_PORT}
 UPSTREAM_URL=http://127.0.0.1:3010
 SECRETEOF
 chmod 600 "$SECRETS_FILE"
@@ -421,6 +430,13 @@ SVCEOF
 
 systemctl daemon-reload
 systemctl enable --now remna-sub-injector
+
+# sub-injector занял :3020 — отключаем встроенный proxy в hy-webhook
+if grep -q "^PROXY_PORT=3020" /etc/hy-webhook.env 2>/dev/null; then
+    sed -i "s/^PROXY_PORT=.*/PROXY_PORT=0/" /etc/hy-webhook.env
+    systemctl is-active --quiet hy-webhook && systemctl restart hy-webhook || true
+    ok "hy-webhook: встроенный proxy отключён (sub-injector занял :3020)"
+fi
 
 for i in $(seq 1 10); do
     systemctl is-active --quiet remna-sub-injector && break || sleep 1
