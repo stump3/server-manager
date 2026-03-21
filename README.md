@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ```
 
 [![Docs](https://img.shields.io/badge/docs-интерактивные-3b82f6?style=flat-square)](https://stump3.github.io/server-manager/README.html)
-[![Changelog](https://img.shields.io/badge/changelog-v2.4.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/docs/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/changelog-v2.4.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/CHANGELOG.md)
 [![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md)
 
 </div>
