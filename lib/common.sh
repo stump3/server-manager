@@ -59,10 +59,21 @@ err()     { echo -e "\n${RED}  ✗  $*${NC}\n"; exit 1; }
 die()     { echo -e "${RED}  ✗  $*${NC}" >&2; exit 1; }
 detail()  { echo -e "${GRAY}    $*${NC}"; }
 
-# Шаг установки: ── [N] Название ──
+# Шаг установки с прогресс-баром
+# Использует STEP_NUM и TOTAL_STEPS если заданы
 step() {
     echo ""
-    echo -e "${BOLD}${CYAN}  ── $* ──${NC}"
+    if [ -n "${TOTAL_STEPS:-}" ] && [ "${TOTAL_STEPS:-0}" -gt 0 ]; then
+        local _done=$(( STEP_NUM ))
+        local _left=$(( TOTAL_STEPS - STEP_NUM ))
+        local _bar=""
+        local i
+        for (( i=0; i<_done; i++ )); do _bar+="●"; done
+        for (( i=0; i<_left; i++ )); do _bar+="○"; done
+        echo -e "${GRAY}  ${_bar}  ${BOLD}${CYAN}$*${NC}"
+    else
+        echo -e "${BOLD}${CYAN}  ── $* ──${NC}"
+    fi
     echo ""
 }
 
@@ -314,7 +325,7 @@ _main_menu_refresh_status() {
 
     # ── Remnawave Panel ──────────────────────────────────────────
     if echo "$ps_out" | grep -q "^remnawave$"; then
-        _PANEL_STATUS="${GREEN}●${NC} запущена${rw_ver:+  ${GRAY}${rw_ver}${NC}}"
+        _PANEL_STATUS="${GREEN}●${NC} запущена${rw_ver:+  ${GRAY}${rw_ver#v}${NC}}"
     elif [ -d /opt/remnawave ]; then
         _PANEL_STATUS="${YELLOW}◐${NC} остановлена"
     else
@@ -334,7 +345,7 @@ _main_menu_refresh_status() {
 
     # ── Hysteria2 ────────────────────────────────────────────────
     if hy_is_running 2>/dev/null; then
-        _HYSTERIA_STATUS="${GREEN}●${NC} запущена${hy_ver:+  ${GRAY}${hy_ver}${NC}}"
+        _HYSTERIA_STATUS="${GREEN}●${NC} запущена${hy_ver:+  ${GRAY}${hy_ver#v}${NC}}"
     elif hy_is_installed 2>/dev/null; then
         _HYSTERIA_STATUS="${YELLOW}◐${NC} остановлена"
     else
@@ -351,15 +362,16 @@ main_menu() {
         echo -e "${BOLD}${PURPLE}  SERVER-MANAGER${NC}${GRAY}  ${SCRIPT_VERSION}${NC}"
         echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
         echo ""
-        echo -e "  ${GRAY}Remnawave Panel  ${NC}$(echo -e "$_PANEL_STATUS")"
-        echo -e "  ${GRAY}MTProxy (telemt) ${NC}$(echo -e "$_TELEMT_STATUS")"
-        echo -e "  ${GRAY}Hysteria2        ${NC}$(echo -e "$_HYSTERIA_STATUS")"
+        printf "  %-9s %b\n" "Remnawave" "$(echo -e "$_PANEL_STATUS")"
+        printf "  %-9s %b\n" "MTProxy"   "$(echo -e "$_TELEMT_STATUS")"
+        printf "  %-9s %b\n" "Hysteria2" "$(echo -e "$_HYSTERIA_STATUS")"
         echo ""
         echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
         echo ""
-        echo -e "  ${BOLD}1)${RESET}  🛡️  Remnawave Panel"
+        echo -e "  ${BOLD}1)${RESET}  🛡️  Remnawave"
         echo -e "  ${BOLD}2)${RESET}  📡  MTProxy (telemt)"
         echo -e "  ${BOLD}3)${RESET}  🚀  Hysteria2"
+        echo ""
         echo -e "  ${BOLD}4)${RESET}  📦  Перенос"
         echo ""
         echo -e "  ${BOLD}5)${RESET}  🔄  Обновить скрипт"

@@ -74,7 +74,9 @@ panel_get_cert_domain() {
 }
 
 panel_install() {
+    STEP_NUM=0; TOTAL_STEPS=5
     step "Установка Remnawave Panel"
+    STEP_NUM=1
     check_root
 
     # ── Сбор данных ──────────────────────────────────────────────
@@ -126,6 +128,7 @@ panel_install() {
     check_dns "$SELFSTEAL_DOMAIN" || warn "Проверьте DNS для $SELFSTEAL_DOMAIN"
 
     # ── Зависимости ──────────────────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "Зависимости"
     [ ! -f /swapfile ] && {
         fallocate -l 2G /swapfile && chmod 600 /swapfile
@@ -162,6 +165,7 @@ panel_install() {
     ok "UFW настроен"
 
     # ── SSL ──────────────────────────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "SSL сертификаты"
     case $CERT_METHOD in
         1)
@@ -221,6 +225,7 @@ EOF
     ok "Сертификаты и автообновление настроены"
 
     # ── Генерация конфигурации ───────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "Генерация конфигурации"
     mkdir -p /opt/remnawave && cd /opt/remnawave
 
@@ -672,6 +677,7 @@ HTMLEOF
     ok "Продолжаем установку"
 
     # ── Запуск и автоконфигурация ────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "Запуск и автоконфигурация"
     cd /opt/remnawave
     [ "$MODE" = "1" ] && ufw allow from 172.30.0.0/16 to any port 2222 proto tcp >/dev/null 2>&1

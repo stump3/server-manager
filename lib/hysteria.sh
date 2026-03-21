@@ -74,7 +74,9 @@ hy_get_domain_port() {
 
 # ── Установка ─────────────────────────────────────────────────────
 hysteria_install() {
+    STEP_NUM=0; TOTAL_STEPS=5
     step "Установка / Переустановка Hysteria2"
+    STEP_NUM=1
 
     # ── Переустановка ──────────────────────────────────────────────
     if hy_is_installed; then
@@ -296,10 +298,12 @@ HTML
     fi
 
     # ── Зависимости ────────────────────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "Установка зависимостей"
     apt-get update -y -q && apt-get install -y -q curl ca-certificates openssl qrencode dnsutils
 
     # ── Проверка DNS ───────────────────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "Проверка DNS"
     local server_ip domain_ips
     server_ip=$(hy_get_public_ip || true)
@@ -317,12 +321,14 @@ HTML
     fi
 
     # ── Установка бинарника ────────────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "Установка Hysteria2"
     bash <(curl -fsSL https://get.hy2.sh/) || { err "Ошибка установки"; return 1; }
     command -v hysteria &>/dev/null || { err "Бинарник hysteria не найден"; return 1; }
     ok "Hysteria2 установлен: $(hysteria version 2>/dev/null | grep Version | awk '{print $2}')"
 
     # ── Конфиг ────────────────────────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
     step "Запись конфигурации"
     install -d -m 0755 "$HYSTERIA_DIR"
     local acme_email_line=""
@@ -1158,15 +1164,41 @@ hysteria_remnawave_integration() {
         echo -e "${GRAY}  ────────────────────────────────────────${NC}"
         echo ""
 
-        local hw_status inj_status
-        systemctl is-active --quiet hy-webhook 2>/dev/null \
-            && hw_status="${GREEN}● запущен${NC}" \
-            || hw_status="${GRAY}○ не установлен${NC}"
-        systemctl is-active --quiet remna-sub-injector 2>/dev/null \
-            && inj_status="${GREEN}● запущен${NC}" \
-            || inj_status="${GRAY}○ не установлен${NC}"
-        printf "  %-24s %b\\n" "hy-webhook"         "$(echo -e "$hw_status")"
-        printf "  %-24s %b\\n" "remna-sub-injector" "$(echo -e "$inj_status")"
+        # Режим auth hysteria
+        local auth_mode="userpass"
+        [ -f "$HYSTERIA_CONFIG" ] && grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && auth_mode="http"
+
+        # hy-webhook статус с деталями
+        local hw_status hw_detail=""
+        if systemctl is-active --quiet hy-webhook 2>/dev/null; then
+            local hw_port; hw_port=$(grep "^LISTEN_PORT=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2)
+            local hw_users; hw_users=$(python3 -c "import json; d=json.load(open('/var/lib/hy-webhook/users.json')); print(len(d))" 2>/dev/null || echo "?")
+            hw_detail="${GRAY}  :${hw_port:-8766}  ${hw_users} users${NC}"
+            hw_status="${GREEN}●${NC}"
+        else
+            hw_status="${GRAY}○${NC}"
+        fi
+
+        # sub-injector статус с деталями
+        local inj_status inj_detail=""
+        if systemctl is-active --quiet remna-sub-injector 2>/dev/null; then
+            local inj_cfg="/opt/remna-sub-injector/config.toml"
+            local inj_port; inj_port=$(grep "^bind_addr" "$inj_cfg" 2>/dev/null | grep -oE '[0-9]+$')
+            inj_detail="${GRAY}  :${inj_port:-3020}${NC}"
+            [ "$auth_mode" = "http" ] && inj_detail+="${GRAY}  no-restart${NC}"
+            inj_status="${GREEN}●${NC}"
+        else
+            inj_status="${GRAY}○${NC}"
+        fi
+
+        printf "  %-12s %b%b\n" "hy-webhook"   "$(echo -e "$hw_status")"  "$(echo -e "$hw_detail")"
+        printf "  %-12s %b%b\n" "sub-injector" "$(echo -e "$inj_status")" "$(echo -e "$inj_detail")"
+        echo ""
+        local auth_badge
+        [ "$auth_mode" = "http" ] \
+            && auth_badge="${GREEN}http${NC} ${GRAY}— без перезапуска${NC}" \
+            || auth_badge="${YELLOW}userpass${NC} ${GRAY}— перезапуск при изменениях${NC}"
+        echo -e "  ${GRAY}hysteria auth  ${NC}$(echo -e "$auth_badge")"
         echo ""
         # Определяем текущий режим auth
         local auth_mode="userpass"
