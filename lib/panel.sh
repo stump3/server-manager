@@ -1237,21 +1237,15 @@ panel_update_script() {
         if ! confirm "Обновить до ${remote_ver:-последней версии}?" y; then return; fi
     fi
 
-    # Определяем директорию скрипта
-    # $0 может быть "bash" при запуске через "bash script.sh" — используем BASH_SOURCE
+    # SCRIPT_DIR задан в server-manager.sh и содержит корень репозитория.
+    # Используем его напрямую — BASH_SOURCE[0] внутри модуля указывает на panel.sh.
     local script_path script_dir
-    local _src="${BASH_SOURCE[0]:-}"
-    if [ -n "$_src" ] && [ -f "$_src" ]; then
-        script_path=$(realpath "$_src" 2>/dev/null || readlink -f "$_src" 2>/dev/null || echo "$_src")
-    else
-        # Fallback: ищем server-manager.sh рядом с panel.sh
-        script_path=$(realpath "${BASH_SOURCE[0]%/lib/panel.sh}/server-manager.sh" 2>/dev/null || echo "$0")
+    script_dir="${SCRIPT_DIR:-}"
+    if [ -z "$script_dir" ] || [ ! -d "$script_dir" ]; then
+        # Fallback если SCRIPT_DIR не задан
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     fi
-    # Финальная проверка — если всё равно получился "bash", берём из SCRIPT_DIR
-    if [ "$(basename "$script_path")" = "bash" ] || [ ! -f "$script_path" ]; then
-        script_path="${SCRIPT_DIR}/server-manager.sh"
-    fi
-    script_dir=$(dirname "$script_path")
+    script_path="${script_dir}/server-manager.sh"
 
     info "Скачиваем обновление..."
     local tmp_dir; tmp_dir=$(mktemp -d)
