@@ -354,7 +354,9 @@ mkdir -p "$INJECTOR_DIR"
 
 # ── Скачиваем бинарник из releases stump3/server-manager ─────────
 info "Скачиваем sub-injector..."
-if curl -fsSL "$INJECTOR_URL" -o "$INJECTOR_BIN" 2>/dev/null; then
+if curl -fsSL "$INJECTOR_URL" -o "${INJECTOR_BIN}.new" 2>/dev/null; then
+    systemctl stop remna-sub-injector 2>/dev/null || true
+    mv "${INJECTOR_BIN}.new" "$INJECTOR_BIN"
     chmod +x "$INJECTOR_BIN"
     ok "sub-injector установлен: $INJECTOR_BIN"
 else
@@ -396,6 +398,7 @@ else
         err "Сборка sub-injector завершилась с ошибкой"
     fi
     [ -f "target/release/sub-injector" ] || err "Бинарник не найден после сборки"
+    systemctl stop remna-sub-injector 2>/dev/null || true
     cp target/release/sub-injector "$INJECTOR_BIN"
     chmod +x "$INJECTOR_BIN"
     ok "sub-injector собран из исходников"
