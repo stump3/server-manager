@@ -15,7 +15,7 @@ export DEBIAN_FRONTEND=noninteractive
 # Версия обновляется автоматически при каждом сохранении файла
 # Версия — дата последнего коммита. Обновляется автоматически
 # через GitHub Actions (update-version.yml) при каждом push в main.
-SCRIPT_VERSION_STATIC="v2603.210641"
+SCRIPT_VERSION_STATIC="v2603.210642"
 # Обновляется автоматически Actions при push в main — не редактировать вручную
 SCRIPT_VERSION=$(
     git -C "$(dirname "${BASH_SOURCE[0]:-$0}")" log -1 \
