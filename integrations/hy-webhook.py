@@ -26,6 +26,11 @@ import time
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Многопоточный HTTP сервер — каждый запрос в отдельном потоке."""
+    daemon_threads = True
 
 # ── Конфиг ────────────────────────────────────────────────────────
 WEBHOOK_SECRET  = os.environ.get("WEBHOOK_SECRET", "")
@@ -40,6 +45,7 @@ HY_DOMAIN       = os.environ.get("HY_DOMAIN", "")
 HY_PORT         = os.environ.get("HY_PORT", "8443")
 HY_NAME         = os.environ.get("HY_NAME", "Hysteria2")
 URI_CACHE_TTL   = int(os.environ.get("URI_CACHE_TTL", "60"))
+DEBUG_LOG       = os.environ.get("DEBUG_LOG", "")       # "1" для расширенного логирования
 
 # Proxy настройки
 PROXY_PORT      = int(os.environ.get("PROXY_PORT", "3020"))
@@ -55,8 +61,9 @@ INJECT_UA_PATTERNS = [
     if p.strip()
 ]
 
+_LOG_LEVEL = logging.DEBUG if os.environ.get("DEBUG_LOG", "").lower() in ("1", "true", "yes") else logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
+    level=_LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -110,17 +117,20 @@ def gen_password(username):
     return hashlib.sha256(f"{username}:{WEBHOOK_SECRET}".encode()).hexdigest()[:32]
 
 def reload_hysteria():
-    try:
-        r = subprocess.run(
-            ["systemctl", "reload-or-restart", HYSTERIA_SVC],
-            capture_output=True, text=True, timeout=10
-        )
-        if r.returncode == 0:
-            log.info("Hysteria2 перезапущен")
-        else:
-            log.warning(f"Ошибка перезапуска: {r.stderr}")
-    except Exception as e:
-        log.error(f"Не удалось перезапустить hysteria: {e}")
+    """Перезапускает hysteria в фоне — не блокирует HTTP ответ вебхуку"""
+    def _do():
+        try:
+            r = subprocess.run(
+                ["systemctl", "reload-or-restart", HYSTERIA_SVC],
+                capture_output=True, text=True, timeout=15
+            )
+            if r.returncode == 0:
+                log.info("Hysteria2 перезапущен")
+            else:
+                log.warning(f"Ошибка перезапуска: {r.stderr}")
+        except Exception as e:
+            log.error(f"Не удалось перезапустить hysteria: {e}")
+    threading.Thread(target=_do, daemon=True).start()
 
 def update_hysteria_config(users):
     try:
@@ -354,7 +364,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", 0))
         body   = self.rfile.read(length)
-        sig    = self.headers.get("X-Webhook-Signature", "")
+        sig    = self.headers.get("X-Remnawave-Signature", "")
         if WEBHOOK_SECRET and not verify_signature(body, sig):
             log.warning("Неверная подпись")
             self.send_response(401)
@@ -445,7 +455,7 @@ def main():
         log.info("Встроенный proxy отключён (PROXY_PORT=0) — используется внешний sub-injector")
 
     # Webhook сервер в главном потоке
-    server = HTTPServer((LISTEN_HOST, LISTEN_PORT), WebhookHandler)
+    server = ThreadedHTTPServer((LISTEN_HOST, LISTEN_PORT), WebhookHandler)
     log.info("Готов")
     try:
         server.serve_forever()
