@@ -496,9 +496,9 @@ echo ""
 
 # Статус сервисов
 echo -e "  ${BOLD}Статус сервисов:${NC}"
-echo -e "  hy-webhook             $(echo -e "$HW_STATUS")"
-echo -e "  remna-sub-injector     $(echo -e \"$INJECTOR_STATUS\")"
-echo -e "  remnawave              $(echo -e "$RW_STATUS")"
+printf "  %-24s %b\n" "hy-webhook"           "$(echo -e "$HW_STATUS")"
+printf "  %-24s %b\n" "remna-sub-injector"   "$(echo -e "$INJECTOR_STATUS")"
+printf "  %-24s %b\n" "remnawave"            "$(echo -e "$RW_STATUS")"
 echo ""
 
 # Конфигурация
