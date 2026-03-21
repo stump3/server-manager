@@ -533,14 +533,24 @@ hysteria_delete_user() {
     header "Hysteria2 — Удалить пользователя"
     [ -f "$HYSTERIA_CONFIG" ] || { warn "Конфиг не найден"; return 1; }
 
+    # Читаем пользователей из users.json (HTTP auth) или из config.yaml (userpass)
     local -a users=()
-    while IFS= read -r line; do
-        local u; u=$(echo "$line" | sed 's/:.*//' | tr -d ' ')
-        [ -n "$u" ] && users+=("$u")
-    done < <(awk '/^  userpass:/,/^[^ ]/' "$HYSTERIA_CONFIG" | grep -E "^    [^:]+:")
+    local _users_db="/var/lib/hy-webhook/users.json"
+    if [ -f "$_users_db" ] && python3 -c "import json; json.load(open('$_users_db'))" 2>/dev/null; then
+        while IFS= read -r u; do
+            [ -n "$u" ] && users+=("$u")
+        done < <(python3 -c "import json; [print(u) for u in json.load(open('$_users_db'))]" 2>/dev/null)
+    fi
+    # Fallback: читаем из userpass блока в конфиге
+    if [ ${#users[@]} -eq 0 ]; then
+        while IFS= read -r line; do
+            local u; u=$(echo "$line" | sed 's/:.*//' | tr -d ' ')
+            [ -n "$u" ] && users+=("$u")
+        done < <(awk '/^  userpass:/,/^[^ ]/' "$HYSTERIA_CONFIG" | grep -E "^    [^:]+:")
+    fi
 
     if [ ${#users[@]} -eq 0 ]; then
-        warn "Пользователи не найдены в конфиге"; return 1
+        warn "Пользователи не найдены"; return 1
     fi
 
     echo -e "  ${WHITE}Выберите пользователя для удаления:${NC}"
@@ -834,14 +844,24 @@ hysteria_show_links() {
     dom=$(hy_get_domain)
     port=$(hy_get_port)
 
+    # Читаем пользователей из users.json (HTTP auth) или из config.yaml (userpass)
     local -a users=()
-    while IFS= read -r line; do
-        local u; u=$(echo "$line" | sed 's/:.*//' | tr -d ' ')
-        [ -n "$u" ] && users+=("$u")
-    done < <(awk '/^  userpass:/,/^[^ ]/' "$HYSTERIA_CONFIG" | grep -E "^    [^:]+:")
+    local _users_db="/var/lib/hy-webhook/users.json"
+    if [ -f "$_users_db" ] && python3 -c "import json; json.load(open('$_users_db'))" 2>/dev/null; then
+        while IFS= read -r u; do
+            [ -n "$u" ] && users+=("$u")
+        done < <(python3 -c "import json; [print(u) for u in json.load(open('$_users_db'))]" 2>/dev/null)
+    fi
+    # Fallback: читаем из userpass блока в конфиге
+    if [ ${#users[@]} -eq 0 ]; then
+        while IFS= read -r line; do
+            local u; u=$(echo "$line" | sed 's/:.*//' | tr -d ' ')
+            [ -n "$u" ] && users+=("$u")
+        done < <(awk '/^  userpass:/,/^[^ ]/' "$HYSTERIA_CONFIG" | grep -E "^    [^:]+:")
+    fi
 
     if [ ${#users[@]} -eq 0 ]; then
-        warn "Пользователи не найдены в конфиге"; return 1
+        warn "Пользователи не найдены"; return 1
     fi
 
     echo -e "  ${WHITE}Выберите пользователя:${NC}"
@@ -861,17 +881,25 @@ hysteria_show_links() {
     fi
 
     local selected="${users[$((ch-1))]}"
-    local pass
-    # Python-парсинг надёжнее sed — не ломается на спецсимволах (: # " в пароле)
-    if command -v python3 &>/dev/null; then
+    local pass=""
+    # Сначала пробуем users.json (HTTP auth режим)
+    local _users_db="/var/lib/hy-webhook/users.json"
+    if [ -f "$_users_db" ]; then
+        pass=$(python3 -c "
+import json, sys
+d = json.load(open('$_users_db'))
+safe = '${selected}'.replace(' ', '_')
+print(d.get('${selected}') or d.get(safe) or '')
+" 2>/dev/null)
+    fi
+    # Fallback: парсим userpass блок в config.yaml
+    if [ -z "$pass" ] && command -v python3 &>/dev/null; then
         pass=$(python3 -c "
 import sys, re
 cfg = open('$HYSTERIA_CONFIG').read()
 m = re.search(r'^ {4}' + re.escape('${selected}') + r':\s*[\"\x27]?([^\"\x27\n]+)[\"\x27]?', cfg, re.M)
 print(m.group(1).strip() if m else '')
 " 2>/dev/null)
-    else
-        pass=$(grep -E "^    ${selected}:" "$HYSTERIA_CONFIG" | sed 's/.*: //' | tr -d '"' | tr -d "'")
     fi
 
     # Ищем сохранённое название из URI-файлов
