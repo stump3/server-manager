@@ -1168,23 +1168,32 @@ hysteria_remnawave_integration() {
         printf "  %-24s %b\\n" "hy-webhook"         "$(echo -e "$hw_status")"
         printf "  %-24s %b\\n" "remna-sub-injector" "$(echo -e "$inj_status")"
         echo ""
+        # Определяем текущий режим auth
+        local auth_mode="userpass"
+        [ -f "$HYSTERIA_CONFIG" ] && grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && auth_mode="http"
+        local auth_badge
+        [ "$auth_mode" = "http" ]             && auth_badge="${GREEN}HTTP auth${NC} ${GRAY}(без перезапуска)${NC}"             || auth_badge="${YELLOW}userpass${NC} ${GRAY}(перезапуск при изменениях)${NC}"
+        echo -e "  ${GRAY}Режим auth: ${NC}$(echo -e "$auth_badge")"
+        echo ""
         echo -e "  ${BOLD}1)${RESET} 🔧  Установить / переустановить"
-        echo -e "  ${BOLD}2)${RESET} 📋  Добавить UA-паттерн клиента"
-        echo -e "  ${BOLD}3)${RESET} 🧵  Многопоточность hy-webhook"
-        echo -e "  ${BOLD}4)${RESET} 🔍  Расширенное логирование"
-        echo -e "  ${BOLD}5)${RESET} 📜  Логи hy-webhook"
-        echo -e "  ${BOLD}6)${RESET} 📜  Логи sub-injector"
+        echo -e "  ${BOLD}2)${RESET} 🔐  Режим аутентификации Hysteria2"
+        echo -e "  ${BOLD}3)${RESET} 📋  Добавить UA-паттерн клиента"
+        echo -e "  ${BOLD}4)${RESET} 🧵  Многопоточность hy-webhook"
+        echo -e "  ${BOLD}5)${RESET} 🔍  Расширенное логирование"
+        echo -e "  ${BOLD}6)${RESET} 📜  Логи hy-webhook"
+        echo -e "  ${BOLD}7)${RESET} 📜  Логи sub-injector"
         echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
             1) _hy_integration_install ;;
-            2) _hy_integration_add_ua ;;
-            3) _hy_integration_threading ;;
-            4) _hy_integration_debug_log ;;
-            5) journalctl -u hy-webhook -n 50 --no-pager; read -rp "  Enter..." < /dev/tty ;;
-            6) journalctl -u remna-sub-injector -n 50 --no-pager; read -rp "  Enter..." < /dev/tty ;;
+            2) _hy_integration_auth_mode ;;
+            3) _hy_integration_add_ua ;;
+            4) _hy_integration_threading ;;
+            5) _hy_integration_debug_log ;;
+            6) journalctl -u hy-webhook -n 50 --no-pager; read -rp "  Enter..." < /dev/tty ;;
+            7) journalctl -u remna-sub-injector -n 50 --no-pager; read -rp "  Enter..." < /dev/tty ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
@@ -1373,3 +1382,75 @@ hysteria_submenu_sub() {
 }
 
 
+
+_hy_integration_auth_mode() {
+    local cfg="$HYSTERIA_CONFIG"
+    [ -f "$cfg" ] || { warn "Конфиг Hysteria2 не найден: $cfg"; return 1; }
+
+    header "Режим аутентификации Hysteria2"
+    echo ""
+
+    local current_mode="userpass"
+    grep -q "type: http" "$cfg" 2>/dev/null && current_mode="http"
+
+    if [ "$current_mode" = "http" ]; then
+        echo -e "  ${GREEN}● HTTP auth включён${NC}"
+        echo -e "  ${GRAY}  Пользователи добавляются без перезапуска Hysteria2${NC}"
+        echo -e "  ${GRAY}  При подключении клиента → запрос к hy-webhook /auth${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Вернуть userpass (потребует перезапуск при изменениях)"
+        echo -e "  ${BOLD}0)${RESET} Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        [ "$ch" != "1" ] && return
+        # Switch back to userpass
+        python3 - << 'PYEOF'
+import re
+path = '/etc/hysteria/config.yaml'
+with open(path) as f:
+    content = f.read()
+users_json = '/var/lib/hy-webhook/users.json'
+try:
+    import json
+    with open(users_json) as f:
+        users = json.load(f)
+except:
+    users = {}
+userpass_block = 'auth:\n  type: userpass\n  userpass:\n'
+for u, p in users.items():
+    userpass_block += f'    {u}: "{p}"\n'
+content = re.sub(r'auth:.*?(?=\n\S|\Z)', userpass_block.rstrip(), content, flags=re.DOTALL)
+with open(path, 'w') as f:
+    f.write(content)
+print("ok")
+PYEOF
+        systemctl restart hysteria-server && ok "Hysteria2 перезапущен с userpass auth"
+
+    else
+        echo -e "  ${YELLOW}● userpass режим${NC}"
+        echo -e "  ${GRAY}  При каждом изменении пользователей — перезапуск Hysteria2${NC}"
+        echo -e "  ${GRAY}  Соединения клиентов разрываются на ~30с${NC}"
+        echo ""
+        echo -e "  ${GREEN}${BOLD}1)${RESET}${GREEN} Включить HTTP auth${NC} ${GRAY}(рекомендуется)${NC}"
+        echo -e "  ${GRAY}    Пользователи добавляются без перезапуска Hysteria2${NC}"
+        echo -e "  ${BOLD}0)${RESET} Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        [ "$ch" != "1" ] && return
+        # Switch to HTTP auth
+        python3 - << 'PYEOF'
+import re
+path = '/etc/hysteria/config.yaml'
+with open(path) as f:
+    content = f.read()
+new_auth = 'auth:\n  type: http\n  http:\n    url: http://127.0.0.1:8766/auth\n    insecure: false'
+content = re.sub(r'auth:.*?(?=\n\S|\Z)', new_auth, content, flags=re.DOTALL)
+with open(path, 'w') as f:
+    f.write(content)
+print("ok")
+PYEOF
+        systemctl restart hysteria-server && ok "Hysteria2 перезапущен с HTTP auth"
+        info "Пользователи добавляются без перезапуска сервиса"
+    fi
+    read -rp "  Enter..." < /dev/tty
+}
