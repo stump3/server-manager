@@ -5,17 +5,31 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 #
 # Использование:
-#   Рекомендуется (полная установка с integrations/ и sub-injector/):
-#     git clone https://github.com/stump3/server-manager /root/server-manager
-#     bash /root/server-manager/server-manager.sh
+#   curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 #
-#   Быстрый запуск (только основные модули, без integrations/):
-#     curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
+#   При первом запуске автоматически клонирует репозиторий в /root/server-manager/
+#   и перезапускается оттуда. Повторный запуск: server-manager
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 REPO_RAW="https://raw.githubusercontent.com/stump3/server-manager/main"
+REPO_URL="https://github.com/stump3/server-manager"
+INSTALL_DIR="/root/server-manager"
+
+# При запуске через curl | bash — SCRIPT_DIR пустой.
+# Клонируем репозиторий и перезапускаемся из него.
+if [ -z "$SCRIPT_DIR" ]; then
+    echo "  Первый запуск — клонируем репозиторий в ${INSTALL_DIR}..."
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        echo "  Репозиторий уже существует, обновляем..."
+        git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
+    else
+        git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null             || { echo "Ошибка: не удалось клонировать репозиторий"; exit 1; }
+    fi
+    echo "  Запускаем из ${INSTALL_DIR}..."
+    exec bash "${INSTALL_DIR}/server-manager.sh"
+fi
 
 # SHA256 контрольные суммы модулей — обновляйте при каждом релизе.
 # Оставьте "" чтобы отключить проверку для конкретного модуля.
