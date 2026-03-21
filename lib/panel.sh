@@ -1219,7 +1219,7 @@ panel_update_script() {
 
     local remote_ver; remote_ver=$(grep "^SCRIPT_VERSION_STATIC=" "$tmp_ver" | head -1         | sed 's/SCRIPT_VERSION_STATIC=//;s/[^a-zA-Z0-9._-]//g' | tr -d " ")
     rm -f "$tmp_ver"
-    local local_ver; local_ver="$SCRIPT_VERSION_STATIC"
+    local local_ver; local_ver="$SCRIPT_VERSION"
 
     info "Локальная версия: $local_ver"
     info "Версия на GitHub: ${remote_ver:-неизвестна}"
