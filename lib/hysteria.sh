@@ -1295,44 +1295,82 @@ _hy_masquerade_menu() {
         case "$ch" in
             1)
                 echo ""
-                echo -e "  Выберите сайт для маскировки:"
-                echo -e "  ${BOLD}1)${RESET} Bing          ${GRAY}(рекомендуется)${NC}"
-                echo -e "  ${BOLD}2)${RESET} Yahoo"
-                echo -e "  ${BOLD}3)${RESET} Apple CDN     ${GRAY}(стабильный, популярный)${NC}"
-                echo -e "  ${BOLD}4)${RESET} Hetzner Speed Test"
-                echo -e "  ${BOLD}5)${RESET} Свой URL"
+                echo -e "  Выберите тип маскировки:"
+                echo -e "  ${BOLD}1)${RESET} 📁  Локальный сайт ${GRAY}(/var/www/html)${NC} ${GREEN}— быстро, без задержек${NC}"
+                echo -e "  ${BOLD}2)${RESET} 🌐  Bing            ${GRAY}(proxy)${NC}"
+                echo -e "  ${BOLD}3)${RESET} 🌐  Yahoo           ${GRAY}(proxy)${NC}"
+                echo -e "  ${BOLD}4)${RESET} 🌐  Apple CDN       ${GRAY}(proxy)${NC}"
+                echo -e "  ${BOLD}5)${RESET} 🌐  Hetzner Speed   ${GRAY}(proxy)${NC}"
+                echo -e "  ${BOLD}6)${RESET} 🔗  Свой URL        ${GRAY}(proxy)${NC}"
+                echo ""
+                echo -e "  ${GRAY}Локальный — отдаёт файлы из /var/www/html, без внешних запросов.${NC}"
+                echo -e "  ${GRAY}Proxy — проксирует на внешний сайт, может добавлять ~50-200ms.${NC}"
                 echo ""
                 local mc; read -rp "  Выбор [1]: " mc < /dev/tty; mc="${mc:-1}"
-                local masq_url
+                local masq_url masq_type_choice="proxy"
                 case "$mc" in
-                    1) masq_url="https://www.bing.com" ;;
-                    2) masq_url="https://www.yahoo.com" ;;
-                    3) masq_url="https://cdn.apple.com" ;;
-                    4) masq_url="https://speed.hetzner.de" ;;
-                    5) read -rp "  URL (https://...): " masq_url < /dev/tty ;;
-                    *) masq_url="https://www.bing.com" ;;
+                    1) masq_type_choice="file" ;;
+                    2) masq_url="https://www.bing.com" ;;
+                    3) masq_url="https://www.yahoo.com" ;;
+                    4) masq_url="https://cdn.apple.com" ;;
+                    5) masq_url="https://speed.hetzner.de" ;;
+                    6) read -rp "  URL (https://...): " masq_url < /dev/tty ;;
+                    *) masq_type_choice="file" ;;
                 esac
-                python3 - "$HYSTERIA_CONFIG" "$masq_url" << 'PYEOF2'
+                if [ "$masq_type_choice" = "file" ]; then
+                    python3 - "$HYSTERIA_CONFIG" << 'PYEOF2'
+import re, sys
+path = sys.argv[1]
+with open(path) as f:
+    cfg = f.read()
+new_masq = 'masquerade:
+  type: file
+  file:
+    dir: /var/www/html'
+if re.search(r'^masquerade:', cfg, re.M):
+    cfg = re.sub(r'masquerade:.*?(?=
+\S|\Z)', new_masq, cfg, flags=re.DOTALL)
+else:
+    cfg = cfg.rstrip() + '
+
+' + new_masq + '
+'
+with open(path, 'w') as f:
+    f.write(cfg)
+print('ok')
+PYEOF2
+                    ok "Маскировка: file → /var/www/html"
+                else
+                    python3 - "$HYSTERIA_CONFIG" "$masq_url" << 'PYEOF2'
 import re, sys
 path, masq_url = sys.argv[1], sys.argv[2]
 with open(path) as f:
     cfg = f.read()
 new_masq = (
-    'masquerade:\n'
-    '  type: proxy\n'
-    '  proxy:\n'
-    f'    url: {masq_url}\n'
+    'masquerade:
+'
+    '  type: proxy
+'
+    '  proxy:
+'
+    f'    url: {masq_url}
+'
     '    rewriteHost: true'
 )
 if re.search(r'^masquerade:', cfg, re.M):
-    cfg = re.sub(r'masquerade:.*?(?=\n\S|\Z)', new_masq, cfg, flags=re.DOTALL)
+    cfg = re.sub(r'masquerade:.*?(?=
+\S|\Z)', new_masq, cfg, flags=re.DOTALL)
 else:
-    cfg = cfg.rstrip() + '\n\n' + new_masq + '\n'
+    cfg = cfg.rstrip() + '
+
+' + new_masq + '
+'
 with open(path, 'w') as f:
     f.write(cfg)
 print('ok')
 PYEOF2
-                ok "Маскировка: proxy → $masq_url"
+                    ok "Маскировка: proxy → $masq_url"
+                fi
                 if confirm "Перезапустить Hysteria2?" y; then
                     systemctl restart "$HYSTERIA_SVC" && ok "Hysteria2 перезапущен"
                 fi
@@ -1344,16 +1382,10 @@ import re, sys
 path = sys.argv[1]
 with open(path) as f:
     cfg = f.read()
-cfg = re.sub(r'
-
-masquerade:.*?(?=
-\S|\Z)', '', cfg, flags=re.DOTALL)
-cfg = re.sub(r'
-masquerade:.*?(?=
-\S|\Z)', '', cfg, flags=re.DOTALL)
+# Удаляем блок masquerade: вместе с предшествующими пустыми строками
+cfg = re.sub(r'\n+masquerade:[^\n]*(\n[ \t][^\n]*)*', '', cfg)
 with open(path, 'w') as f:
-    f.write(cfg.rstrip() + '
-')
+    f.write(cfg.rstrip() + '\n')
 print('ok')
 PYEOF2
                     ok "Маскировка удалена"
