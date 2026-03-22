@@ -216,9 +216,8 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
   </div>
   <div class="nav-group">
     <div class="nav-label">Ещё</div>
-    <a href="https://github.com/stump3/server-manager/blob/main/docs/CHANGELOG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#22c55e"></span> Changelog ↗</a>
-    <a href="https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#f59e0b"></span> Для инженеров ↗</a>
-    <a href="https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md" class="nav-link" target="_blank"><span class="nav-dot" style="background:#a78bfa"></span> Конфиг telemt ↗</a>
+    <a href="CHANGELOG.md" class="nav-link"><span class="nav-dot" style="background:#22c55e"></span> Changelog</a>
+    <a href="ENGINEER.md" class="nav-link"><span class="nav-dot" style="background:#f59e0b"></span> Для инженеров</a>
     <a href="https://github.com/stump3/server-manager" class="nav-link" target="_blank"><span class="nav-dot" style="background:#3d5068"></span> GitHub ↗</a>
   </div>
 </nav>
@@ -453,46 +452,26 @@ map <span class="cs">"$auth_cookie$auth_query"</span> $authorized {
     <div class="sec-title">MTProxy (telemt)</div>
   </div>
 
-  <p><a href="https://github.com/telemt/telemt" target="_blank" style="color:var(--accent)">telemt</a> — реализация Telegram MTProto прокси на Rust + Tokio. Поддерживает TLS-маскировку, anti-replay, Prometheus-метрики и управление через REST API без перезапуска сервиса.</p>
+  <p>Telegram MTProto прокси на Rust. Поддерживает ограничения на пользователей, hot reload без разрыва соединений.</p>
 
   <div class="alert al-info">
     <span class="alert-icon">ℹ️</span>
     <div>При входе в раздел MTProxy — если сервис уже запущен, режим (systemd/Docker) определяется <strong>автоматически</strong>, меню выбора пропускается.</div>
   </div>
 
-  <h3>Меню</h3>
+  <h3>Подменю</h3>
   <div class="term">
-    <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">MTProxy (telemt)</div></div>
+    <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">MTProxy</div></div>
     <div class="term-body">
-<span class="td">  Версия  </span><span class="tw">3.3.27</span><span class="td">  (systemd)</span><br>
-<span class="td">  Порт    </span><span class="tw">2053</span><br><br>
-<span class="tw">  1)</span><span class="tp"> 🔧  Установка</span><br>
-<span class="tw">  2)</span><span class="tp"> ⚙️  Управление</span><br>
-<span class="tw">  3)</span><span class="tp"> 👥  Пользователи</span><span class="td">  2</span><br>
-<span class="tw">  4)</span><span class="tp"> 📦  Миграция на другой сервер</span><br>
-<span class="tw">  5)</span><span class="tp"> 🔀  Сменить режим (systemd ↔ Docker)</span><br><br>
-<span class="tw">  0)</span><span class="td"> ◀️  Назад</span>
-    </div>
-  </div>
-
-  <div class="term">
-    <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">MTProxy — Управление</div></div>
-    <div class="term-body">
-<span class="tw">  1)</span><span class="tp"> 📊  Статус и логи</span><br>
-<span class="tw">  2)</span><span class="tp"> 🔄  Обновить</span><br>
-<span class="tw">  3)</span><span class="tp"> ⏹️  Остановить</span><br>
-<span class="tw">  4)</span><span class="tp"> 🔀  Режим подключения</span><span class="td">  direct</span><br><br>
-<span class="tw">  0)</span><span class="td"> ◀️  Назад</span>
-    </div>
-  </div>
-
-  <div class="term">
-    <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">MTProxy — Пользователи  2</div></div>
-    <div class="term-body">
-<span class="tw">  1)</span><span class="tp"> ➕  Добавить пользователя</span><br>
-<span class="tw">  2)</span><span class="tp"> ➖  Удалить пользователей</span><br>
-<span class="tw">  3)</span><span class="tp"> 👥  Пользователи и ссылки</span><br><br>
-<span class="tw">  0)</span><span class="td"> ◀️  Назад</span>
+<span class="tw">  1)</span><span class="tp"> Установить</span><br>
+<span class="tw">  2)</span><span class="tp"> Добавить пользователя</span><br>
+<span class="tw">  3)</span><span class="tp"> Пользователи и ссылки</span><br>
+<span class="tw">  4)</span><span class="tp"> Статус и логи</span><br>
+<span class="tw">  5)</span><span class="tp"> Обновить</span><br>
+<span class="tw">  6)</span><span class="tp"> Остановить</span><br>
+<span class="tw">  7)</span><span class="tp"> Мигрировать на новый сервер</span><span class="td">  (только systemd)</span><br>
+<span class="tw">  8)</span><span class="tp"> Сменить режим (systemd ↔ Docker)</span><br>
+<span class="tw">  0)</span><span class="td"> Назад</span>
     </div>
   </div>
 
@@ -502,28 +481,7 @@ map <span class="cs">"$auth_cookie$auth_query"</span> $authorized {
       <thead><tr><th>Режим</th><th>Плюсы</th><th>Когда выбирать</th></tr></thead>
       <tbody>
         <tr><td>systemd <span class="badge b-green">рекомендуется</span></td><td>Hot reload, меньше RAM, миграция</td><td>По умолчанию</td></tr>
-        <tr><td>Docker</td><td>Изоляция, простое обновление</td><td>Если уже используешь Docker-стек</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3>Direct vs Middle-End relay</h3>
-  <p>При установке скрипт предлагает выбрать режим подключения к серверам Telegram. Переключить можно в любой момент через <strong>Управление → 4) Режим подключения</strong>.</p>
-
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Режим</th><th>Схема</th><th>Когда использовать</th></tr></thead>
-      <tbody>
-        <tr>
-          <td>Direct <span class="badge b-green">рекомендуется</span><br><code>use_middle_proxy = false</code></td>
-          <td>Клиент → сервер → <strong>Telegram DC</strong></td>
-          <td>Для большинства серверов. Меньше задержка, меньше RAM.</td>
-        </tr>
-        <tr>
-          <td>Middle-End relay<br><code>use_middle_proxy = true</code></td>
-          <td>Клиент → сервер → <strong>Telegram ME relay</strong> → Telegram DC</td>
-          <td>Если у сервера плохая прямая IP-связность с Telegram DC. Держит пул <code>me_writers</code>.</td>
-        </tr>
+        <tr><td>Docker</td><td>Изоляция, простое обновление</td><td>Если уже используете Docker-стек</td></tr>
       </tbody>
     </table>
   </div>
@@ -533,10 +491,10 @@ map <span class="cs">"$auth_cookie$auth_query"</span> $authorized {
     <table>
       <thead><tr><th>Параметр</th><th>По умолчанию</th><th>Описание</th></tr></thead>
       <tbody>
-        <tr><td>Порт</td><td>8443</td><td>Рекомендуемые Telegram-порты: 443, 2053, 2083, 2087, 2096, 8443</td></tr>
+        <tr><td>Порт</td><td>8443</td><td>Telegram: 443, 8443, 2053, 2083, 2087, 2096</td></tr>
         <tr><td>Домен-маскировка</td><td>petrovich.ru</td><td>Любой крупный HTTPS-сайт</td></tr>
-        <tr><td>Режим подключения</td><td>Direct</td><td>Direct или Middle-End relay</td></tr>
-        <tr><td>Секрет</td><td><span class="badge b-blue">авто</span></td><td>32 hex-символа, генерируется автоматически</td></tr>
+        <tr><td>Имя пользователя</td><td>—</td><td>Минимум один при установке</td></tr>
+        <tr><td>Секрет</td><td><span class="badge b-blue">авто</span></td><td>32 hex-символа</td></tr>
       </tbody>
     </table>
   </div>
@@ -546,58 +504,17 @@ map <span class="cs">"$auth_cookie$auth_query"</span> $authorized {
     <table>
       <thead><tr><th>Параметр</th><th>Описание</th></tr></thead>
       <tbody>
-        <tr><td>max_tcp_conns</td><td>Максимум одновременных TCP-подключений</td></tr>
-        <tr><td>max_unique_ips</td><td>Максимум уникальных IP-адресов источника</td></tr>
-        <tr><td>data_quota_bytes</td><td>Квота суммарного трафика в ГБ</td></tr>
-        <tr><td>expiration_rfc3339</td><td>Срок действия в днях от текущего момента</td></tr>
+        <tr><td>max_tcp_conns</td><td>Максимум одновременных подключений</td></tr>
+        <tr><td>max_unique_ips</td><td>Максимум уникальных IP-адресов</td></tr>
+        <tr><td>data_quota_bytes</td><td>Квота трафика в ГБ</td></tr>
+        <tr><td>expiration_rfc3339</td><td>Срок действия в днях</td></tr>
       </tbody>
     </table>
   </div>
 
   <div class="alert al-success">
     <span class="alert-icon">✅</span>
-    <div>Добавление и удаление пользователей выполняются через REST API telemt — без перезапуска сервиса и SIGHUP. При удалении можно выбрать нескольких пользователей сразу.</div>
-  </div>
-
-  <h3>REST API</h3>
-  <p>telemt предоставляет HTTP API на <code>127.0.0.1:9091</code>. Полная документация: <a href="https://github.com/telemt/telemt/blob/main/docs/API.md" target="_blank" style="color:var(--accent)">telemt/docs/API.md ↗</a></p>
-
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Метод</th><th>Путь</th><th>Описание</th></tr></thead>
-      <tbody>
-        <tr><td>GET</td><td>/v1/health</td><td>Статус сервиса</td></tr>
-        <tr><td>GET</td><td>/v1/system/info</td><td>Версия, uptime, хэш конфига</td></tr>
-        <tr><td>GET</td><td>/v1/stats/summary</td><td>Подключения, пользователи, uptime</td></tr>
-        <tr><td>GET</td><td>/v1/runtime/gates</td><td>Режим ME, состояние пула, startup status</td></tr>
-        <tr><td>GET</td><td>/v1/users</td><td>Список пользователей со ссылками и статистикой</td></tr>
-        <tr><td>POST</td><td>/v1/users</td><td>Создать пользователя</td></tr>
-        <tr><td>PATCH</td><td>/v1/users/{name}</td><td>Изменить параметры пользователя</td></tr>
-        <tr><td>DELETE</td><td>/v1/users/{name}</td><td>Удалить пользователя</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="code-block">
-    <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><div class="code-lang">bash</div></div>
-    <pre><span class="cm"># Ссылки всех пользователей</span>
-curl -s http://127.0.0.1:9091/v1/users | jq <span class="cs">'.data[] | {user: .username, link: .links.tls[0]}'</span>
-
-<span class="cm"># Добавить пользователя с квотой 10 ГБ</span>
-curl -s -X POST http://127.0.0.1:9091/v1/users \
-  -H <span class="cs">"Content-Type: application/json"</span> \
-  -d <span class="cs">'{"username":"alice","data_quota_bytes":10737418240}'</span>
-
-<span class="cm"># Удалить пользователя</span>
-curl -s -X DELETE http://127.0.0.1:9091/v1/users/alice
-
-<span class="cm"># Uptime и подключения</span>
-curl -s http://127.0.0.1:9091/v1/stats/summary | jq <span class="cs">'.data | {uptime: .uptime_seconds, conns: .connections_total}'</span></pre>
-  </div>
-
-  <div class="alert al-info">
-    <span class="alert-icon">📖</span>
-    <div>Полный справочник всех параметров конфига telemt (222 параметра, секции [general], [server], [access], [censorship], [[upstreams]] и другие): <a href="https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md" target="_blank" style="color:var(--accent)">docs/TELEMT_CONFIG.md ↗</a></div>
+    <div>Добавление пользователя применяется через hot reload — существующие соединения не прерываются.</div>
   </div>
 </section>
 
@@ -719,6 +636,56 @@ curl -s http://127.0.0.1:9091/v1/stats/summary | jq <span class="cs">'.data | {u
 <span class="tw">  5)</span><span class="tc">  📦  Миграция на другой сервер</span><br><br>
 <span class="tw">  0)</span><span class="td">  ◀️   Назад</span>
     </div>
+  </div>
+
+  <h3>Меню управления (пункт 2)</h3>
+  <div class="term">
+    <div class="term-bar"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div><div class="term-title">Hysteria2 — Управление</div></div>
+    <div class="term-body">
+<span class="tw">  1)</span><span class="tc">  📊  Статус</span><br>
+<span class="tw">  2)</span><span class="tc">  📋  Логи</span><br>
+<span class="tw">  3)</span><span class="tc">  🔄  Перезапустить</span><br>
+<span class="tw">  4)</span><span class="tg">  📶  Bandwidth</span><br>
+<span class="tw">  5)</span><span class="tg">  🎭  Маскировка</span><br><br>
+<span class="tw">  0)</span><span class="td">  ◀️   Назад</span>
+    </div>
+  </div>
+
+  <h3>Bandwidth</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Режим</th><th>Когда использовать</th><th>Как задать</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>BBR <span class="badge b-green">рекомендуется</span></td>
+          <td>Стабильный канал. Автоподбор скорости — ничего настраивать не нужно</td>
+          <td>Не задавать <code>bandwidth</code> блок</td>
+        </tr>
+        <tr>
+          <td>Brutal</td>
+          <td>Нестабильный канал, потери &gt;5%, мобильный интернет. Агрессивно держит заданную скорость</td>
+          <td>Задать <code>bandwidth.up</code> и <code>bandwidth.down</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="color:var(--muted)">Указывайте скорость <strong>серверного канала</strong>, не клиентского. Завышение → перегрузка сети.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Скорость сервера</th><th>Значение</th></tr></thead>
+      <tbody>
+        <tr><td>1 Гбит/с</td><td><code>1 gbps</code></td></tr>
+        <tr><td>500 Мбит/с</td><td><code>500 mbps</code></td></tr>
+        <tr><td>100 Мбит/с</td><td><code>100 mbps</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="alert al-info">
+    <span class="alert-icon">ℹ️</span>
+    <div>При правильно заданном bandwidth клиент подключается с <code>tx: N</code> вместо <code>tx: 0</code>. <code>tx: 0</code> — признак того что bandwidth не задан или клиент его не передал.</div>
   </div>
 
   <h3>Интеграция с Remnawave (пункт 4 → 3)</h3>
@@ -893,22 +860,11 @@ docker logs remnanode --tail=5 | grep "inbounds"
     </div>
   </div>
 
-  <p>Добавляет персональный <code>hy2://</code> URI в подписку Remnawave автоматически — каждый пользователь получает уникальную ссылку со своим именем и паролем. Clash/Sing-Box конфиги проходят без изменений.</p>
+  <p>Добавляет <code>hy2://</code> URI в подписку Remnawave автоматически — при создании, удалении или изменении пользователя.</p>
 
   <div class="alert al-info">
     <span class="alert-icon">📍</span>
     <div>Путь в меню: <strong>3) Hysteria2 → 4) Подписка → 3) Интеграция с Remnawave</strong></div>
-  </div>
-
-  <h3>Компоненты</h3>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Компонент</th><th>Тип</th><th>Описание</th></tr></thead>
-      <tbody>
-        <tr><td>hy-webhook</td><td><span class="badge b-green">systemd</span></td><td>Вебхук-сервис + <code>GET /uri/:shortUuid</code> + встроенный proxy :3020</td></tr>
-        <tr><td>sub-injector</td><td><span class="badge b-green">systemd</span></td><td>Rust reverse-proxy с per-user URI инъекцией, фильтрацией по UA</td></tr>
-      </tbody>
-    </table>
   </div>
 
   <h3>Схема работы</h3>
@@ -916,32 +872,14 @@ docker logs remnanode --tail=5 | grep "inbounds"
     <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">flow</span></div>
     <pre><span class="tg">Remnawave</span> (user.created / deleted / disabled)
     ↓  POST http://172.30.0.1:8766/webhook
-    ↓  X-Remnawave-Signature: HMAC-SHA256(body, secret)
+    ↓  X-Remnawave-Signature: HMAC-SHA256
 <span class="tb">hy-webhook</span> (systemd, :8766, 0.0.0.0)
-    ↓  verify HMAC → gen_password → update users.json
-    ↓  ответ 200 немедленно (обработка в фоне)
-    ↓  НЕТ перезапуска hysteria (HTTP auth mode)
-
-<span class="tg">Hysteria2</span> (при каждом подключении клиента)
-    ↓  POST http://127.0.0.1:8766/auth
-    ↓  {"addr": "...", "auth": "user:pass", "tx": N}
-<span class="tb">hy-webhook</span>  →  проверяет users.json
-    ←  {"ok": true, "id": "username"}
-
-<span class="tw">Клиент (Hiddify/v2rayNG)</span>
-    ↓  GET /sub/TOKEN
-<span class="tb">remna-sub-injector</span> :3020  (Rust/Tokio)
-    ↓  GET /uri/TOKEN  →  hy-webhook :8766
-    ↓  GET Remnawave API /by-short-uuid/TOKEN  →  username
-    ↓  найти пароль в users.json  →  hy2://user:pass@domain:port?...
-    ↓  проксировать на upstream :3010
-    ←  base64 ответ + hy2:// URI
-
-<span class="tw">Клиент (Clash/Sing-Box)</span>  →  YAML конфиг без изменений</pre>
-  </div>
-  <div class="alert al-info">
-    <span class="alert-icon">💡</span>
-    <div><strong>HTTP auth</strong> — пользователи добавляются без перезапуска Hysteria2. Активные VPN соединения не разрываются при изменении списка пользователей.</div>
+    ↓  verify → sanitize → gen_password → update users.json
+    ↓  update /etc/hysteria/config.yaml
+    ↓  systemctl reload-or-restart hysteria-server
+<span class="tp">subscription-page</span> (remnawave-sub-hy:local)
+    ↓  при запросе подписки читает users.json
+    ↓  добавляет hy2:// URI в base64 ответ</pre>
   </div>
 
   <h3>Требования</h3>
@@ -952,7 +890,7 @@ docker logs remnanode --tail=5 | grep "inbounds"
         <tr><td>/opt/remnawave/</td><td>Remnawave установлена через server-manager</td></tr>
         <tr><td>/etc/hysteria/config.yaml</td><td>Hysteria2 установлена через server-manager</td></tr>
         <tr><td>UFW: 172.16.0.0/12 → 8766</td><td>Добавляется автоматически при установке</td></tr>
-        <tr><td>REMNAWAVE_API_TOKEN</td><td>Опционально — для <code>GET /uri/:shortUuid</code></td></tr>
+        <tr><td>REMNAWAVE_API_TOKEN</td><td>Создать в панели: Settings → API Tokens</td></tr>
       </tbody>
     </table>
   </div>
@@ -973,21 +911,17 @@ WEBHOOK_SECRET_HEADER=<span class="cs">&lt;hex64&gt;</span></pre>
   <h3>Диагностика интеграции</h3>
   <div class="code-block">
     <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">bash</span></div>
-    <pre><span class="cm"># Статус сервисов</span>
-systemctl status hy-webhook remna-sub-injector
-
-<span class="cm"># Webhook health</span>
+    <pre><span class="cm"># Статус webhook</span>
 curl -s http://127.0.0.1:8766/health
 
-<span class="cm"># URI endpoint (персональный)</span>
-curl -s http://127.0.0.1:8766/uri/TOKEN_SHORT_UUID
+<span class="cm"># Доступность из контейнера</span>
+docker exec remnawave curl -s http://172.30.0.1:8766/health
 
-<span class="cm"># Тест инъекции через injector</span>
-curl -s -H "User-Agent: hiddify" http://127.0.0.1:3020/TOKEN | base64 -d | grep "hy2://"
-
-<span class="cm"># Логи</span>
+<span class="cm"># Логи событий</span>
 journalctl -u hy-webhook -n 20
-journalctl -u remna-sub-injector -n 20</pre>
+
+<span class="cm"># Проверить hy2:// в подписке</span>
+curl -s "https://sub.domain/TOKEN" | base64 -d | grep "hy2://"</pre>
   </div>
 </section>
 
@@ -997,6 +931,21 @@ journalctl -u remna-sub-injector -n 20</pre>
   <div class="sec-head">
     <div class="sec-icon" style="background:rgba(139,154,176,.08);border:1px solid var(--border2)">📁</div>
     <div class="sec-title">Файлы и пути</div>
+  </div>
+
+  <h3>Hysteria2</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Путь</th><th>Назначение</th></tr></thead>
+      <tbody>
+        <tr><td>/etc/hysteria/config.yaml</td><td>Конфигурация сервера</td></tr>
+        <tr><td>/usr/local/bin/hysteria</td><td>Бинарник</td></tr>
+        <tr><td>/root/hysteria-{домен}.txt</td><td>URI подключения</td></tr>
+        <tr><td>/root/hysteria-{домен}.yaml</td><td>Конфиг Clash/Mihomo</td></tr>
+        <tr><td>/root/hysteria-{домен}.png</td><td>QR-код PNG</td></tr>
+        <tr><td>/root/hysteria-{домен}-users.txt</td><td>URI всех пользователей</td></tr>
+      </tbody>
+    </table>
   </div>
 
   <h3>Remnawave Panel</h3>
@@ -1009,43 +958,18 @@ journalctl -u remna-sub-injector -n 20</pre>
         <tr><td>/opt/remnawave/nginx.conf</td><td>Nginx (cookie-ключ здесь)</td></tr>
         <tr><td>/opt/remnawave/backups/</td><td>Бэкапы</td></tr>
         <tr><td>/usr/local/bin/remnawave_panel</td><td>Скрипт управления <code>rp</code></td></tr>
-        <tr><td>/root/remnawave-credentials.txt</td><td>Cookie URL для входа в панель</td></tr>
       </tbody>
     </table>
   </div>
 
-  <h3>MTProxy (telemt)</h3>
+  <h3>MTProxy (systemd)</h3>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Путь</th><th>Назначение</th></tr></thead>
       <tbody>
         <tr><td>/usr/local/bin/telemt</td><td>Бинарник</td></tr>
-        <tr><td>/etc/telemt/telemt.toml</td><td>Конфиг (владелец <code>telemt:telemt</code>)</td></tr>
-        <tr><td>/opt/telemt/</td><td>Рабочая директория — cache, tlsfront, proxy-secret</td></tr>
-        <tr><td>/etc/systemd/system/telemt.service</td><td>Systemd unit</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3>Hysteria2</h3>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Путь</th><th>Назначение</th></tr></thead>
-      <tbody>
-        <tr><td>/usr/local/bin/hysteria</td><td>Бинарник</td></tr>
-        <tr><td>/etc/hysteria/config.yaml</td><td>Конфигурация сервера</td></tr>
-        <tr><td>/etc/systemd/system/hysteria-server.service</td><td>Systemd unit</td></tr>
-        <tr><td>/etc/systemd/system/hy-webhook.service</td><td>Systemd unit webhook-синхронизации</td></tr>
-        <tr><td>/opt/hy-webhook/hy-webhook.py</td><td>Python сервис (webhook + proxy)</td></tr>
-        <tr><td>/etc/hy-webhook.env</td><td>Конфиг и секреты (права 600)</td></tr>
-        <tr><td>/var/lib/hy-webhook/users.json</td><td>База пользователей</td></tr>
-        <tr><td>/opt/remna-sub-injector/sub-injector</td><td>Бинарник sub-injector (~3 MB)</td></tr>
-        <tr><td>/opt/remna-sub-injector/config.toml</td><td>Конфиг инжектора</td></tr>
-        <tr><td>/etc/systemd/system/remna-sub-injector.service</td><td>Systemd unit sub-injector</td></tr>
-        <tr><td>/root/hysteria-{домен}.txt</td><td>URI подключения</td></tr>
-        <tr><td>/root/hysteria-{домен}.yaml</td><td>Конфиг Clash/Mihomo</td></tr>
-        <tr><td>/root/hysteria-{домен}.png</td><td>QR-код PNG</td></tr>
-        <tr><td>/root/hysteria-{домен}-users.txt</td><td>URI всех пользователей</td></tr>
+        <tr><td>/etc/telemt/telemt.toml</td><td>Конфиг</td></tr>
+        <tr><td>/etc/systemd/system/telemt.service</td><td>Systemd-сервис</td></tr>
       </tbody>
     </table>
   </div>
@@ -1175,7 +1099,7 @@ ssh root@NEW_IP systemctl restart hysteria-server</pre>
         <tr>
           <td>Invalid subscription content</td>
           <td>Подписка не парсится клиентом</td>
-          <td>Проверить логи injector: <code>journalctl -u remna-sub-injector -n 20</code>. Проверить URI endpoint: <code>curl -s http://127.0.0.1:8766/uri/TOKEN</code></td>
+          <td>Проверить логи: <code>docker logs remnawave-subscription-page --tail=20</code>. Убедиться что <code>REMNAWAVE_PANEL_URL</code> и <code>REMNAWAVE_API_TOKEN</code> заданы</td>
         </tr>
       </tbody>
     </table>
@@ -1256,13 +1180,9 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
         <tr><td>ОС</td><td>Ubuntu 20.04+ / Debian 11+</td></tr>
         <tr><td>Права</td><td>root</td></tr>
         <tr><td>443 TCP</td><td>Xray (selfsteal) + nginx — должен быть свободен до установки</td></tr>
-        <tr><td>2053 / 8443 TCP</td><td>telemt MTProxy (по выбору при установке)</td></tr>
-        <tr><td>8443 UDP</td><td>Hysteria2 — основной порт + Port Hopping диапазон</td></tr>
+        <tr><td>8443 UDP</td><td>Hysteria2</td></tr>
         <tr><td>80 TCP</td><td>certbot — открывается на время SSL, потом закрывается</td></tr>
         <tr><td>2222 TCP</td><td>remnanode — только из Docker сети 172.30.0.0/16</td></tr>
-        <tr><td>8766 TCP</td><td>hy-webhook — только из Docker сети 172.16.0.0/12</td></tr>
-        <tr><td>9091 TCP</td><td>telemt API — только localhost</td></tr>
-        <tr><td>3020 TCP</td><td>sub-injector reverse-proxy подписок</td></tr>
         <tr><td>Зависимости</td><td>Docker, docker-compose, jq, certbot, openssl</td></tr>
       </tbody>
     </table>
