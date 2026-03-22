@@ -9,8 +9,8 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ```
 
 [![Docs](https://img.shields.io/badge/docs-интерактивные-3b82f6?style=flat-square)](https://stump3.github.io/server-manager/README.html)
-[![Changelog](https://img.shields.io/badge/changelog-v2.6.0-22c55e?style=flat-square)](https://github.com/stump3/server-manager/blob/main/docs/CHANGELOG.md)
-[![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md)
+[![Changelog](https://img.shields.io/badge/changelog-v2.1.0-22c55e?style=flat-square)](docs/CHANGELOG.md)
+[![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](docs/ENGINEER.md)
 
 </div>
 
@@ -20,10 +20,9 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 
 | Файл | Описание |
 |---|---|
-| 📖 [docs/README.html](https://stump3.github.io/server-manager/README.html) | Интерактивная документация — тёмная тема, навигация, схемы архитектуры |
-| 📋 [CHANGELOG.md](https://github.com/stump3/server-manager/blob/main/docs/CHANGELOG.md) | История изменений по версиям |
-| 🔧 [docs/ENGINEER.md](https://github.com/stump3/server-manager/blob/main/docs/ENGINEER.md) | Для разработчиков — архитектура, API, диагностика |
-| 📡 [docs/TELEMT_CONFIG.md](https://github.com/stump3/server-manager/blob/main/docs/TELEMT_CONFIG.md) | Справочник всех параметров конфига telemt (MTProxy) |
+| 📖 [docs/README.html](docs/README.html) | Интерактивная документация — тёмная тема, навигация, схемы архитектуры |
+| 📋 [docs/CHANGELOG.md](docs/CHANGELOG.md) | История изменений по версиям |
+| 🔧 [docs/ENGINEER.md](docs/ENGINEER.md) | Для разработчиков — архитектура, API, диагностика, анализ кода |
 
 ---
 
@@ -45,16 +44,12 @@ server-manager/
 ├── lib/
 │   ├── common.sh               # Утилиты, цвета, главное меню, SSH-хелперы
 │   ├── panel.sh                # Remnawave Panel + Extensions (1750 строк)
-│   ├── telemt.sh               # MTProxy (telemt)
+│   ├── telemt.sh               # MTProxy (telemt) (701 строка)
 │   ├── hysteria.sh             # Hysteria2 (1213 строк)
 │   └── migrate.sh              # Перенос сервисов (248 строк)
-├── integrations/
-│   ├── hy-sub-install.sh       # Установка интеграции Hysteria2 → Remnawave
-│   └── hy-webhook.py           # Webhook-сервис + reverse-proxy с инъекцией URI
-└── sub-injector/
-    ├── src/main.rs             # Rust/Axum reverse-proxy с per-user инъекцией
-    ├── Cargo.toml
-    └── config.toml.example     # Пример конфига
+└── integrations/
+    ├── hy-sub-install.sh       # Интеграция Hysteria2 → подписка Remnawave
+    └── hy-webhook.py           # Webhook синхронизации пользователей
 ```
 
 ---
@@ -65,21 +60,13 @@ server-manager/
 curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash
 ```
 
-При первом запуске скрипт автоматически клонирует репозиторий в `/root/server-manager/` и перезапускается оттуда. Все компоненты — `lib/`, `integrations/`, `sub-injector/` — будут на месте.
-
-Повторный запуск:
+Или локально:
 
 ```bash
-server-manager
+git clone https://github.com/stump3/server-manager
+cd server-manager
+bash server-manager.sh
 ```
-
-Или:
-
-```bash
-bash /root/server-manager/server-manager.sh
-```
-
-Обновление через меню `5) Обновить скрипт` подтянет все изменения из репозитория.
 
 ---
 
@@ -101,6 +88,8 @@ bash /root/server-manager/server-manager.sh
   4)  📦  Перенос
 
   5)  🔄  Обновить скрипт
+
+  0)  Выход
 ```
 
 ---
@@ -171,119 +160,12 @@ https://panel.example.com/auth/login?KEY=VALUE
 
 ## MTProxy (telemt)
 
-[telemt](https://github.com/telemt/telemt) — реализация Telegram MTProto прокси на Rust + Tokio. Поддерживает TLS-маскировку, anti-replay, Prometheus-метрики и управление через REST API без перезапуска сервиса.
-
-### Режимы запуска
-
 | Режим | Описание |
 |---|---|
-| systemd | Бинарник с GitHub Releases, автозапуск, hot reload, рекомендуется |
-| Docker | Образ `ghcr.io/telemt/telemt:latest` с GitHub Container Registry |
+| systemd | Бинарник с GitHub Releases, автозапуск |
+| Docker | Образ с Docker Hub |
 
-### Меню MTProxy
-
-```
-  📡  MTProxy (telemt)
-  ────────────────────────────────────────────
-  Версия  3.3.27  (systemd)
-  Порт    2053
-
-  1)  🔧  Установка
-  2)  ⚙️  Управление
-  3)  👥  Пользователи  2
-
-  4)  📦  Миграция на другой сервер
-  5)  🔀  Сменить режим (systemd ↔ Docker)
-```
-
-```
-  MTProxy — Управление
-  ────────────────────────────────────────
-
-  1)  📊  Статус и логи
-  2)  🔄  Обновить
-  3)  ⏹️  Остановить
-  4)  🔀  Режим подключения  direct
-```
-
-### Параметры установки
-
-| Параметр | По умолчанию | Описание |
-|---|---|---|
-| Порт | 8443 | Рекомендуемые Telegram-порты: 443, 2053, 2083, 2087, 2096, 8443 |
-| Домен-маскировка | petrovich.ru | Любой крупный HTTPS-сайт |
-| Режим подключения | direct | Direct или Middle-End relay (см. ниже) |
-| Секрет | авто | 32 hex-символа, генерируется автоматически |
-
-### Direct vs Middle-End relay
-
-При установке скрипт предлагает выбрать режим подключения прокси к серверам Telegram.
-
-**Direct** (`use_middle_proxy = false`) — прокси подключается напрямую к Telegram DC серверам:
-
-```
-Клиент → твой сервер → Telegram DC
-```
-
-Меньше задержка, меньше RAM, проще конфигурация. Рекомендуется для большинства серверов.
-
-**Middle-End relay** (`use_middle_proxy = true`) — прокси держит пул соединений к официальным Telegram relay-серверам, которые сами маршрутизируют трафик:
-
-```
-Клиент → твой сервер → Telegram ME relay → Telegram DC
-```
-
-Имеет смысл если у сервера плохая прямая IP-связность с Telegram DC — например, при блокировках на уровне ISP. Потребляет больше RAM (пул `me_writers`), при старте требует время на инициализацию пула.
-
-Режим можно переключить в любой момент: **Управление → 4) Режим подключения**. Изменение требует перезапуска сервиса.
-
-### Управление пользователями
-
-Добавление и удаление пользователей выполняется через REST API telemt — изменения применяются мгновенно без перезапуска сервиса. Поддерживается удаление нескольких пользователей за раз (вводи номера через пробел: `1 3 5`).
-
-#### Ограничения на пользователя
-
-| Параметр | Описание |
-|---|---|
-| Макс. подключений | Максимум одновременных TCP-соединений |
-| Макс. уникальных IP | Ограничение уникальных источников |
-| Квота трафика (ГБ) | Лимит суммарного трафика |
-| Срок действия (дней) | Автоматическое истечение доступа |
-
-### REST API
-
-telemt предоставляет HTTP API на `127.0.0.1:9091`. Основные эндпоинты:
-
-| Метод | Путь | Описание |
-|---|---|---|
-| `GET` | `/v1/health` | Статус сервиса |
-| `GET` | `/v1/system/info` | Версия, uptime, хэш конфига |
-| `GET` | `/v1/stats/summary` | Подключения, пользователи, uptime |
-| `GET` | `/v1/runtime/gates` | Режим ME, состояние пула |
-| `GET` | `/v1/users` | Список пользователей со ссылками и статистикой |
-| `POST` | `/v1/users` | Создать пользователя |
-| `PATCH` | `/v1/users/{name}` | Изменить параметры пользователя |
-| `DELETE` | `/v1/users/{name}` | Удалить пользователя |
-
-Примеры:
-
-```bash
-# Получить ссылки для всех пользователей
-curl -s http://127.0.0.1:9091/v1/users | jq '.data[] | {user: .username, link: .links.tls[0]}'
-
-# Добавить пользователя с квотой 10 ГБ
-curl -s -X POST http://127.0.0.1:9091/v1/users \
-  -H "Content-Type: application/json" \
-  -d '{"username":"alice","data_quota_bytes":10737418240}'
-
-# Удалить пользователя
-curl -s -X DELETE http://127.0.0.1:9091/v1/users/alice
-
-# Текущие подключения и uptime
-curl -s http://127.0.0.1:9091/v1/stats/summary | jq '.data | {uptime: .uptime_seconds, conns: .connections_total}'
-```
-
-> 📖 Полный справочник параметров конфига: [docs/TELEMT_CONFIG.md](docs/TELEMT_CONFIG.md)
+Hot reload пользователей без перезапуска сервиса.
 
 ---
 
@@ -296,6 +178,35 @@ curl -s http://127.0.0.1:9091/v1/stats/summary | jq '.data | {uptime: .uptime_se
 - **Port Hopping** — диапазон UDP портов, обход блокировок по порту
 - IPv6 поддержка
 - Алгоритм: BBR / Brutal
+- **Маскировка** — трафик выглядит как обычный HTTPS сайт
+
+### Меню управления
+
+```
+  1)  📊  Статус
+  2)  📋  Логи
+  3)  🔄  Перезапустить
+  4)  📶  Bandwidth
+  5)  🎭  Маскировка
+```
+
+### Bandwidth
+
+| Режим | Когда использовать |
+|---|---|
+| **Без bandwidth** (BBR) | Рекомендуется по умолчанию. Автоподбор скорости |
+| **С bandwidth** (Brutal) | Нестабильный канал с потерями пакетов |
+
+Указывайте скорость серверного канала:
+```
+Сервер 1 Гбит/с   → 1 gbps
+Сервер 100 Мбит/с → 100 mbps
+```
+
+### Маскировка
+
+Делает трафик Hysteria2 похожим на обычный HTTPS. Рекомендуется включить.
+По умолчанию рекомендуется **Bing** — стабильный и популярный.
 
 ### Port Hopping
 
@@ -314,7 +225,7 @@ URI клиента: `hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3`
 
 ## Интеграция Hysteria2 → Подписка Remnawave
 
-Добавляет персональный `hy2://` URI в подписку Remnawave автоматически при создании/изменении пользователя. Каждый пользователь получает уникальный URI со своим именем и паролем.
+Добавляет `hy2://` URI в подписку Remnawave автоматически при создании/изменении пользователя.
 
 ```bash
 # Путь: Главное меню → 3) Hysteria2 → 4) Подписка → 3) Интеграция с Remnawave
@@ -325,85 +236,70 @@ URI клиента: `hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3`
 ```
 Remnawave  ──POST /webhook──►  hy-webhook :8766
                                     │
-                            обновляет users.json
-                                    │  (НЕТ перезапуска hysteria)
+                            обновляет config.yaml
                                     │
-Hysteria2  ──POST /auth──►  hy-webhook :8766
-                                    │  при каждом подключении клиента
-                            проверяет users.json → ok/fail
-
-Клиент (Hiddify/v2rayNG)
-    ↓  GET /sub/TOKEN
-remna-sub-injector :3020
-    ↓  GET /uri/TOKEN  ──►  hy-webhook :8766  ──►  Remnawave API
-    ←  hy2://user:pass@domain:port?sni=...
-    ↓  проксирует на upstream :3010
-    ←  base64 ответ + hy2:// URI (инъекция)
-
-Клиент (Clash/Sing-Box)  →  YAML/JSON конфиг без изменений
+                            Hysteria2 reload
+                                    │
+subscription-page  ◄──  читает users.json  ──►  hy2:// URI в подписку
 ```
 
-> **HTTP auth** — ключевое преимущество: добавление/удаление пользователей не требует перезапуска Hysteria2. Соединения активных клиентов не разрываются.
+### Обновление
 
-### Компоненты
+### Вариант 1 — через меню (рекомендуется)
 
-| Компонент | Тип | Описание |
-|---|---|---|
-| `hy-webhook.py` | Python systemd | Вебхук-сервис + `GET /uri/:shortUuid` + proxy :3020 |
-| `sub-injector` | Rust бинарник | Reverse-proxy с per-user инъекцией URI по UA |
+Если скрипт уже установлен и запущен:
 
-### Преимущества новой архитектуры
+```
+Главное меню → 5) Обновить скрипт
+```
 
-- Нет форка TypeScript и пересборки Docker образа — установка занимает ~1 минуту
-- Клиенты Clash/Sing-Box получают YAML без изменений (проверка Content-Type)
-- Разные наборы URI для разных клиентов через User-Agent фильтрацию
-- sub-injector — независимый сервис, не зависит от версии subscription-page
+Скачивает свежий архив с GitHub и обновляет все модули `lib/*.sh`.
 
 ---
 
-## Файлы и пути
+### Вариант 2 — полная переустановка с нуля
 
-### Remnawave Panel
+Если скрипта ещё нет или нужна чистая установка:
 
-| Путь | Назначение |
-|---|---|
-| `/opt/remnawave/.env` | Конфигурация панели |
-| `/opt/remnawave/docker-compose.yml` | Docker Compose |
-| `/opt/remnawave/nginx.conf` | Nginx (cookie-ключ здесь) |
-| `/opt/remnawave/backups/` | Бэкапы |
-| `/usr/local/bin/remnawave_panel` | Скрипт управления `rp` |
-| `/root/remnawave-credentials.txt` | Cookie URL для входа в панель |
+```bash
+mkdir -p /root/lib
 
-### MTProxy (telemt)
+for mod in common panel telemt hysteria migrate; do
+    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/${mod}.sh" \
+        -o "/root/lib/${mod}.sh"
+done
 
-| Путь | Назначение |
-|---|---|
-| `/usr/local/bin/telemt` | Бинарник |
-| `/etc/telemt/telemt.toml` | Конфиг (владелец `telemt:telemt`) |
-| `/opt/telemt/` | Рабочая директория (cache, tlsfront, proxy-secret) |
-| `/etc/systemd/system/telemt.service` | Systemd unit |
+curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh" \
+    -o /root/server-manager.sh && chmod +x /root/server-manager.sh
 
-### Hysteria2
+bash /root/server-manager.sh
+```
 
-| Путь | Назначение |
-|---|---|
-| `/usr/local/bin/hysteria` | Бинарник |
-| `/etc/hysteria/config.yaml` | Конфигурация сервера |
-| `/etc/systemd/system/hysteria-server.service` | Systemd unit |
-| `/etc/systemd/system/hy-webhook.service` | Systemd unit webhook-синхронизации |
-| `/root/hysteria-{домен}.txt` | URI подключения |
-| `/root/hysteria-{домен}-users.txt` | URI всех пользователей |
+---
 
-### Интеграция (hy-webhook + sub-injector)
+### Вариант 3 — обновить один модуль
 
-| Путь | Назначение |
-|---|---|
-| `/opt/hy-webhook/hy-webhook.py` | Python сервис |
-| `/etc/hy-webhook.env` | Конфиг и секреты (права 600) |
-| `/var/lib/hy-webhook/users.json` | База пользователей |
-| `/opt/remna-sub-injector/sub-injector` | Бинарник sub-injector |
-| `/opt/remna-sub-injector/config.toml` | Конфиг инжектора |
-| `/etc/systemd/system/remna-sub-injector.service` | Systemd unit sub-injector |
+Если нужно обновить только конкретный компонент:
+
+```bash
+# Заменить panel.sh (Remnawave Panel)
+curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/panel.sh" \
+    -o /root/lib/panel.sh
+
+# Или через tar-архив (все модули сразу)
+curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz \
+    | tar -xz --strip-components=2 -C /root/lib server-manager-main/lib
+```
+
+---
+
+### После обновления
+
+Скрипт управления `remnawave_panel` (команда `rp`) хранится отдельно в `/usr/local/bin/remnawave_panel`. Он не обновляется автоматически. Чтобы применить изменения:
+
+```
+Главное меню → 1) Remnawave Panel → 2) Управление → 12) Переустановить скрипт (rp)
+```
 
 ---
 
@@ -483,9 +379,9 @@ bash /root/server-manager.sh
 Если нужно обновить только конкретный компонент:
 
 ```bash
-# Заменить telemt.sh (MTProxy)
-curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/telemt.sh" \
-    -o /root/lib/telemt.sh
+# Заменить panel.sh (Remnawave Panel)
+curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/panel.sh" \
+    -o /root/lib/panel.sh
 
 # Или через tar-архив (все модули сразу)
 curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz \
@@ -512,17 +408,10 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
 - Docker, docker-compose, jq, certbot, openssl
 
 ### Порты
-
-| Порт | Протокол | Компонент | Описание |
-|---|---|---|---|
-| `80` | TCP | certbot | Открывается на время выпуска SSL, потом закрывается |
-| `443` | TCP | Xray/nginx | Remnawave Panel + Reality selfsteal |
-| `2053` / `8443` | TCP | telemt | MTProxy (по выбору при установке) |
-| `8443` | UDP | Hysteria2 | Основной порт + Port Hopping диапазон |
-| `2222` | TCP | remnanode | Только из Docker сети 172.30.0.0/16 |
-| `8766` | TCP | hy-webhook | Только из Docker сети 172.16.0.0/12 |
-| `9091` | TCP | telemt API | Только localhost — управление через REST |
-| `3020` | TCP | sub-injector | Reverse-proxy подписок с инъекцией URI |
+- `80` TCP — certbot (открывается на время выпуска SSL, потом закрывается)
+- `443` TCP — Xray/nginx (Remnawave Panel + selfsteal)
+- `8443` UDP — Hysteria2
+- `2222` TCP — remnanode (только из Docker сети 172.30.0.0/16)
 
 ### RAM
 
@@ -537,11 +426,10 @@ curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.
 | hysteria2 | ~17 MB (peak 53 MB) | systemd |
 | telemt | ~18 MB (peak 83 MB) | systemd |
 | hy-webhook | ~1 MB | systemd |
-| sub-injector | ~3 MB | systemd |
 | nginx + redis | ~10 MB | Docker |
 | **Итого** | **~850 MB** | |
 
-> **Примечание:** 395 MB для remnawave — норма для NestJS + BullMQ + TypeORM стека.
+> **Примечание:** 395 MB для remnawave — норма для NestJS + BullMQ + TypeORM стека. eGames и другие скрипты на базе remnawave/backend:2 показывают те же цифры.
 
 ### Swap
 Рекомендуется минимум **1 GB swap**. При 2 GB RAM telemt и другие сервисы в пике уходят в swap (~47-83 MB).
