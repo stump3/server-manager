@@ -1240,16 +1240,21 @@ PYEOF2
                 ;;
             2)
                 if $enabled; then
-                    python3 - << PYEOF2
-import re
-path = '$HYSTERIA_CONFIG'
+                    python3 - "$HYSTERIA_CONFIG" << 'PYEOF2'
+import re, sys
+path = sys.argv[1]
 with open(path) as f:
     cfg = f.read()
+cfg = re.sub(r'
+
+bandwidth:.*?(?=
+\S|\Z)', '', cfg, flags=re.DOTALL)
 cfg = re.sub(r'
 bandwidth:.*?(?=
 \S|\Z)', '', cfg, flags=re.DOTALL)
 with open(path, 'w') as f:
-    f.write(cfg)
+    f.write(cfg.rstrip() + '
+')
 print('ok')
 PYEOF2
                     ok "Bandwidth удалён"
@@ -1334,16 +1339,21 @@ PYEOF2
                 ;;
             2)
                 if $enabled; then
-                    python3 - << PYEOF2
-import re
-path = '$HYSTERIA_CONFIG'
+                    python3 - "$HYSTERIA_CONFIG" << 'PYEOF2'
+import re, sys
+path = sys.argv[1]
 with open(path) as f:
     cfg = f.read()
+cfg = re.sub(r'
+
+masquerade:.*?(?=
+\S|\Z)', '', cfg, flags=re.DOTALL)
 cfg = re.sub(r'
 masquerade:.*?(?=
 \S|\Z)', '', cfg, flags=re.DOTALL)
 with open(path, 'w') as f:
-    f.write(cfg)
+    f.write(cfg.rstrip() + '
+')
 print('ok')
 PYEOF2
                     ok "Маскировка удалена"
