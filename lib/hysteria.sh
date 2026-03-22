@@ -1145,9 +1145,19 @@ hysteria_submenu_manage() {
     while true; do
         clear
         header "Hysteria2 — Управление"
+        # Показываем текущий bandwidth в шапке
+        local bw_info=""
+        if [ -f "$HYSTERIA_CONFIG" ]; then
+            local bw_up bw_down
+            bw_up=$(grep -A1 "^bandwidth:" "$HYSTERIA_CONFIG" 2>/dev/null | grep "up:" | awk '{print $2, $3}')
+            bw_down=$(grep -A2 "^bandwidth:" "$HYSTERIA_CONFIG" 2>/dev/null | grep "down:" | awk '{print $2, $3}')
+            [ -n "$bw_up" ] && bw_info="${GRAY}  ↑${bw_up} ↓${bw_down}${NC}"
+        fi
         echo -e "  ${BOLD}1)${RESET} 📊  Статус"
         echo -e "  ${BOLD}2)${RESET} 📋  Логи"
         echo -e "  ${BOLD}3)${RESET} 🔄  Перезапустить"
+        echo -e "  ${BOLD}4)${RESET} 📶  Bandwidth$(echo -e "$bw_info")"
+        echo -e "  ${BOLD}5)${RESET} 🎭  Маскировка"
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
@@ -1155,8 +1165,196 @@ hysteria_submenu_manage() {
             1) hysteria_status || true; read -rp "Enter..." < /dev/tty ;;
             2) hysteria_logs || true;   read -rp "Enter..." < /dev/tty ;;
             3) hysteria_restart || true; read -rp "Enter..." < /dev/tty ;;
+            4) _hy_bandwidth_menu || true ;;
+            5) _hy_masquerade_menu || true ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
+        esac
+    done
+}
+
+_hy_bandwidth_menu() {
+    while true; do
+        clear
+        header "Hysteria2 — Bandwidth"
+        echo ""
+        # Читаем текущие значения
+        local cur_up="" cur_down="" enabled=false
+        if [ -f "$HYSTERIA_CONFIG" ] && grep -q "^bandwidth:" "$HYSTERIA_CONFIG" 2>/dev/null; then
+            enabled=true
+            cur_up=$(grep -A2 "^bandwidth:" "$HYSTERIA_CONFIG" | grep "up:" | awk '{print $2, $3}')
+            cur_down=$(grep -A2 "^bandwidth:" "$HYSTERIA_CONFIG" | grep "down:" | awk '{print $2, $3}')
+            echo -e "  ${GREEN}● Bandwidth включён${NC}"
+            echo -e "  ${GRAY}  ↑ Upload:   ${NC}${cur_up}"
+            echo -e "  ${GRAY}  ↓ Download: ${NC}${cur_down}"
+        else
+            echo -e "  ${YELLOW}○ Bandwidth не задан${NC}"
+            echo -e "  ${GRAY}  Без bandwidth Hysteria2 использует BBR (авто).${NC}"
+            echo -e "  ${GRAY}  Задайте если используете Brutal или хотите ограничить скорость.${NC}"
+        fi
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Изменить / включить"
+        $enabled && echo -e "  ${BOLD}2)${RESET} Выключить (удалить блок)"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1)
+                echo ""
+                echo -e "  ${GRAY}Укажите скорость вашего сервера (не клиента).${NC}"
+                echo -e "  ${GRAY}Пример: сервер на 1 Гбит/с → 1 gbps${NC}"
+                echo -e "  ${GRAY}Форматы: 100 mbps / 1 gbps / 500 mbps${NC}"
+                echo ""
+                local new_up new_down
+                read -rp "  Upload   [100 mbps]: " new_up   < /dev/tty; new_up="${new_up:-100 mbps}"
+                read -rp "  Download [100 mbps]: " new_down < /dev/tty; new_down="${new_down:-100 mbps}"
+                python3 - << PYEOF2
+import re
+path = '$HYSTERIA_CONFIG'
+with open(path) as f:
+    cfg = f.read()
+new_bw = 'bandwidth:
+  up: $new_up
+  down: $new_down'
+if re.search(r'^bandwidth:', cfg, re.M):
+    cfg = re.sub(r'bandwidth:.*?(?=^\S|\Z)', new_bw + '
+', cfg, flags=re.M|re.DOTALL)
+else:
+    # Вставляем после блока auth
+    cfg = re.sub(r'((?:^quic:|^masquerade:))', new_bw + '
+
+' + r'', cfg, count=1, flags=re.M)
+    if 'bandwidth:' not in cfg:
+        cfg = cfg.rstrip() + '
+
+' + new_bw + '
+'
+with open(path, 'w') as f:
+    f.write(cfg)
+print('ok')
+PYEOF2
+                ok "Bandwidth обновлён: ↑${new_up} ↓${new_down}"
+                if confirm "Перезапустить Hysteria2 для применения?" y; then
+                    systemctl restart "$HYSTERIA_SVC" && ok "Hysteria2 перезапущен"
+                fi
+                ;;
+            2)
+                if $enabled; then
+                    python3 - << PYEOF2
+import re
+path = '$HYSTERIA_CONFIG'
+with open(path) as f:
+    cfg = f.read()
+cfg = re.sub(r'
+bandwidth:.*?(?=
+\S|\Z)', '', cfg, flags=re.DOTALL)
+with open(path, 'w') as f:
+    f.write(cfg)
+print('ok')
+PYEOF2
+                    ok "Bandwidth удалён"
+                    if confirm "Перезапустить Hysteria2?" y; then
+                        systemctl restart "$HYSTERIA_SVC" && ok "Hysteria2 перезапущен"
+                    fi
+                fi
+                ;;
+            0) return ;;
+        esac
+    done
+}
+
+_hy_masquerade_menu() {
+    while true; do
+        clear
+        header "Hysteria2 — Маскировка"
+        echo ""
+        local cur_type="" cur_url="" enabled=false
+        if [ -f "$HYSTERIA_CONFIG" ] && grep -q "^masquerade:" "$HYSTERIA_CONFIG" 2>/dev/null; then
+            enabled=true
+            cur_type=$(grep -A1 "^masquerade:" "$HYSTERIA_CONFIG" | grep "type:" | awk '{print $2}')
+            cur_url=$(grep -A4 "^masquerade:" "$HYSTERIA_CONFIG" | grep "url:" | awk '{print $2}')
+            echo -e "  ${GREEN}● Маскировка включена${NC}"
+            echo -e "  ${GRAY}  Тип: ${NC}${cur_type}"
+            [ -n "$cur_url" ] && echo -e "  ${GRAY}  URL: ${NC}${cur_url}"
+        else
+            echo -e "  ${YELLOW}○ Маскировка не задана${NC}"
+            echo -e "  ${GRAY}  Без маскировки QUIC трафик виден как Hysteria2.${NC}"
+            echo -e "  ${GRAY}  С маскировкой — как обычный HTTPS сайт.${NC}"
+        fi
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Установить / изменить"
+        $enabled && echo -e "  ${BOLD}2)${RESET} Выключить"
+        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo ""
+        local ch; read -rp "  Выбор: " ch < /dev/tty
+        case "$ch" in
+            1)
+                echo ""
+                echo -e "  Выберите сайт для маскировки:"
+                echo -e "  ${BOLD}1)${RESET} Bing          ${GRAY}(рекомендуется)${NC}"
+                echo -e "  ${BOLD}2)${RESET} Yahoo"
+                echo -e "  ${BOLD}3)${RESET} Apple CDN     ${GRAY}(стабильный, популярный)${NC}"
+                echo -e "  ${BOLD}4)${RESET} Hetzner Speed Test"
+                echo -e "  ${BOLD}5)${RESET} Свой URL"
+                echo ""
+                local mc; read -rp "  Выбор [1]: " mc < /dev/tty; mc="${mc:-1}"
+                local masq_url
+                case "$mc" in
+                    1) masq_url="https://www.bing.com" ;;
+                    2) masq_url="https://www.yahoo.com" ;;
+                    3) masq_url="https://cdn.apple.com" ;;
+                    4) masq_url="https://speed.hetzner.de" ;;
+                    5) read -rp "  URL (https://...): " masq_url < /dev/tty ;;
+                    *) masq_url="https://www.bing.com" ;;
+                esac
+                python3 - << PYEOF2
+import re
+path = '$HYSTERIA_CONFIG'
+with open(path) as f:
+    cfg = f.read()
+new_masq = 'masquerade:
+  type: proxy
+  proxy:
+    url: $masq_url
+    rewriteHost: true'
+if re.search(r'^masquerade:', cfg, re.M):
+    cfg = re.sub(r'masquerade:.*?(?=^\S|\Z)', new_masq + '
+', cfg, flags=re.M|re.DOTALL)
+else:
+    cfg = cfg.rstrip() + '
+
+' + new_masq + '
+'
+with open(path, 'w') as f:
+    f.write(cfg)
+print('ok')
+PYEOF2
+                ok "Маскировка: proxy → $masq_url"
+                if confirm "Перезапустить Hysteria2?" y; then
+                    systemctl restart "$HYSTERIA_SVC" && ok "Hysteria2 перезапущен"
+                fi
+                ;;
+            2)
+                if $enabled; then
+                    python3 - << PYEOF2
+import re
+path = '$HYSTERIA_CONFIG'
+with open(path) as f:
+    cfg = f.read()
+cfg = re.sub(r'
+masquerade:.*?(?=
+\S|\Z)', '', cfg, flags=re.DOTALL)
+with open(path, 'w') as f:
+    f.write(cfg)
+print('ok')
+PYEOF2
+                    ok "Маскировка удалена"
+                    if confirm "Перезапустить Hysteria2?" y; then
+                        systemctl restart "$HYSTERIA_SVC" && ok "Hysteria2 перезапущен"
+                    fi
+                fi
+                ;;
+            0) return ;;
         esac
     done
 }
