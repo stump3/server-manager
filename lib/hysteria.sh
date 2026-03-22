@@ -1307,24 +1307,22 @@ _hy_masquerade_menu() {
                     5) read -rp "  URL (https://...): " masq_url < /dev/tty ;;
                     *) masq_url="https://www.bing.com" ;;
                 esac
-                python3 - << PYEOF2
-import re
-path = '$HYSTERIA_CONFIG'
+                python3 - "$HYSTERIA_CONFIG" "$masq_url" << 'PYEOF2'
+import re, sys
+path, masq_url = sys.argv[1], sys.argv[2]
 with open(path) as f:
     cfg = f.read()
-new_masq = 'masquerade:
-  type: proxy
-  proxy:
-    url: $masq_url
-    rewriteHost: true'
+new_masq = (
+    'masquerade:\n'
+    '  type: proxy\n'
+    '  proxy:\n'
+    f'    url: {masq_url}\n'
+    '    rewriteHost: true'
+)
 if re.search(r'^masquerade:', cfg, re.M):
-    cfg = re.sub(r'masquerade:.*?(?=^\S|\Z)', new_masq + '
-', cfg, flags=re.M|re.DOTALL)
+    cfg = re.sub(r'masquerade:.*?(?=\n\S|\Z)', new_masq, cfg, flags=re.DOTALL)
 else:
-    cfg = cfg.rstrip() + '
-
-' + new_masq + '
-'
+    cfg = cfg.rstrip() + '\n\n' + new_masq + '\n'
 with open(path, 'w') as f:
     f.write(cfg)
 print('ok')
