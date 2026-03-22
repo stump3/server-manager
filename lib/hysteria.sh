@@ -1323,18 +1323,11 @@ import re, sys
 path = sys.argv[1]
 with open(path) as f:
     cfg = f.read()
-new_masq = 'masquerade:
-  type: file
-  file:
-    dir: /var/www/html'
+new_masq = 'masquerade:\n  type: file\n  file:\n    dir: /var/www/html'
 if re.search(r'^masquerade:', cfg, re.M):
-    cfg = re.sub(r'masquerade:.*?(?=
-\S|\Z)', new_masq, cfg, flags=re.DOTALL)
+    cfg = re.sub(r'\n+masquerade:[^\n]*(\n[ \t][^\n]*)*', '\n\n' + new_masq, cfg)
 else:
-    cfg = cfg.rstrip() + '
-
-' + new_masq + '
-'
+    cfg = cfg.rstrip() + '\n\n' + new_masq + '\n'
 with open(path, 'w') as f:
     f.write(cfg)
 print('ok')
