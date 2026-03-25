@@ -56,7 +56,12 @@ migrate_all() {
 set -e; cd /opt/remnawave
 docker volume rm remnawave-db-data 2>/dev/null || true
 docker compose up -d remnawave-db remnawave-redis >/dev/null 2>&1
-sleep 20
+# Ждём готовности PostgreSQL через pg_isready вместо фиксированного sleep
+_pg_wait=0
+until docker compose exec -T remnawave-db pg_isready -U postgres -q 2>/dev/null; do
+    sleep 1; _pg_wait=$((_pg_wait+1))
+    [ "$_pg_wait" -ge 60 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
+done
 zcat /opt/remnawave/$dumpb | docker compose exec -T remnawave-db psql -U postgres postgres >/dev/null 2>&1 || true
 docker compose up -d >/dev/null 2>&1
 RPANEL
