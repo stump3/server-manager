@@ -95,10 +95,12 @@ hysteria_install() {
                 cp "$HYSTERIA_CONFIG" "$backup_cfg" 2>/dev/null && info "Конфиг сохранён: $backup_cfg"
                 systemctl stop "$HYSTERIA_SVC" 2>/dev/null || true
                 local hy_script; hy_script=$(mktemp /tmp/hy2-install.XXXXXX.sh)
-                curl -fsSL --max-time 30 https://get.hy2.sh/ -o "$hy_script" 2>/dev/null \
-                    && [ -s "$hy_script" ] \
-                    && bash "$hy_script"; local _rc=$?; rm -f "$hy_script"
-                [ ${_rc:-1} -ne 0 ] && { err "Ошибка установки"; return 1; }
+                if ! curl -fsSL --max-time 30 https://get.hy2.sh/ -o "$hy_script" 2>/dev/null; then
+                    rm -f "$hy_script"; err "Не удалось скачать установщик Hysteria2"; return 1
+                fi
+                [ -s "$hy_script" ] || { rm -f "$hy_script"; err "Установщик Hysteria2 пустой"; return 1; }
+                local _rc=0; bash "$hy_script" || _rc=$?; rm -f "$hy_script"
+                [ $_rc -ne 0 ] && { err "Ошибка установки"; return 1; }
                 cp "$backup_cfg" "$HYSTERIA_CONFIG"
                 systemctl restart "$HYSTERIA_SVC"
                 ok "Hysteria2 переустановлена, конфиг восстановлен"
@@ -335,7 +337,7 @@ HTML
         return 1
     fi
     [ -s "$hy_script" ] || { rm -f "$hy_script"; err "Установщик Hysteria2 пустой"; return 1; }
-    bash "$hy_script"; local hy_rc=$?; rm -f "$hy_script"
+    local hy_rc=0; bash "$hy_script" || hy_rc=$?; rm -f "$hy_script"
     [ $hy_rc -ne 0 ] && { err "Ошибка установки Hysteria2"; return 1; }
     command -v hysteria &>/dev/null || { err "Бинарник hysteria не найден"; return 1; }
     ok "Hysteria2 установлен: $(hysteria version 2>/dev/null | grep Version | awk '{print $2}')"
