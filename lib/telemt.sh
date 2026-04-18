@@ -307,40 +307,56 @@ telemt_traffic_db_path() {
 telemt_menu_stats_settings() {
     local db
     db=$(telemt_traffic_db_path)
-    local cur_days
-    cur_days=$(TELEMT_TRAFFIC_DB="$db" python3 -c "
+    local cur_ip_days cur_traffic_days
+    read -r cur_ip_days cur_traffic_days < <(TELEMT_TRAFFIC_DB="$db" python3 -c "
 import os, json
 db=os.environ.get('TELEMT_TRAFFIC_DB','')
-days=30
+ip_days=30
+traffic_days=90
 if db and os.path.exists(db):
     try:
         with open(db,'r',encoding='utf-8') as f:
             d=json.load(f)
-        days=int(d.get('settings',{}).get('ip_retention_days',30) or 30)
+        s=d.get('settings',{}) if isinstance(d,dict) else {}
+        ip_days=int(s.get('ip_retention_days',30) or 30)
+        traffic_days=int(s.get('traffic_retention_days',90) or 90)
     except Exception:
         pass
-print(days)
-" 2>/dev/null || echo "30")
-    [ -z "$cur_days" ] && cur_days=30
+if traffic_days not in (60, 90):
+    traffic_days = 90
+print(ip_days, traffic_days)
+" 2>/dev/null || echo "30 90")
+    [ -z "${cur_ip_days:-}" ] && cur_ip_days=30
+    [ -z "${cur_traffic_days:-}" ] && cur_traffic_days=90
 
     header "Настройки сбора статистики"
     echo -e "  ${GRAY}Файл статистики:${NC} $db"
-    echo -e "  ${GRAY}Хранить историю IP:${NC} ${cur_days} дней"
+    echo -e "  ${GRAY}Хранить историю IP:${NC} ${cur_ip_days} дней"
+    echo -e "  ${GRAY}Хранить трафик JSON:${NC} ${cur_traffic_days} дней (60/90)"
     echo ""
-    local new_days
-    read -rp "  Новый лимит дней [${cur_days}]: " new_days < /dev/tty
-    new_days="${new_days:-$cur_days}"
-    if ! echo "$new_days" | grep -qE '^[0-9]+$' || [ "$new_days" -lt 1 ] || [ "$new_days" -gt 3650 ]; then
+    local new_ip_days new_traffic_days
+    read -rp "  Новый лимит IP дней [${cur_ip_days}]: " new_ip_days < /dev/tty
+    new_ip_days="${new_ip_days:-$cur_ip_days}"
+    if ! echo "$new_ip_days" | grep -qE '^[0-9]+$' || [ "$new_ip_days" -lt 1 ] || [ "$new_ip_days" -gt 3650 ]; then
         warn "Введите число от 1 до 3650"
         return 1
     fi
+    read -rp "  Хранить трафик (только 60 или 90) [${cur_traffic_days}]: " new_traffic_days < /dev/tty
+    new_traffic_days="${new_traffic_days:-$cur_traffic_days}"
+    if [ "$new_traffic_days" != "60" ] && [ "$new_traffic_days" != "90" ]; then
+        warn "Допустимо только 60 или 90"
+        return 1
+    fi
 
-    TELEMT_TRAFFIC_DB="$db" TELEMT_IP_RETENTION_DAYS="$new_days" python3 -c "
+    TELEMT_TRAFFIC_DB="$db" TELEMT_IP_RETENTION_DAYS="$new_ip_days" TELEMT_TRAFFIC_RETENTION_DAYS="$new_traffic_days" python3 -c "
 import os, json
 from datetime import datetime, timezone, timedelta
 db=os.environ.get('TELEMT_TRAFFIC_DB','')
-days=int(os.environ.get('TELEMT_IP_RETENTION_DAYS','30'))
-state={'users':{},'settings':{'ip_retention_days':days}}
+ip_days=int(os.environ.get('TELEMT_IP_RETENTION_DAYS','30'))
+traffic_days=int(os.environ.get('TELEMT_TRAFFIC_RETENTION_DAYS','90'))
+if traffic_days not in (60, 90):
+    traffic_days = 90
+state={'users':{},'settings':{'ip_retention_days':ip_days, 'traffic_retention_days': traffic_days}}
 if db and os.path.exists(db):
     try:
         with open(db,'r',encoding='utf-8') as f:
@@ -353,9 +369,11 @@ if 'users' not in state or not isinstance(state['users'],dict):
     state['users']={}
 if 'settings' not in state or not isinstance(state['settings'],dict):
     state['settings']={}
-state['settings']['ip_retention_days']=days
+state['settings']['ip_retention_days']=ip_days
+state['settings']['traffic_retention_days']=traffic_days
 
-cutoff=datetime.now(timezone.utc)-timedelta(days=days)
+ip_cutoff=datetime.now(timezone.utc)-timedelta(days=ip_days)
+traffic_cutoff=datetime.now(timezone.utc)-timedelta(days=traffic_days)
 for _,rec in list(state['users'].items()):
     hist=rec.get('ip_history',{})
     if not isinstance(hist,dict):
@@ -368,25 +386,41 @@ for _,rec in list(state['users'].items()):
         if isinstance(last,str):
             try:
                 dt=datetime.fromisoformat(last.replace('Z','+00:00'))
-                keep=dt>=cutoff
+                keep=dt>=ip_cutoff
             except Exception:
                 keep=False
         if keep:
             new_hist[ip]=val
     rec['ip_history']=new_hist
+
+    daily=rec.get('daily',{})
+    if isinstance(daily,dict):
+        new_daily={}
+        for dkey,dval in daily.items():
+            try:
+                ddt=datetime.fromisoformat(dkey+'T00:00:00+00:00')
+                if ddt>=traffic_cutoff:
+                    new_daily[dkey]=int(dval or 0)
+            except Exception:
+                continue
+        rec['daily']=new_daily
 state['updated_at']=datetime.now(timezone.utc).isoformat()
 if db:
     os.makedirs(os.path.dirname(db), exist_ok=True)
     with open(db,'w',encoding='utf-8') as f:
         json.dump(state,f,ensure_ascii=False,indent=2)
 " 2>/dev/null || { warn "Не удалось сохранить настройки"; return 1; }
-    ok "Сохранено: хранить IP историю $new_days дн."
+    ok "Сохранено: IP $new_ip_days дн, трафик $new_traffic_days дн."
 }
 
 # ── Просмотр IP-истории пользователя ──────────────────────────────
 telemt_menu_user_ips() {
     local db
     db=$(telemt_traffic_db_path)
+
+    # Автообновление в лёгком режиме (1 попытка), чтобы IP подтягивались сами.
+    telemt_fetch_links 1 >/dev/null 2>&1 || true
+
     [ -f "$db" ] || { warn "Статистика ещё не собрана: $db"; return 1; }
 
     local -a users=()
@@ -407,7 +441,9 @@ except Exception:
     pass
 " 2>/dev/null || true)
     if [ ${#users[@]} -eq 0 ]; then
-        warn "Нет сохранённой IP-истории. Сначала открой «Пользователи и ссылки»."
+        warn "Нет сохранённой IP-истории."
+        info "IP-история появляется, когда telemt API отдаёт active/recent IP списки."
+        info "Если пользователь давно офлайн, IP может не вернуться в runtime API."
         return 1
     fi
 
@@ -459,9 +495,10 @@ except Exception as e:
 
 # ── Показ пользователей ───────────────────────────────────────────
 telemt_fetch_links() {
+    local attempts_max="${1:-15}"
     local attempt=0
     info "Запрашиваю данные через API..."
-    while [ $attempt -lt 15 ]; do
+    while [ $attempt -lt "$attempts_max" ]; do
         local resp; resp=$(telemt_api GET "/v1/users" || true)
         if echo "$resp" | grep -q "tg://proxy"; then
             echo ""
@@ -480,7 +517,7 @@ def fmt_bytes(b):
     return f'{b:.2f} PB'
 
 db_path = os.environ.get('TELEMT_TRAFFIC_DB', '').strip()
-state = {'users': {}, 'settings': {'ip_retention_days': 30}}
+state = {'users': {}, 'settings': {'ip_retention_days': 30, 'traffic_retention_days': 90}}
 if db_path:
     try:
         with open(db_path, 'r', encoding='utf-8') as f:
@@ -490,13 +527,16 @@ if db_path:
                 if not isinstance(state.get('users'), dict):
                     state['users'] = {}
                 if not isinstance(state.get('settings'), dict):
-                    state['settings'] = {'ip_retention_days': 30}
+                    state['settings'] = {'ip_retention_days': 30, 'traffic_retention_days': 90}
     except Exception:
-        state = {'users': {}, 'settings': {'ip_retention_days': 30}}
+        state = {'users': {}, 'settings': {'ip_retention_days': 30, 'traffic_retention_days': 90}}
 
 retention_days = int(state.get('settings', {}).get('ip_retention_days', 30) or 30)
 if retention_days < 1:
     retention_days = 30
+traffic_retention_days = int(state.get('settings', {}).get('traffic_retention_days', 90) or 90)
+if traffic_retention_days not in (60, 90):
+    traffic_retention_days = 90
 now = datetime.now(timezone.utc)
 cutoff = now - timedelta(days=retention_days)
 
@@ -520,14 +560,42 @@ for u in users:
     rec = state['users'].get(name, {})
     last_raw = rec.get('last_raw')
     total_acc = int(rec.get('total_accumulated', 0) or 0)
+    delta = 0
     if last_raw is None:
         total_acc = oct
+        delta = oct
     else:
         try:
             last_raw = int(last_raw)
         except Exception:
             last_raw = 0
-        total_acc += (oct - last_raw) if oct >= last_raw else oct
+        delta = (oct - last_raw) if oct >= last_raw else oct
+        total_acc += delta
+
+    monthly = rec.get('monthly', {})
+    if not isinstance(monthly, dict):
+        monthly = {}
+    mon_key = now.strftime('%Y-%m')
+    monthly[mon_key] = int(monthly.get(mon_key, 0) or 0) + max(delta, 0)
+    month_total = int(monthly.get(mon_key, 0) or 0)
+
+    daily = rec.get('daily', {})
+    if not isinstance(daily, dict):
+        daily = {}
+    day_key = now.strftime('%Y-%m-%d')
+    daily[day_key] = int(daily.get(day_key, 0) or 0) + max(delta, 0)
+    day_total = int(daily.get(day_key, 0) or 0)
+
+    # Храним трафик в JSON только в пределах окна настроек (60/90 дней).
+    daily_cutoff = now - timedelta(days=traffic_retention_days)
+    daily_pruned = {}
+    for dkey, dval in daily.items():
+        try:
+            ddt = datetime.fromisoformat(dkey + 'T00:00:00+00:00')
+            if ddt >= daily_cutoff:
+                daily_pruned[dkey] = int(dval or 0)
+        except Exception:
+            continue
     hist = rec.get('ip_history', {})
     if not isinstance(hist, dict):
         hist = {}
@@ -558,7 +626,9 @@ for u in users:
     state['users'][name] = {
         'last_raw': oct,
         'total_accumulated': total_acc,
-        'ip_history': pruned
+        'ip_history': pruned,
+        'monthly': monthly,
+        'daily': daily_pruned
     }
 
     print(f'{BOLD}{CYAN}┌─ {name}{RESET}')
@@ -567,12 +637,16 @@ for u in users:
     print(f'{BOLD}│  Активных IP:{RESET} {aips}' + (f' / {mi}' if mi else ''))
     for ip in al: print(f'{BOLD}│{RESET}    {GREEN}▸ {ip}{RESET}')
     print(f'{BOLD}│  Недавних IP:{RESET} {rips}')
-    print(f'{BOLD}│  Трафик:{RESET}      {fmt_bytes(oct)}' + (f' / {fmt_bytes(q)}' if q else ''))
-    print(f'{BOLD}│  Собрано:{RESET}     {fmt_bytes(total_acc)}')
+    print(f'{BOLD}│  Трафик:{RESET}')
+    print(f'{BOLD}│    За сегодня:{RESET}    {fmt_bytes(day_total)}')
+    print(f'{BOLD}│    В этом месяце:{RESET} {fmt_bytes(month_total)}')
+    print(f'{BOLD}│    Всего:{RESET}        {fmt_bytes(total_acc)}')
+    print(f'{BOLD}│    Сейчас (runtime):{RESET} {fmt_bytes(oct)}' + (f' / {fmt_bytes(q)}' if q else ''))
     if exp: print(f'{BOLD}│  Истекает:{RESET}    {exp}')
     print(f'{BOLD}└{chr(9472)*44}{RESET}'); print()
 
 state['settings']['ip_retention_days'] = retention_days
+state['settings']['traffic_retention_days'] = traffic_retention_days
 state['updated_at'] = now.isoformat()
 if db_path:
     try:
