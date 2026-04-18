@@ -546,6 +546,10 @@ hysteria_uninstall() {
         rm -f /usr/local/bin/hysteria
     fi
 
+    # Пользователь hysteria (создаётся официальным инсталлятором)
+    userdel -r hysteria 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+
     # Конфиг и данные
     rm -rf "$HYSTERIA_DIR"
     rm -rf /var/lib/hysteria
