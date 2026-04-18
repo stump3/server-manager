@@ -682,7 +682,7 @@ $users_block
 RCONF
 )"
     local limits_block
-    limits_block=$(awk '/^\[access\.user_limits\./{found=1} found{print}' "$TELEMT_CONFIG_FILE" || true)
+    limits_block=$(telemt_extract_limits_block "$TELEMT_CONFIG_FILE")
 
     info "Копирую скрипт на новый сервер..."
     RSCP "$(realpath "$0")" &>/dev/null; ok "Скрипт скопирован в /tmp/"
@@ -749,6 +749,28 @@ for u in users:
     else
         warn "Сервис запущен, но API пока не ответил. Проверь: curl -s http://127.0.0.1:9091/v1/users"
     fi
+}
+
+# ── Извлечение блоков ограничений пользователей из telemt.toml ───
+# Поддерживает как актуальный формат:
+#   [access.user_max_tcp_conns], [access.user_expirations],
+#   [access.user_data_quota], [access.user_max_unique_ips]
+# так и legacy-формат [access.user_limits.*].
+telemt_extract_limits_block() {
+    local cfg="$1"
+    [ -f "$cfg" ] || return 0
+    awk '
+        /^\[(access\.user_max_tcp_conns|access\.user_expirations|access\.user_data_quota|access\.user_max_unique_ips)\]$/ {
+            in_section=1; print; next
+        }
+        /^\[access\.user_limits\./ {
+            in_section=1; print; next
+        }
+        /^\[/ {
+            in_section=0
+        }
+        in_section { print }
+    ' "$cfg"
 }
 
 telemt_menu_migrate_docker() {
