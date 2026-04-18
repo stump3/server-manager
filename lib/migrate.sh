@@ -69,7 +69,8 @@ migrate_all() {
 
         # Передача файлов по одному — scp надёжнее с явными источниками
         local transfer_ok=true
-        for _f in "$dump" /opt/remnawave/.env /opt/remnawave/docker-compose.yml /opt/remnawave/nginx.conf; do
+        local _ws_cfg; [ -f /opt/remnawave/Caddyfile ] && _ws_cfg=/opt/remnawave/Caddyfile || _ws_cfg=/opt/remnawave/nginx.conf
+        for _f in "$dump" /opt/remnawave/.env /opt/remnawave/docker-compose.yml "$_ws_cfg"; do
             [ -f "$_f" ] || continue
             PUT "$_f" "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null || { transfer_ok=false; break; }
         done
@@ -90,6 +91,9 @@ migrate_all() {
                 "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null || ssl_ok=false
             $ssl_ok && ok "SSL сертификаты переданы" || warn "Ошибка передачи SSL"
         fi
+
+        # Caddyfile (если Caddy)
+        [ -f /opt/remnawave/Caddyfile ] &&             PUT /opt/remnawave/Caddyfile "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null && ok "Caddyfile передан" || true
 
         # Selfsteal
         [ -d /var/www/html ] && [ "$(ls -A /var/www/html 2>/dev/null)" ] && \
@@ -201,8 +205,8 @@ ExecStart=/usr/local/bin/telemt /etc/telemt/telemt.toml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 NoNewPrivileges=true
 ExecReload=/bin/kill -HUP \$MAINPID
 [Install]
@@ -226,7 +230,7 @@ RTELEMT
             [ -f "$f" ] && PUT "$f" "${ruser}@${rip}:/root/" 2>/dev/null || true
         done
         # Используем официальный установщик — тот же что в hysteria_migrate/hysteria_install
-        RUN "bash <(curl -fsSL https://get.hy2.sh/) && systemctl enable hysteria-server && systemctl restart hysteria-server" \
+        RUN "curl -fsSL --max-time 30 https://get.hy2.sh/ -o /tmp/hy2-install.sh && bash /tmp/hy2-install.sh; rm -f /tmp/hy2-install.sh && systemctl enable hysteria-server && systemctl restart hysteria-server" \
             || { warn "Ошибка установки Hysteria2 на новом сервере"; }
         ok "Hysteria2 перенесена"
     else
