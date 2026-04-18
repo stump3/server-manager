@@ -294,6 +294,169 @@ telemt_api_error() {
     echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); e=d.get('error',{}); print(e.get('message','неизвестная ошибка'))" 2>/dev/null
 }
 
+# ── Путь к файлу накопленной статистики трафика ──────────────────
+telemt_traffic_db_path() {
+    if [ "${TELEMT_MODE:-}" = "docker" ]; then
+        echo "${TELEMT_WORK_DIR_DOCKER}/traffic-usage.json"
+    else
+        echo "/var/lib/telemt/traffic-usage.json"
+    fi
+}
+
+# ── Настройки сбора статистики (retention для IP истории) ─────────
+telemt_menu_stats_settings() {
+    local db
+    db=$(telemt_traffic_db_path)
+    local cur_days
+    cur_days=$(TELEMT_TRAFFIC_DB="$db" python3 -c "
+import os, json
+db=os.environ.get('TELEMT_TRAFFIC_DB','')
+days=30
+if db and os.path.exists(db):
+    try:
+        with open(db,'r',encoding='utf-8') as f:
+            d=json.load(f)
+        days=int(d.get('settings',{}).get('ip_retention_days',30) or 30)
+    except Exception:
+        pass
+print(days)
+" 2>/dev/null || echo "30")
+    [ -z "$cur_days" ] && cur_days=30
+
+    header "Настройки сбора статистики"
+    echo -e "  ${GRAY}Файл статистики:${NC} $db"
+    echo -e "  ${GRAY}Хранить историю IP:${NC} ${cur_days} дней"
+    echo ""
+    local new_days
+    read -rp "  Новый лимит дней [${cur_days}]: " new_days < /dev/tty
+    new_days="${new_days:-$cur_days}"
+    if ! echo "$new_days" | grep -qE '^[0-9]+$' || [ "$new_days" -lt 1 ] || [ "$new_days" -gt 3650 ]; then
+        warn "Введите число от 1 до 3650"
+        return 1
+    fi
+
+    TELEMT_TRAFFIC_DB="$db" TELEMT_IP_RETENTION_DAYS="$new_days" python3 -c "
+import os, json
+from datetime import datetime, timezone, timedelta
+db=os.environ.get('TELEMT_TRAFFIC_DB','')
+days=int(os.environ.get('TELEMT_IP_RETENTION_DAYS','30'))
+state={'users':{},'settings':{'ip_retention_days':days}}
+if db and os.path.exists(db):
+    try:
+        with open(db,'r',encoding='utf-8') as f:
+            loaded=json.load(f)
+        if isinstance(loaded,dict):
+            state.update(loaded)
+    except Exception:
+        pass
+if 'users' not in state or not isinstance(state['users'],dict):
+    state['users']={}
+if 'settings' not in state or not isinstance(state['settings'],dict):
+    state['settings']={}
+state['settings']['ip_retention_days']=days
+
+cutoff=datetime.now(timezone.utc)-timedelta(days=days)
+for _,rec in list(state['users'].items()):
+    hist=rec.get('ip_history',{})
+    if not isinstance(hist,dict):
+        rec['ip_history']={}
+        continue
+    new_hist={}
+    for ip,val in hist.items():
+        last=(val or {}).get('last_seen')
+        keep=False
+        if isinstance(last,str):
+            try:
+                dt=datetime.fromisoformat(last.replace('Z','+00:00'))
+                keep=dt>=cutoff
+            except Exception:
+                keep=False
+        if keep:
+            new_hist[ip]=val
+    rec['ip_history']=new_hist
+state['updated_at']=datetime.now(timezone.utc).isoformat()
+if db:
+    os.makedirs(os.path.dirname(db), exist_ok=True)
+    with open(db,'w',encoding='utf-8') as f:
+        json.dump(state,f,ensure_ascii=False,indent=2)
+" 2>/dev/null || { warn "Не удалось сохранить настройки"; return 1; }
+    ok "Сохранено: хранить IP историю $new_days дн."
+}
+
+# ── Просмотр IP-истории пользователя ──────────────────────────────
+telemt_menu_user_ips() {
+    local db
+    db=$(telemt_traffic_db_path)
+    [ -f "$db" ] || { warn "Статистика ещё не собрана: $db"; return 1; }
+
+    local -a users=()
+    while IFS= read -r u; do
+        [ -n "$u" ] && users+=("$u")
+    done < <(TELEMT_TRAFFIC_DB="$db" python3 -c "
+import os, json
+db=os.environ.get('TELEMT_TRAFFIC_DB','')
+try:
+    with open(db,'r',encoding='utf-8') as f:
+        d=json.load(f)
+    us=d.get('users',{})
+    if isinstance(us,dict):
+        for k,v in us.items():
+            if isinstance(v,dict) and isinstance(v.get('ip_history',{}),dict) and v.get('ip_history'):
+                print(k)
+except Exception:
+    pass
+" 2>/dev/null || true)
+    if [ ${#users[@]} -eq 0 ]; then
+        warn "Нет сохранённой IP-истории. Сначала открой «Пользователи и ссылки»."
+        return 1
+    fi
+
+    header "IP история — выбор пользователя"
+    local i=1
+    for u in "${users[@]}"; do
+        echo -e "  ${BOLD}${i})${RESET} ${u}"
+        i=$((i+1))
+    done
+    echo ""
+    echo -e "  ${BOLD}0)${RESET} Назад"
+    echo ""
+    local ch
+    read -rp "  Выбор: " ch < /dev/tty
+    [[ "$ch" == "0" ]] && return 0
+    if ! [[ "$ch" =~ ^[0-9]+$ ]] || [ "$ch" -lt 1 ] || [ "$ch" -gt ${#users[@]} ]; then
+        warn "Неверный выбор"
+        return 1
+    fi
+    local selected="${users[$((ch-1))]}"
+
+    header "IP история: $selected"
+    TELEMT_TRAFFIC_DB="$db" TELEMT_SELECTED_USER="$selected" python3 -c "
+import os, json
+db=os.environ.get('TELEMT_TRAFFIC_DB','')
+user=os.environ.get('TELEMT_SELECTED_USER','')
+try:
+    with open(db,'r',encoding='utf-8') as f:
+        d=json.load(f)
+    rec=(d.get('users',{}) or {}).get(user,{})
+    hist=rec.get('ip_history',{})
+    rows=[]
+    if isinstance(hist,dict):
+        for ip,val in hist.items():
+            if not isinstance(val,dict): val={}
+            rows.append((ip,val.get('first_seen','—'),val.get('last_seen','—'),int(val.get('hits',0) or 0)))
+    rows.sort(key=lambda x:(x[2],x[0]), reverse=True)
+    if not rows:
+        print('  IP-история пуста')
+    else:
+        print('  IP                      First seen                 Last seen                  Hits')
+        print('  --------------------------------------------------------------------------------------')
+        for ip,fs,ls,h in rows:
+            print(f'  {ip:<22} {str(fs):<26} {str(ls):<26} {h}')
+except Exception as e:
+    print(f'  Ошибка чтения истории: {e}')
+" 2>/dev/null
+}
+
 # ── Показ пользователей ───────────────────────────────────────────
 telemt_fetch_links() {
     local attempt=0
@@ -302,8 +465,12 @@ telemt_fetch_links() {
         local resp; resp=$(telemt_api GET "/v1/users" || true)
         if echo "$resp" | grep -q "tg://proxy"; then
             echo ""
-            echo "$resp" | python3 -c "
+            local traffic_db
+            traffic_db=$(telemt_traffic_db_path)
+            TELEMT_TRAFFIC_DB="$traffic_db" echo "$resp" | python3 -c "
 import sys, json
+import os
+from datetime import datetime, timezone, timedelta
 BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; GRAY='\033[0;37m'; RESET='\033[0m'
 def fmt_bytes(b):
     if not b: return '0 B'
@@ -311,6 +478,28 @@ def fmt_bytes(b):
         if b < 1024: return f'{b:.1f} {u}' if u != 'B' else f'{int(b)} B'
         b /= 1024
     return f'{b:.2f} PB'
+
+db_path = os.environ.get('TELEMT_TRAFFIC_DB', '').strip()
+state = {'users': {}, 'settings': {'ip_retention_days': 30}}
+if db_path:
+    try:
+        with open(db_path, 'r', encoding='utf-8') as f:
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                state = loaded
+                if not isinstance(state.get('users'), dict):
+                    state['users'] = {}
+                if not isinstance(state.get('settings'), dict):
+                    state['settings'] = {'ip_retention_days': 30}
+    except Exception:
+        state = {'users': {}, 'settings': {'ip_retention_days': 30}}
+
+retention_days = int(state.get('settings', {}).get('ip_retention_days', 30) or 30)
+if retention_days < 1:
+    retention_days = 30
+now = datetime.now(timezone.utc)
+cutoff = now - timedelta(days=retention_days)
+
 data = json.load(sys.stdin)
 users = data if isinstance(data, list) else data.get('users', data.get('data', []))
 if isinstance(users, dict): users = list(users.values())
@@ -322,11 +511,56 @@ for u in users:
     al    = u.get('active_unique_ips_list', [])
     rips  = u.get('recent_unique_ips', 0)
     rl    = u.get('recent_unique_ips_list', [])
-    oct   = u.get('total_octets', 0)
+    oct   = int(u.get('total_octets') or 0)
     mc    = u.get('max_tcp_conns')
     mi    = u.get('max_unique_ips')
     q     = u.get('data_quota_bytes')
     exp   = u.get('expiration_rfc3339')
+
+    rec = state['users'].get(name, {})
+    last_raw = rec.get('last_raw')
+    total_acc = int(rec.get('total_accumulated', 0) or 0)
+    if last_raw is None:
+        total_acc = oct
+    else:
+        try:
+            last_raw = int(last_raw)
+        except Exception:
+            last_raw = 0
+        total_acc += (oct - last_raw) if oct >= last_raw else oct
+    hist = rec.get('ip_history', {})
+    if not isinstance(hist, dict):
+        hist = {}
+
+    seen_ips = set([ip for ip in (al or []) + (rl or []) if ip])
+    for ip in seen_ips:
+        ip_rec = hist.get(ip, {})
+        first_seen = ip_rec.get('first_seen') or now.isoformat()
+        hits = int(ip_rec.get('hits', 0) or 0) + 1
+        hist[ip] = {
+            'first_seen': first_seen,
+            'last_seen': now.isoformat(),
+            'hits': hits,
+        }
+
+    pruned = {}
+    for ip, ip_rec in hist.items():
+        last = (ip_rec or {}).get('last_seen')
+        keep = False
+        if isinstance(last, str):
+            try:
+                keep = datetime.fromisoformat(last.replace('Z', '+00:00')) >= cutoff
+            except Exception:
+                keep = False
+        if keep:
+            pruned[ip] = ip_rec
+
+    state['users'][name] = {
+        'last_raw': oct,
+        'total_accumulated': total_acc,
+        'ip_history': pruned
+    }
+
     print(f'{BOLD}{CYAN}┌─ {name}{RESET}')
     if tls: print(f'{BOLD}│  Ссылка:{RESET}      {tls[0]}')
     print(f'{BOLD}│  Подключений:{RESET} {conns}' + (f' / {mc}' if mc else ''))
@@ -334,9 +568,21 @@ for u in users:
     for ip in al: print(f'{BOLD}│{RESET}    {GREEN}▸ {ip}{RESET}')
     print(f'{BOLD}│  Недавних IP:{RESET} {rips}')
     print(f'{BOLD}│  Трафик:{RESET}      {fmt_bytes(oct)}' + (f' / {fmt_bytes(q)}' if q else ''))
+    print(f'{BOLD}│  Собрано:{RESET}     {fmt_bytes(total_acc)}')
     if exp: print(f'{BOLD}│  Истекает:{RESET}    {exp}')
     print(f'{BOLD}└{chr(9472)*44}{RESET}'); print()
+
+state['settings']['ip_retention_days'] = retention_days
+state['updated_at'] = now.isoformat()
+if db_path:
+    try:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        with open(db_path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 " 2>/dev/null || echo "$resp"
+            [ -n "$traffic_db" ] && info "Накопленная статистика: $traffic_db"
             return 0
         fi
         attempt=$((attempt+1)); sleep 2; echo -n "."
@@ -1014,6 +1260,8 @@ telemt_submenu_users() {
         echo -e "  ${BOLD}1)${RESET} ➕  Добавить пользователя"
         echo -e "  ${BOLD}2)${RESET} ➖  Удалить пользователя"
         echo -e "  ${BOLD}3)${RESET} 👥  Пользователи и ссылки"
+        echo -e "  ${BOLD}4)${RESET} 🌐  IP история пользователя"
+        echo -e "  ${BOLD}5)${RESET} ⚙️  Настройки сбора (трафик/IP)"
         echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
@@ -1022,6 +1270,8 @@ telemt_submenu_users() {
             1) telemt_menu_add_user || true ;;
             2) telemt_menu_delete_user || true ;;
             3) telemt_menu_links || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            4) telemt_menu_user_ips || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            5) telemt_menu_stats_settings || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
