@@ -1,4 +1,26 @@
 # ████████████████████  MIGRATE SECTION  ███████████████████████████
+# panel_migrate() — перенос Panel через migrate_menu
+# Вызывает do_migrate из panel.sh если доступна,
+# иначе подгружает panel.sh из того же каталога
+panel_migrate() {
+    if declare -f do_migrate >/dev/null 2>&1; then
+        do_migrate
+        return $?
+    fi
+    # Пробуем подгрузить panel.sh
+    local _panel_sh
+    _panel_sh="$(dirname "${BASH_SOURCE[0]}")/panel.sh"
+    if [ -f "$_panel_sh" ]; then
+        # shellcheck source=/dev/null
+        source "$_panel_sh"
+        do_migrate
+        return $?
+    fi
+    err "Модуль panel.sh не найден. Запустите через главное меню."
+    return 1
+}
+
+
 # ═══════════════════════════════════════════════════════════════════
 
 migrate_all() {
@@ -49,10 +71,11 @@ migrate_all() {
         if [ -d /etc/letsencrypt/live ]; then
             RUN "mkdir -p /etc/letsencrypt" 2>/dev/null || true
             local ssl_ok=true
-            for _ssl in /etc/letsencrypt/live /etc/letsencrypt/archive /etc/letsencrypt/renewal; do
-                [ -d "$_ssl" ] || continue
-                PUT "$_ssl" "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null || ssl_ok=false
-            done
+            sshpass -p "$_SSH_PASS" scp -r -P "$rport" -o StrictHostKeyChecking=no \
+                /etc/letsencrypt/live \
+                /etc/letsencrypt/archive \
+                /etc/letsencrypt/renewal \
+                "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null || ssl_ok=false
             $ssl_ok && ok "SSL сертификаты переданы" || warn "Ошибка передачи SSL"
         fi
 
@@ -227,7 +250,7 @@ migrate_menu() {
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
-            1) do_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            1) panel_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             2) { [ -z "$TELEMT_MODE" ] && {
                        TELEMT_MODE="systemd"
                        TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
