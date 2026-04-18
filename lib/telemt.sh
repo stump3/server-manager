@@ -118,6 +118,16 @@ telemt_pick_version() {
     fi
 }
 
+# ── Получить текущий tls_domain из telemt.toml ───────────────────
+telemt_get_tls_domain() {
+    local cfg="$1"
+    [ -f "$cfg" ] || { echo "petrovich.ru"; return 0; }
+    awk -F'"' '/^[[:space:]]*tls_domain[[:space:]]*=/{print $2; exit}' "$cfg" 2>/dev/null \
+        | sed '/^[[:space:]]*$/d' \
+        | head -1 \
+        || true
+}
+
 telemt_download_binary() {
     local ver="${1:-latest}" arch libc url
     arch=$(uname -m)
@@ -635,7 +645,8 @@ telemt_menu_migrate() {
 
     local cur_port cur_domain
     cur_port=$(grep -E "^port\s*=" "$TELEMT_CONFIG_FILE" | head -1 | grep -oE "[0-9]+" || echo "8443")
-    cur_domain=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_FILE" | head -1 | grep -oP '"K[^"]+' || echo "petrovich.ru")
+    cur_domain=$(telemt_get_tls_domain "$TELEMT_CONFIG_FILE")
+    cur_domain="${cur_domain:-petrovich.ru}"
     echo ""; echo -e "${BOLD}Текущие настройки:${RESET} порт=$cur_port домен=$cur_domain"
     local new_pp new_dom
     read -rp "  Порт на новом сервере [Enter=$cur_port]: " new_pp; new_pp="${new_pp:-$cur_port}" < /dev/tty
@@ -792,7 +803,8 @@ telemt_menu_migrate_docker() {
 
     local cur_port cur_domain
     cur_port=$(grep -E "^port\s*=" "$TELEMT_CONFIG_FILE" | head -1 | grep -oE "[0-9]+" || echo "8443")
-    cur_domain=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_FILE" | head -1 | grep -oP '"K[^"]+' || echo "petrovich.ru")
+    cur_domain=$(telemt_get_tls_domain "$TELEMT_CONFIG_FILE")
+    cur_domain="${cur_domain:-petrovich.ru}"
     echo ""; echo -e "${BOLD}Текущие настройки:${RESET} порт=$cur_port домен=$cur_domain"
 
     local new_pp new_dom
