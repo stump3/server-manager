@@ -504,6 +504,65 @@ EOF
     fi
 }
 
+
+# ── Полное удаление Hysteria2 ─────────────────────────────────────
+hysteria_uninstall() {
+    header "Hysteria2 — Полное удаление"
+    echo ""
+    echo -e "  ${YELLOW}Будет удалено:${NC}"
+    echo -e "  ${GRAY}  · сервис hysteria-server${NC}"
+    echo -e "  ${GRAY}  · бинарник /usr/local/bin/hysteria${NC}"
+    echo -e "  ${GRAY}  · конфиг /etc/hysteria/${NC}"
+    echo -e "  ${GRAY}  · данные ACME /var/lib/hysteria/${NC}"
+    echo -e "  ${GRAY}  · URI-файлы /root/hysteria-*.{txt,yaml,png}${NC}"
+    echo -e "  ${GRAY}  · правила ufw для порта Hysteria2${NC}"
+    echo ""
+    warn "Это действие необратимо!"
+    echo ""
+    local yn; read -rp "  Продолжить? Введите YES: " yn < /dev/tty
+    [ "$yn" != "YES" ] && { info "Отменено"; return; }
+
+    # Порт для ufw — читаем до остановки сервиса
+    local hy_port=""
+    [ -f "$HYSTERIA_CONFIG" ] && hy_port=$(hy_get_port 2>/dev/null || true)
+
+    # Домен для удаления файлов
+    local hy_domain=""
+    [ -f "$HYSTERIA_CONFIG" ] && hy_domain=$(hy_get_domain 2>/dev/null || true)
+
+    # Останавливаем и отключаем сервис
+    systemctl stop "$HYSTERIA_SVC" 2>/dev/null || true
+    systemctl disable "$HYSTERIA_SVC" 2>/dev/null || true
+
+    # Удаляем бинарник через официальный деинсталлятор если доступен
+    if command -v hysteria &>/dev/null; then
+        local hy_uninstall
+        hy_uninstall=$(mktemp /tmp/hy2-uninstall.XXXXXX.sh)
+        if curl -fsSL --max-time 15 https://get.hy2.sh/ -o "$hy_uninstall" 2>/dev/null && [ -s "$hy_uninstall" ]; then
+            bash "$hy_uninstall" --remove 2>/dev/null || true
+        fi
+        rm -f "$hy_uninstall"
+        # Если официальный деинсталлятор не сработал — удаляем вручную
+        rm -f /usr/local/bin/hysteria
+    fi
+
+    # Конфиг и данные
+    rm -rf "$HYSTERIA_DIR"
+    rm -rf /var/lib/hysteria
+
+    # URI-файлы
+    [ -n "$hy_domain" ] && rm -f /root/hysteria-${hy_domain}.txt         /root/hysteria-${hy_domain}.yaml         /root/hysteria-${hy_domain}.png         /root/hysteria-${hy_domain}-users.txt
+
+    # UFW
+    if command -v ufw &>/dev/null && [ -n "$hy_port" ]; then
+        ufw delete allow "${hy_port}/udp" >/dev/null 2>&1 || true
+        ufw delete allow "${hy_port}/tcp" >/dev/null 2>&1 || true
+        ok "ufw: правила для порта $hy_port удалены"
+    fi
+
+    ok "Hysteria2 полностью удалена"
+}
+
 # ── Статус ────────────────────────────────────────────────────────
 hysteria_status() {
     header "Hysteria2 — Статус"
@@ -1167,6 +1226,7 @@ hysteria_submenu_manage() {
         echo -e "  ${BOLD}1)${RESET} 📊  Статус"
         echo -e "  ${BOLD}2)${RESET} 📋  Логи"
         echo -e "  ${BOLD}3)${RESET} 🔄  Перезапустить"
+        echo -e "  ${BOLD}4)${RESET} 🗑️   Удалить полностью"
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
@@ -1174,6 +1234,7 @@ hysteria_submenu_manage() {
             1) hysteria_status || true; read -rp "Enter..." < /dev/tty ;;
             2) hysteria_logs || true;   read -rp "Enter..." < /dev/tty ;;
             3) hysteria_restart || true; read -rp "Enter..." < /dev/tty ;;
+            4) hysteria_uninstall || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
