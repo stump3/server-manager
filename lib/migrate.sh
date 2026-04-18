@@ -13,8 +13,20 @@ panel_migrate() {
     if [ -f "$_panel_sh" ]; then
         # shellcheck source=/dev/null
         source "$_panel_sh"
-        do_migrate
-        return $?
+        if declare -f do_migrate >/dev/null 2>&1; then
+            do_migrate
+            return $?
+        fi
+
+        # Совместимость со старыми/кастомными версиями panel.sh,
+        # где отдельной do_migrate может не быть.
+        if declare -f panel_menu >/dev/null 2>&1; then
+            panel_menu migrate
+            return $?
+        fi
+
+        err "В panel.sh не найдена функция do_migrate/panel_menu."
+        return 1
     fi
     err "Модуль panel.sh не найден. Запустите через главное меню."
     return 1
@@ -118,7 +130,20 @@ RPANEL
         cp=$(grep -E "^port\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oE "[0-9]+" || echo "8443")
         dp=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oP '(?<="K)[^"]+' || echo "petrovich.ru")
         ub=$(awk '/^\[access\.users\]/{f=1;next} f&&/^\[/{exit} f&&/=/{print}' "$TELEMT_CONFIG_SYSTEMD")
-        lb=$(awk '/^\[access\.user_limits\./{f=1} f{print}' "$TELEMT_CONFIG_SYSTEMD" || true)
+        if declare -f telemt_extract_limits_block >/dev/null 2>&1; then
+            lb=$(telemt_extract_limits_block "$TELEMT_CONFIG_SYSTEMD")
+        else
+            lb=$(awk '
+                /^\[(access\.user_max_tcp_conns|access\.user_expirations|access\.user_data_quota|access\.user_max_unique_ips)\]$/ {
+                    in_section=1; print; next
+                }
+                /^\[access\.user_limits\./ {
+                    in_section=1; print; next
+                }
+                /^\[/ { in_section=0 }
+                in_section { print }
+            ' "$TELEMT_CONFIG_SYSTEMD" || true)
+        fi
 
         echo "$ub" | RUN "mkdir -p /etc/telemt && { cat << 'NCONF'
 [general]
