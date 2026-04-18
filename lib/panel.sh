@@ -299,17 +299,10 @@ POSTGRES_DB=postgres
 EOF
 
     # Монтирование сертификатов — только для Nginx
+    # Монтируем весь /etc/letsencrypt чтобы симлинки из live/ → archive/ работали внутри контейнера
     local CERT_VOLUMES=""
-    if [ "$WEB_SERVER" = "1" ]; then
-        declare -A MOUNTED_CERTS
-        for cd in "$PC" "$SC" "$STC"; do
-            [ -n "${MOUNTED_CERTS[$cd]:-}" ] && continue
-            CERT_VOLUMES+="      - /etc/letsencrypt/live/${cd}/fullchain.pem:/etc/nginx/ssl/${cd}/fullchain.pem:ro
-      - /etc/letsencrypt/live/${cd}/privkey.pem:/etc/nginx/ssl/${cd}/privkey.pem:ro
+    [ "$WEB_SERVER" = "1" ] && CERT_VOLUMES="      - /etc/letsencrypt:/etc/letsencrypt:ro
 "
-            MOUNTED_CERTS["$cd"]=1
-        done
-    fi
 
     # docker-compose
     if [ "$WEB_SERVER" = "1" ] && [ "$MODE" = "1" ]; then
@@ -878,9 +871,9 @@ server {
     server_name ${PANEL_DOMAIN};
     ${LISTEN_DIR}
     http2 on;
-    ssl_certificate "/etc/nginx/ssl/${PC}/fullchain.pem";
-    ssl_certificate_key "/etc/nginx/ssl/${PC}/privkey.pem";
-    ssl_trusted_certificate "/etc/nginx/ssl/${PC}/fullchain.pem";
+    ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
+    ssl_trusted_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
     add_header Set-Cookie \$set_cookie_header;
 
     location ^~ /oauth2/ {
@@ -924,9 +917,9 @@ server {
     server_name ${SUB_DOMAIN};
     ${LISTEN_DIR}
     http2 on;
-    ssl_certificate "/etc/nginx/ssl/${SC}/fullchain.pem";
-    ssl_certificate_key "/etc/nginx/ssl/${SC}/privkey.pem";
-    ssl_trusted_certificate "/etc/nginx/ssl/${SC}/fullchain.pem";
+    ssl_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${SC}/privkey.pem";
+    ssl_trusted_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
 
     location / {
         proxy_http_version 1.1;
@@ -950,9 +943,9 @@ server {
     server_name ${SELFSTEAL_DOMAIN};
     ${LISTEN_DIR}
     http2 on;
-    ssl_certificate "/etc/nginx/ssl/${STC}/fullchain.pem";
-    ssl_certificate_key "/etc/nginx/ssl/${STC}/privkey.pem";
-    ssl_trusted_certificate "/etc/nginx/ssl/${STC}/fullchain.pem";
+    ssl_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${STC}/privkey.pem";
+    ssl_trusted_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
     root /var/www/html; index index.html;
     add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
 }
@@ -960,8 +953,8 @@ server {
 server {
     ${LISTEN_DIR}
     server_name _;
-    ssl_certificate "/etc/nginx/ssl/${PC}/fullchain.pem";
-    ssl_certificate_key "/etc/nginx/ssl/${PC}/privkey.pem";
+    ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
     ssl_reject_handshake on;
     return 444;
 }
