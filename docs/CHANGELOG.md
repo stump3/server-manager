@@ -1,5 +1,39 @@
 # Changelog
 
+## [3.3.0] — 2026-04-18
+
+### MTProxy (telemt) — runtime статистика и IP-история
+
+- **Накопительный трафик пользователей (`Собрано`)** — добавлено сохранение runtime счётчиков в файл статистики:
+  - systemd: `/var/lib/telemt/traffic-usage.json`
+  - docker: `${HOME}/mtproxy/traffic-usage.json`
+  Логика устойчива к сбросу `total_octets` при рестарте/переустановке telemt: при уменьшении счётчика считается новый baseline, а накопление продолжается.
+
+- **История IP по каждому пользователю** — в статистику добавлены `first_seen`, `last_seen`, `hits` по IP.
+  Источники — `active_unique_ips_list` и `recent_unique_ips_list` из API `/v1/users`.
+
+- **Retention IP-истории в днях (настраивается из меню)** — новый пункт:
+  - `👥 Пользователи → ⚙️ Настройки сбора (трафик/IP)`
+  Позволяет задать срок хранения IP-истории (1..3650 дней) и сразу очищает устаревшие записи.
+
+- **Просмотр IP-истории в отдельном меню** — новый пункт:
+  - `👥 Пользователи → 🌐 IP история пользователя`
+  Выбор пользователя и табличный вывод `IP / First seen / Last seen / Hits`.
+
+### Миграция MTProxy и Panel — совместимость и устойчивость
+
+- **Корректное извлечение `tls_domain` при миграции** — добавлен helper `telemt_get_tls_domain`, который берёт текущий домен из `telemt.toml`.
+  Prompt в миграции теперь подставляет фактический домен (например, `1c.ru`), а не fallback `petrovich.ru`.
+
+- **Перенос лимитов и сроков действия пользователей** — добавлен helper `telemt_extract_limits_block`, поддерживающий:
+  - новый формат: `access.user_max_tcp_conns`, `access.user_expirations`, `access.user_data_quota`, `access.user_max_unique_ips`
+  - legacy формат: `access.user_limits.*`
+  Используется как в отдельной миграции MTProxy, так и в «Перенести всё».
+
+- **`panel_migrate` fallback** — если функция `do_migrate` недоступна в `panel.sh`, используется `panel_menu migrate`; при отсутствии обоих entrypoint выводится явная ошибка.
+
+---
+
 ## [3.2.0] — 2026-04-14
 
 ### Выбор веб-сервера при установке панели: Nginx или Caddy
