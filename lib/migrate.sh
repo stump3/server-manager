@@ -7,7 +7,7 @@ migrate_all() {
     ensure_sshpass
 
     # ── Данные нового сервера ──────────────────────────────────────
-    ask_ssh_target
+    ask_ssh_target || { warn "Ошибка ввода данных SSH"; return 1; }
     init_ssh_helpers full
     check_ssh_connection || return 1
     local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"

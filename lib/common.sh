@@ -14,7 +14,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Версия обновляется автоматически через GitHub Actions (update-version.yml)
 # при каждом push в main. Не редактировать вручную.
-SCRIPT_VERSION_STATIC="v2604.182252"
+SCRIPT_VERSION_STATIC="v2603.251148"
 SCRIPT_VERSION="$SCRIPT_VERSION_STATIC"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -192,6 +192,8 @@ ensure_sshpass() {
 # ── SSH-миграция: ввод данных ─────────────────────────────────────
 # Результат записывается в переменные: _SSH_IP _SSH_PORT _SSH_USER _SSH_PASS
 ask_ssh_target() {
+    # Восстанавливаем эхо терминала при выходе (на случай прерывания после read -rsp)
+    trap 'stty echo 2>/dev/null || true' RETURN
     while true; do
         read -rp "  IP нового сервера: " _SSH_IP < /dev/tty
         [[ "$_SSH_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && break
@@ -200,10 +202,14 @@ ask_ssh_target() {
     read -rp "  SSH-порт [22]: "         _SSH_PORT < /dev/tty; _SSH_PORT="${_SSH_PORT:-22}"
     read -rp "  Пользователь [root]: "   _SSH_USER < /dev/tty; _SSH_USER="${_SSH_USER:-root}"
     while true; do
-        read -rsp "  Пароль SSH: " _SSH_PASS < /dev/tty; echo
+        stty -echo 2>/dev/null || true
+        read -rp "  Пароль SSH: " _SSH_PASS < /dev/tty
+        stty echo 2>/dev/null || true
+        echo ""
         [ -n "$_SSH_PASS" ] && break
         warn "Пароль не может быть пустым"
     done
+    export _SSH_IP _SSH_PORT _SSH_USER _SSH_PASS
 }
 
 # ── SSH-миграция: инициализация хелперов RUN/PUT ──────────────────
@@ -219,12 +225,12 @@ init_ssh_helpers() {
         telemt) strict_opt="StrictHostKeyChecking=accept-new" ;;
         *)      strict_opt="StrictHostKeyChecking=no" ;;
     esac
-    local base_opts="-p $_SSH_PORT -o $strict_opt -o ConnectTimeout=10"
-    [ "$mode" != "telemt" ] && base_opts="$base_opts -o BatchMode=no"
+    _SSH_OPTS="-p $_SSH_PORT -o $strict_opt -o ConnectTimeout=10"
+    [ "$mode" != "telemt" ] && _SSH_OPTS="$_SSH_OPTS -o BatchMode=no"
 
     # shellcheck disable=SC2139
-    RUN() { sshpass -p "$_SSH_PASS" ssh  $base_opts "${_SSH_USER}@${_SSH_IP}" "$@"; }
-    PUT() { sshpass -p "$_SSH_PASS" scp -rp $base_opts "$@"; }
+    RUN() { sshpass -p "$_SSH_PASS" ssh  $_SSH_OPTS "${_SSH_USER}@${_SSH_IP}" "$@"; }
+    PUT() { sshpass -p "$_SSH_PASS" scp -rp $_SSH_OPTS "$@"; }
     export -f RUN PUT 2>/dev/null || true
 }
 
