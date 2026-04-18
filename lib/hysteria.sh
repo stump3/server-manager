@@ -1149,7 +1149,7 @@ hysteria_menu() {
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
-            1) hysteria_install || true ;;
+            1) hysteria_install || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             2) hysteria_submenu_manage || true ;;
             3) hysteria_submenu_users || true ;;
             4) hysteria_submenu_sub || true ;;

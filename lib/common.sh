@@ -14,7 +14,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Версия обновляется автоматически через GitHub Actions (update-version.yml)
 # при каждом push в main. Не редактировать вручную.
-SCRIPT_VERSION_STATIC="v2604.182100"
+SCRIPT_VERSION_STATIC="v2603.251148"
 SCRIPT_VERSION="$SCRIPT_VERSION_STATIC"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -230,7 +230,7 @@ init_ssh_helpers() {
 
 # ── SSH-миграция: проверка подключения ────────────────────────────
 check_ssh_connection() {
-    RUN "echo ok" >/dev/null 2>&1         || { err "Не удалось подключиться к ${_SSH_IP}:${_SSH_PORT}"; return 1; }
+    RUN "echo ok" >/dev/null 2>&1         || { warn "Не удалось подключиться к ${_SSH_IP}:${_SSH_PORT}"; return 1; }
     ok "SSH соединение установлено"
 }
 

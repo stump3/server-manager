@@ -3,6 +3,43 @@
 
 # Переменные Telemt объявлены глобально в начале скрипта
 
+# ── Глобальные переменные upstream-настроек ──────────────────────
+TELEMT_USE_ME="true"
+TELEMT_SOCKS5_ADDR=""
+TELEMT_SOCKS5_USER=""
+TELEMT_SOCKS5_PASS=""
+
+# ── Опрос: middle_proxy + SOCKS5 upstream ────────────────────────
+telemt_ask_upstream() {
+    echo ""
+    echo -e "  ${BOLD}Режим подключения к Telegram:${NC}"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Middle Proxy ${GRAY}(рекомендуется, через инфраструктуру Telegram)${NC}"
+    echo -e "  ${BOLD}2)${NC} Direct       ${GRAY}(прямое подключение к DC, без ME)${NC}"
+    echo ""
+    local me_ch; read -rp "  Режим [1]: " me_ch </dev/tty; me_ch="${me_ch:-1}"
+    [ "$me_ch" = "2" ] && TELEMT_USE_ME="false" || TELEMT_USE_ME="true"
+
+    echo ""
+    echo -e "  ${BOLD}SOCKS5-прокси:${NC} ${GRAY}нужен если Telegram заблокирован на этом сервере${NC}"
+    if confirm "Маршрутизировать через SOCKS5?" n; then
+        local addr
+        while true; do
+            read -rp "  Адрес SOCKS5 (host:port): " addr </dev/tty
+            [[ "$addr" =~ ^[^:]+:[0-9]+$ ]] && break
+            warn "Формат: host:port (например 1.2.3.4:1080)"
+        done
+        TELEMT_SOCKS5_ADDR="$addr"
+        read -rp "  Логин (Enter — без аутентификации): " TELEMT_SOCKS5_USER </dev/tty
+        if [ -n "$TELEMT_SOCKS5_USER" ]; then
+            read -rsp "  Пароль: " TELEMT_SOCKS5_PASS </dev/tty; echo
+        fi
+        ok "SOCKS5: ${TELEMT_SOCKS5_ADDR}"
+    else
+        TELEMT_SOCKS5_ADDR=""; TELEMT_SOCKS5_USER=""; TELEMT_SOCKS5_PASS=""
+    fi
+}
+
 telemt_choose_mode() {
     header "telemt MTProxy — метод установки"
     echo -e "  ${BOLD}1)${RESET} ${BOLD}systemd${RESET} — бинарник с GitHub"
@@ -131,7 +168,7 @@ telemt_write_config() {
     fi
     { cat <<EOF
 [general]
-use_middle_proxy = true
+use_middle_proxy = ${TELEMT_USE_ME:-true}
 log_level = "normal"
 
 [general.modes]
@@ -162,6 +199,15 @@ tls_front_dir = "$tls_front_dir"
 [access.users]
 EOF
       for pair in "$@"; do echo "${pair%% *} = \"${pair#* }\""; done
+      # upstream-секция — только если задан SOCKS5
+      if [ -n "${TELEMT_SOCKS5_ADDR:-}" ]; then
+          echo ""
+          echo "[[upstreams]]"
+          echo "type    = \"socks5\""
+          echo "address = \"${TELEMT_SOCKS5_ADDR}\""
+          [ -n "${TELEMT_SOCKS5_USER:-}" ] && echo "username = \"${TELEMT_SOCKS5_USER}\""
+          [ -n "${TELEMT_SOCKS5_PASS:-}" ] && echo "password = \"${TELEMT_SOCKS5_PASS}\""
+      fi
     } > "$TELEMT_CONFIG_FILE"
     [ "$TELEMT_MODE" = "systemd" ] && chmod 640 "$TELEMT_CONFIG_FILE"
 }
@@ -328,6 +374,7 @@ telemt_menu_install() {
     ss -tlnp 2>/dev/null | grep -q ":${port} " && { warn "Порт $port занят!"; read -rp "Другой порт: " port </dev/tty; }
     local domain; read -rp "Домен-маскировка [petrovich.ru]: " domain </dev/tty; domain="${domain:-petrovich.ru}"
     echo ""; telemt_ask_users
+    telemt_ask_upstream
 
     if [ "$TELEMT_MODE" = "systemd" ]; then
         telemt_pick_version

@@ -25,7 +25,7 @@ migrate_all() {
         docker compose exec -T remnawave-db pg_dumpall -c -U postgres 2>/dev/null | gzip -9 > "$dump"
         local dump_size; dump_size=$(stat -c%s "$dump" 2>/dev/null || echo "0")
         if [ "$dump_size" -lt 1000 ]; then
-            err "Дамп БД подозрительно мал (${dump_size} байт)"
+            warn "Дамп БД подозрительно мал (${dump_size} байт)"
             rm -f "$dump"; return 1
         fi
         ok "Дамп БД создан ($(du -sh "$dump" | cut -f1))"
@@ -33,7 +33,7 @@ migrate_all() {
         # Передача файлов
         PUT "$dump" /opt/remnawave/.env /opt/remnawave/docker-compose.yml /opt/remnawave/nginx.conf \
             "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null && ok "Файлы панели переданы" \
-            || { err "Ошибка передачи файлов панели"; rm -f "$dump"; return 1; }
+            || { warn "Ошибка передачи файлов панели"; rm -f "$dump"; return 1; }
 
         # SSL
         [ -d /etc/letsencrypt/live ] && \
@@ -246,9 +246,10 @@ panel_backup_restore() {
         ok "backup-restore установлен: $script_path"
         remnawave-backup
     else
-        err "Не удалось скачать скрипт"
+        warn "Не удалось скачать скрипт"
         echo -e "  Установите вручную:"
         echo -e "  ${CYAN}curl -fsSL $script_url | bash${NC}"
+        return 1
     fi
 }
 
