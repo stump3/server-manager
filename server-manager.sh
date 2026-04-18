@@ -26,10 +26,20 @@ if [ -z "$SCRIPT_DIR" ]; then
         echo "  Репозиторий уже существует, обновляем..."
         git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
     else
-        git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null             || { echo "Ошибка: не удалось клонировать репозиторий"; exit 1; }
+        git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null \
+            || { echo "Ошибка: не удалось клонировать репозиторий"; exit 1; }
     fi
+    # Симлинк для запуска из любого места
+    ln -sf "${INSTALL_DIR}/server-manager.sh" /usr/local/bin/server-manager 2>/dev/null || true
+    echo "  Симлинк: /usr/local/bin/server-manager → ${INSTALL_DIR}/server-manager.sh"
     echo "  Запускаем из ${INSTALL_DIR}..."
     exec bash "${INSTALL_DIR}/server-manager.sh"
+fi
+
+# При локальном запуске — тоже убедиться что симлинк актуален
+if [ ! -L /usr/local/bin/server-manager ] || \
+   [ "$(readlink /usr/local/bin/server-manager 2>/dev/null)" != "${SCRIPT_DIR}/server-manager.sh" ]; then
+    ln -sf "${SCRIPT_DIR}/server-manager.sh" /usr/local/bin/server-manager 2>/dev/null || true
 fi
 
 # SHA256 контрольные суммы модулей — обновляйте при каждом релизе.

@@ -73,7 +73,7 @@ telemt_pick_version() {
         va+=("$v"); i=$((i+1))
     done <<< "$versions"
     echo ""
-    local ch; read -rp "Версия [1]: " ch; ch="${ch:-1}" < /dev/tty
+    local ch; read -rp "Версия [1]: " ch </dev/tty; ch="${ch:-1}"
     if echo "$ch" | grep -qE '^[0-9]+$' && [ "$ch" -ge 1 ] && [ "$ch" -le "${#va[@]}" ]; then
         TELEMT_CHOSEN_VERSION="${va[$((ch-1))]}"
     else
@@ -83,15 +83,41 @@ telemt_pick_version() {
 
 telemt_download_binary() {
     local ver="${1:-latest}" arch libc url
-    arch=$(uname -m); case "$arch" in x86_64) ;; aarch64|arm64) arch="aarch64" ;; *) die "Архитектура не поддерживается: $arch" ;; esac
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64)
+            # Проверяем поддержку AVX2+BMI2 для оптимизированной сборки
+            if [ -r /proc/cpuinfo ] && grep -q "avx2" /proc/cpuinfo 2>/dev/null && grep -q "bmi2" /proc/cpuinfo 2>/dev/null; then
+                arch="x86_64-v3"
+            else
+                arch="x86_64"
+            fi ;;
+        aarch64|arm64) arch="aarch64" ;;
+        *) die "Архитектура не поддерживается: $arch" ;;
+    esac
     ldd --version 2>&1 | grep -iq musl && libc="musl" || libc="gnu"
     [ "$ver" = "latest" ] \
         && url="https://github.com/${TELEMT_GITHUB_REPO}/releases/latest/download/telemt-${arch}-linux-${libc}.tar.gz" \
         || url="https://github.com/${TELEMT_GITHUB_REPO}/releases/download/${ver}/telemt-${arch}-linux-${libc}.tar.gz"
-    info "Скачиваю telemt $ver..."
+    info "Скачиваю telemt $ver (${arch}-linux-${libc})..."
     local tmp; tmp=$(mktemp -d)
-    curl -fsSL "$url" | tar -xz -C "$tmp" && install -m 0755 "$tmp/telemt" "$TELEMT_BIN" && rm -rf "$tmp" \
-        && ok "Установлен: $TELEMT_BIN" || { rm -rf "$tmp"; die "Не удалось скачать бинарник."; }
+    if ! curl -fsSL "$url" | tar -xz -C "$tmp" 2>/dev/null; then
+        # Откат к стандартному x86_64 если v3 не найден
+        if [ "$arch" = "x86_64-v3" ]; then
+            warn "Сборка x86_64-v3 не найдена, откат к стандартной x86_64..."
+            arch="x86_64"
+            [ "$ver" = "latest" ] \
+                && url="https://github.com/${TELEMT_GITHUB_REPO}/releases/latest/download/telemt-${arch}-linux-${libc}.tar.gz" \
+                || url="https://github.com/${TELEMT_GITHUB_REPO}/releases/download/${ver}/telemt-${arch}-linux-${libc}.tar.gz"
+            curl -fsSL "$url" | tar -xz -C "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "Не удалось скачать бинарник."; }
+        else
+            rm -rf "$tmp"; die "Не удалось скачать бинарник."
+        fi
+    fi
+    local extracted; extracted=$(find "$tmp" -type f -name "telemt" | head -1)
+    [ -n "$extracted" ] || { rm -rf "$tmp"; die "Бинарник не найден в архиве."; }
+    install -m 0755 "$extracted" "$TELEMT_BIN" && rm -rf "$tmp" \
+        && ok "Установлен: $TELEMT_BIN" || { rm -rf "$tmp"; die "Не удалось установить бинарник."; }
 }
 
 telemt_write_config() {
@@ -156,8 +182,8 @@ ExecStart=/usr/local/bin/telemt /etc/telemt/telemt.toml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 NoNewPrivileges=true
 ExecReload=/bin/kill -HUP $MAINPID
 
@@ -298,9 +324,9 @@ telemt_ask_users() {
 telemt_menu_install() {
     header "Установка MTProxy (${TELEMT_MODE})"
     [ "$TELEMT_MODE" = "systemd" ] && need_root
-    local port; read -rp "Порт прокси [8443]: " port; port="${port:-8443}" < /dev/tty
-    ss -tlnp 2>/dev/null | grep -q ":${port} " && { warn "Порт $port занят!"; read -rp "Другой порт: " port; } < /dev/tty
-    local domain; read -rp "Домен-маскировка [petrovich.ru]: " domain; domain="${domain:-petrovich.ru}" < /dev/tty
+    local port; read -rp "Порт прокси [8443]: " port </dev/tty; port="${port:-8443}"
+    ss -tlnp 2>/dev/null | grep -q ":${port} " && { warn "Порт $port занят!"; read -rp "Другой порт: " port </dev/tty; }
+    local domain; read -rp "Домен-маскировка [petrovich.ru]: " domain </dev/tty; domain="${domain:-petrovich.ru}"
     echo ""; telemt_ask_users
 
     if [ "$TELEMT_MODE" = "systemd" ]; then
@@ -642,8 +668,8 @@ ExecStart=/usr/local/bin/telemt /etc/telemt/telemt.toml
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 NoNewPrivileges=true
 ExecReload=/bin/kill -HUP \$MAINPID
 
@@ -784,6 +810,7 @@ telemt_main_menu() {
 
         echo -e "  ${BOLD}4)${RESET} 📦  Миграция на другой сервер"
         echo -e "  ${BOLD}5)${RESET} 🔀  Сменить режим (systemd ↔ Docker)"
+        echo -e "  ${BOLD}6)${RESET} 🗑️   Удалить / Переустановить"
         echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
@@ -798,6 +825,7 @@ telemt_main_menu() {
                    telemt_menu_migrate_docker
                fi ;;
             5) telemt_choose_mode; telemt_check_deps || true ;;
+            6) telemt_menu_uninstall || true ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
@@ -811,6 +839,7 @@ telemt_submenu_manage() {
         echo -e "  ${BOLD}1)${RESET} 📊  Статус и логи"
         echo -e "  ${BOLD}2)${RESET} 🔄  Обновить"
         echo -e "  ${BOLD}3)${RESET} ⏹️  Остановить"
+        echo -e "  ${BOLD}4)${RESET} ▶️   Запустить / Перезапустить"
         echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
@@ -819,10 +848,71 @@ telemt_submenu_manage() {
             1) telemt_menu_status || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             2) telemt_menu_update || true ;;
             3) telemt_menu_stop || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            4) if [ "$TELEMT_MODE" = "systemd" ]; then
+                   systemctl restart telemt && ok "Сервис перезапущен" || warn "Ошибка перезапуска"
+               else
+                   cd "$TELEMT_WORK_DIR_DOCKER" && docker compose restart && ok "Контейнер перезапущен" || warn "Ошибка"
+               fi
+               read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
     done
+}
+
+# ── Удаление / Переустановка ──────────────────────────────────────
+telemt_menu_uninstall() {
+    header "Удаление / Переустановка MTProxy"
+    echo ""
+    echo -e "  ${BOLD}1)${RESET} 🔁  Переустановить (сохранить конфиг и пользователей)"
+    echo -e "  ${BOLD}2)${RESET} 🗑️   Удалить полностью"
+    echo ""
+    echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+    echo ""
+    local ch; read -rp "  Выбор: " ch < /dev/tty
+    case "$ch" in
+        1)
+            info "Переустановка с сохранением данных..."
+            local bak="/tmp/telemt_config_backup_$(date +%Y%m%d_%H%M%S).toml"
+            [ -f "$TELEMT_CONFIG_FILE" ] && cp "$TELEMT_CONFIG_FILE" "$bak" && info "Конфиг сохранён: $bak"
+            if [ "$TELEMT_MODE" = "systemd" ]; then
+                systemctl stop telemt 2>/dev/null || true
+                telemt_pick_version
+                telemt_download_binary "$TELEMT_CHOSEN_VERSION"
+                [ -f "$bak" ] && cp "$bak" "$TELEMT_CONFIG_FILE"
+                systemctl start telemt && ok "telemt перезапущен"
+            else
+                cd "$TELEMT_WORK_DIR_DOCKER"
+                docker compose pull -q && docker compose up -d
+                ok "Контейнер обновлён"
+            fi
+            ;;
+        2)
+            warn "Это удалит telemt, конфиг и всех пользователей!"
+            local yn; read -rp "  Продолжить? Введите 'YES': " yn < /dev/tty
+            [ "$yn" != "YES" ] && { info "Отменено"; return; }
+            if [ "$TELEMT_MODE" = "systemd" ]; then
+                systemctl stop telemt 2>/dev/null || true
+                systemctl disable telemt 2>/dev/null || true
+                rm -f "$TELEMT_SERVICE_FILE"
+                systemctl daemon-reload 2>/dev/null || true
+                rm -f "$TELEMT_BIN"
+                rm -rf "$TELEMT_CONFIG_DIR" "$TELEMT_WORK_DIR"
+                userdel telemt 2>/dev/null || true
+            else
+                cd "$TELEMT_WORK_DIR_DOCKER" && docker compose down -v --rmi all 2>/dev/null || true
+                rm -rf "$TELEMT_WORK_DIR_DOCKER"
+            fi
+            command -v ufw &>/dev/null && {
+                local port; port=$(grep -E "^port\s*=" "$TELEMT_CONFIG_FILE" 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "")
+                [ -n "$port" ] && ufw delete allow "${port}/tcp" &>/dev/null || true
+            }
+            ok "telemt удалён"
+            ;;
+        0) return ;;
+        *) warn "Неверный выбор" ;;
+    esac
+    read -rp "  Нажмите Enter для продолжения..." < /dev/tty
 }
 
 # ── Подменю пользователей с количеством ──────────────────────────

@@ -1931,6 +1931,9 @@ panel_reinstall() {
     cd /opt/remnawave 2>/dev/null && docker compose down -v --rmi all --remove-orphans >/dev/null 2>&1 || true
     docker system prune -a --volumes -f >/dev/null 2>&1 || true
     rm -rf /opt/remnawave
+    # server-manager хранится в /root/server-manager — он НЕ в /opt/remnawave,
+    # поэтому удалять его не нужно. Симлинк /usr/local/bin/server-manager
+    # и alias 'rp' восстанавливаются вызовом panel_install.
     ok "Старая установка удалена"
     info "Запускаем установку заново..."
     panel_install
