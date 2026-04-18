@@ -1530,12 +1530,10 @@ docker volume rm remnawave-db-data 2>/dev/null || true
 # Запускаем только БД и Redis
 docker compose up -d remnawave-db remnawave-redis >/dev/null 2>&1
 echo "Ждём запуска БД..."
-sleep 20
-
-# Проверяем что БД готова
-local attempts=0
-until docker compose exec -T remnawave-db pg_isready -U postgres >/dev/null 2>&1 || [ \$attempts -ge 10 ]; do
-    sleep 3; attempts=\$((attempts+1))
+_pw=0
+until docker compose exec -T remnawave-db pg_isready -U postgres -q 2>/dev/null; do
+    sleep 2; _pw=$((_pw+1))
+    [ "$_pw" -ge 30 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
 done
 
 # Восстанавливаем дамп
@@ -1555,10 +1553,16 @@ RSTART
     RUN "grep -q 'alias rp=' /etc/bash.bashrc || echo \"alias rp='remnawave_panel'\" >> /etc/bash.bashrc" 2>/dev/null
     _ok "Скрипт управления установлен"
 
-    # ── Копируем setup.sh ──────────────────────────────────────────
-    PUT "$0" "${ruser}@${rip}:/root/server-manager.sh" 2>/dev/null && \
-    RUN "chmod +x /root/server-manager.sh" 2>/dev/null
-    _ok "setup.sh скопирован на новый сервер"
+    # ── Копируем репозиторий server-manager ───────────────────────
+    local _sm_dir="${SCRIPT_DIR:-$(dirname "$(realpath "$0" 2>/dev/null || echo "$0")")}"
+    if [ -d "$_sm_dir" ] && [ -f "$_sm_dir/server-manager.sh" ]; then
+        RUN "mkdir -p /root/server-manager" 2>/dev/null || true
+        PUT "$_sm_dir/." "${ruser}@${rip}:/root/server-manager/" 2>/dev/null || true
+        RUN "chmod +x /root/server-manager/server-manager.sh &&             ln -sf /root/server-manager/server-manager.sh /usr/local/bin/server-manager" 2>/dev/null || true
+        _ok "server-manager скопирован на новый сервер"
+    else
+        warn "Не удалось определить каталог server-manager — скопируйте вручную"
+    fi
 
     # ── Очистка ────────────────────────────────────────────────────
     rm -f "$dump"
