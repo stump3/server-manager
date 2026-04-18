@@ -30,16 +30,31 @@ migrate_all() {
         fi
         ok "Дамп БД создан ($(du -sh "$dump" | cut -f1))"
 
-        # Передача файлов
-        PUT "$dump" /opt/remnawave/.env /opt/remnawave/docker-compose.yml /opt/remnawave/nginx.conf \
-            "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null && ok "Файлы панели переданы" \
-            || { warn "Ошибка передачи файлов панели"; rm -f "$dump"; return 1; }
+        # Создаём директорию на новом сервере
+        RUN "mkdir -p /opt/remnawave" 2>/dev/null || true
+
+        # Передача файлов по одному — scp надёжнее с явными источниками
+        local transfer_ok=true
+        for _f in "$dump" /opt/remnawave/.env /opt/remnawave/docker-compose.yml /opt/remnawave/nginx.conf; do
+            [ -f "$_f" ] || continue
+            PUT "$_f" "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null || { transfer_ok=false; break; }
+        done
+        if $transfer_ok; then
+            ok "Файлы панели переданы"
+        else
+            warn "Ошибка передачи файлов панели"; rm -f "$dump"; return 1
+        fi
 
         # SSL
-        [ -d /etc/letsencrypt/live ] && \
-            PUT /etc/letsencrypt/live /etc/letsencrypt/archive /etc/letsencrypt/renewal \
-                "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null \
-            && ok "SSL сертификаты переданы" || warn "Ошибка передачи SSL"
+        if [ -d /etc/letsencrypt/live ]; then
+            RUN "mkdir -p /etc/letsencrypt" 2>/dev/null || true
+            local ssl_ok=true
+            for _ssl in /etc/letsencrypt/live /etc/letsencrypt/archive /etc/letsencrypt/renewal; do
+                [ -d "$_ssl" ] || continue
+                PUT "$_ssl" "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null || ssl_ok=false
+            done
+            $ssl_ok && ok "SSL сертификаты переданы" || warn "Ошибка передачи SSL"
+        fi
 
         # Selfsteal
         [ -d /var/www/html ] && [ "$(ls -A /var/www/html 2>/dev/null)" ] && \
