@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-m
 ```
 
 [![Docs](https://img.shields.io/badge/docs-интерактивные-3b82f6?style=flat-square)](https://stump3.github.io/server-manager/README.html)
-[![Changelog](https://img.shields.io/badge/changelog-v3.1.0-22c55e?style=flat-square)](docs/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/changelog-v3.2.0-22c55e?style=flat-square)](docs/CHANGELOG.md)
 [![Engineer](https://img.shields.io/badge/инженерам-ENGINEER.md-f59e0b?style=flat-square)](docs/ENGINEER.md)
 
 </div>
@@ -43,10 +43,10 @@ server-manager/
 ├── server-manager.sh           # Точка входа — загружает модули
 ├── lib/
 │   ├── common.sh               # Утилиты, цвета, главное меню, SSH-хелперы
-│   ├── panel.sh                # Remnawave Panel + Extensions (1750 строк)
-│   ├── telemt.sh               # MTProxy (telemt) (701 строка)
-│   ├── hysteria.sh             # Hysteria2 (1213 строк)
-│   └── migrate.sh              # Перенос сервисов (248 строк)
+│   ├── panel.sh                # Remnawave Panel + Extensions (2332 строк)
+│   ├── telemt.sh               # MTProxy (telemt) (873 строки)
+│   ├── hysteria.sh             # Hysteria2 (1513 строк)
+│   └── migrate.sh              # Перенос сервисов (255 строк)
 └── integrations/
     ├── hy-sub-install.sh       # Интеграция Hysteria2 → подписка Remnawave
     └── hy-webhook.py           # Webhook синхронизации пользователей
@@ -73,18 +73,19 @@ bash server-manager.sh
 ## Главное меню
 
 ```
-  SERVER-MANAGER  v2603.200312
+  SERVER-MANAGER  v2604.xxxxxx
   ────────────────────────────────────────────
 
-  Remnawave Panel  ● запущена  v2.6.4
+  Remnawave Panel  ● запущена  v2.x.x
   MTProxy (telemt) ● запущен (systemd)
-  Hysteria2        ● запущена  v2.7.1
+  Hysteria2        ● запущена  v2.x.x
 
   ────────────────────────────────────────────
 
-  1)  🛡️  Remnawave Panel
+  1)  🛡️  Remnawave
   2)  📡  MTProxy (telemt)
   3)  🚀  Hysteria2
+
   4)  📦  Перенос
 
   5)  🔄  Обновить скрипт
@@ -96,346 +97,204 @@ bash server-manager.sh
 
 ## Remnawave Panel
 
-### Режимы установки
+### Установка
 
-| Режим | Описание |
-|---|---|
-| Панель + Нода | Reality selfsteal, Xray и панель на одном сервере |
-| Только панель | Нода на отдельном сервере |
+При установке задаются три вопроса последовательно:
 
-### Архитектура selfsteal (MODE=1)
-
+**1. Режим:**
 ```
-Клиент → TCP 443 → Xray (rw-core) → unix:/dev/shm/nginx.sock → nginx → Remnawave
+  1) Панель + Нода (Reality selfsteal, всё на одном сервере)
+  2) Только панель (нода на отдельном сервере)
 ```
 
-> **Важно:** nginx НЕ слушает порт 443. Порт 443 занимает Xray, который форвардит трафик в unix-сокет nginx через proxy_protocol.
-
-### SSL
-
-| Метод | Описание |
-|---|---|
-| Cloudflare DNS-01 | Wildcard сертификат, рекомендуется |
-| ACME HTTP-01 | Let's Encrypt, простой |
-| Gcore DNS-01 | Wildcard через Gcore |
-
-### Меню Remnawave Panel
-
+**2. Веб-сервер:**
 ```
-  1)  🔧  Установка
-  2)  ⚙️  Управление
-  3)  🌐  WARP Native
-  4)  🎨  Страница подписки
-  5)  🖼️  Selfsteal шаблон
-  6)  📦  Миграция на другой сервер
-  7)  🗑️  Удалить панель
+  1) Nginx   (SSL через certbot — Cloudflare / Let's Encrypt / Gcore)
+  2) Caddy   (SSL автоматически — встроенный ACME, certbot не нужен)
 ```
 
-### Меню управления (rp)
-
+**3. SSL-метод (только для Nginx):**
 ```
- 1)  📋  Логи
- 2)  📊  Статус
- 3)  🔄  Перезапустить
- 4)  ▶️  Старт
- 5)  📦  Обновить
- 6)  🔒  SSL
- 7)  💾  Бэкап
- 8)  🏥  Диагноз
- 9)  🔓  Открыть порт 8443
-10)  🔐  Закрыть порт 8443
-11)  💻  Remnawave CLI
-12)  🔧  Переустановить скрипт (rp)
+  1) Cloudflare DNS-01 (wildcard, рекомендуется)
+  2) ACME HTTP-01 (Let's Encrypt)
+  3) Gcore DNS-01 (wildcard)
 ```
 
-### Доступ к панели
+Скрипт автоматически:
+- Выпускает сертификаты и настраивает автообновление (Nginx) или делегирует это Caddy (ACME)
+- Генерирует `docker-compose.yml`, `.env`, `nginx.conf` / `Caddyfile` с cookie-защитой панели и OAuth2 Telegram
+- Регистрирует суперадмина через API
+- Генерирует x25519-ключи для Reality
+- Создаёт config-profile, ноду, хост и squad
+- Устанавливает команду `remnawave_panel` (`rp`)
 
-После установки cookie URL сохраняется в `/root/remnawave-credentials.txt`:
+### Архитектуры
+
+**Selfsteal (MODE=1)**
 
 ```
-https://panel.example.com/auth/login?KEY=VALUE
+Клиент TCP :443
+    │
+Xray — Reality selfsteal (порт 443)
+    │  unix:/dev/shm/nginx.sock  proxy_protocol xver=1
+    │
+Nginx / Caddy — unix socket
+    ├── panel.example.com  →  Remnawave :3000  (cookie-защита)
+    ├── sub.example.com    →  Sub page :3010
+    └── node.example.com   →  /var/www/html (decoy)
 ```
+
+**Только панель (MODE=2)**
+
+```
+Клиент TCP :443
+    │
+Nginx (listen 443) / Caddy (bind 0.0.0.0)
+    ├── panel.example.com  →  Remnawave :3000  (cookie-защита)
+    ├── sub.example.com    →  Sub page :3010
+    └── node.example.com   →  /var/www/html (decoy)
+```
+
+### Веб-сервер: Nginx vs Caddy
+
+| | Nginx | Caddy |
+|---|---|---|
+| SSL | certbot (Cloudflare / LE / Gcore) | встроенный ACME (Let's Encrypt) |
+| Конфиг | `nginx.conf` | `Caddyfile` |
+| MODE=1 (selfsteal) | unix socket, proxy_protocol | unix socket, proxy_protocol |
+| MODE=2 (панель) | listen 443 | bind 0.0.0.0, HTTP автоматически |
+| OAuth2 Telegram | `location ^~ /oauth2/` | `@oauth2` matcher |
+| `rp ssl` | `certbot renew` + nginx reload | `caddy reload` |
+| `rp health` | `nginx -t` + certbot dates | `caddy validate` |
+
+### Управление (команда `rp`)
+
+```bash
+rp                  # интерактивное меню
+rp status           # статус контейнеров + потребление CPU/RAM
+rp logs [nginx|caddy|sub|node]  # логи (default: panel)
+rp restart [all|nginx|caddy|panel|sub|node]
+rp start / stop
+rp update           # docker compose pull + restart
+rp ssl              # обновить SSL (certbot или caddy reload)
+rp backup           # дамп БД + архив конфигов
+rp health           # SSL, веб-сервер, API
+rp open_port        # временный доступ через :8443 (только Nginx)
+rp close_port       # закрыть :8443
+rp migrate          # перенос панели на другой сервер
+```
+
+### Порты панели
+
+| Порт | Протокол | Назначение |
+|---|---|---|
+| 443 | TCP | Xray (selfsteal) / Nginx / Caddy |
+| 2222 | TCP | remnanode (внутренний) |
+| 3000 | TCP | Remnawave API (localhost) |
+| 3001 | TCP | Prometheus metrics (localhost) |
+| 3010 | TCP | Subscription page (localhost) |
+| 6767 | TCP | PostgreSQL (localhost) |
 
 ---
 
 ## MTProxy (telemt)
 
-| Режим | Описание |
-|---|---|
-| systemd | Бинарник с GitHub Releases, автозапуск |
-| Docker | Образ с Docker Hub |
+Telegram MTProto прокси на Rust. Два режима запуска: **systemd** (рекомендуется) и **Docker**.
 
-Hot reload пользователей без перезапуска сервиса.
+### Меню
+
+```
+  1)  🔧  Установка
+  2)  ⚙️  Управление
+  3)  👥  Пользователи
+  0)  ◀️  Назад
+```
+
+### REST API
+
+telemt поднимает HTTP API на `127.0.0.1:9091`:
+
+```bash
+# Список пользователей
+curl http://127.0.0.1:9091/v1/users
+
+# Добавить пользователя
+curl -X POST http://127.0.0.1:9091/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"user1","secret":"abcdef1234567890abcdef1234567890"}'
+
+# Удалить пользователя
+curl -X DELETE http://127.0.0.1:9091/v1/users/user1
+```
+
+### Порты MTProxy
+
+| Порт | Протокол | Назначение |
+|---|---|---|
+| 2053 | TCP | MTProto (основной, меняется при установке) |
+| 8443 | TCP | MTProto (альтернативный) |
+| 9091 | TCP | REST API (localhost) |
 
 ---
 
 ## Hysteria2
 
-### Установка
+Высокоскоростной VPN поверх QUIC/UDP. Аутентификация через HTTP webhook (hy-webhook.py) — добавление и удаление пользователей без перезапуска.
 
-- Домен с ACME HTTP-01
-- CA: Let's Encrypt / ZeroSSL / Buypass
-- **Port Hopping** — диапазон UDP портов, обход блокировок по порту
-- IPv6 поддержка
-- Алгоритм: BBR / Brutal
-- **Маскировка** — трафик выглядит как обычный HTTPS сайт
-
-### Меню управления
+### Меню
 
 ```
-  1)  📊  Статус
-  2)  📋  Логи
-  3)  🔄  Перезапустить
-  4)  📶  Bandwidth
-  5)  🎭  Маскировка
+  1)  🔧  Установка
+  2)  ⚙️  Управление
+  3)  👥  Пользователи
+  4)  🔗  Подписка и интеграция
+  0)  ◀️  Назад
 ```
 
-### Bandwidth
-
-| Режим | Когда использовать |
-|---|---|
-| **Без bandwidth** (BBR) | Рекомендуется по умолчанию. Автоподбор скорости |
-| **С bandwidth** (Brutal) | Нестабильный канал с потерями пакетов |
-
-Указывайте скорость серверного канала:
-```
-Сервер 1 Гбит/с   → 1 gbps
-Сервер 100 Мбит/с → 100 mbps
-```
-
-### Маскировка
-
-Делает трафик Hysteria2 похожим на обычный HTTPS. Рекомендуется включить.
-По умолчанию рекомендуется **Bing** — стабильный и популярный.
-
-### Port Hopping
-
-```yaml
-# config.yaml
-listen: 0.0.0.0:8443,20000-29999
-```
-
-URI клиента: `hy2://user:pass@domain:8443,20000-29999?sni=domain&alpn=h3`
-
-Совместимые клиенты: Hiddify, Nekoray, v2rayN 7.x+
-
-> Hysteria2 использует **8443 UDP**. Порт 443 TCP занят Xray. Конфликта нет.
-
----
-
-## Интеграция Hysteria2 → Подписка Remnawave
-
-Добавляет `hy2://` URI в подписку Remnawave автоматически при создании/изменении пользователя.
-
-```bash
-# Путь: Главное меню → 3) Hysteria2 → 4) Подписка → 3) Интеграция с Remnawave
-```
-
-### Схема работы
+### Схема интеграции с Remnawave
 
 ```
-Remnawave  ──POST /webhook──►  hy-webhook :8766
-                                    │
-                            обновляет config.yaml
-                                    │
-                            Hysteria2 reload
-                                    │
-subscription-page  ◄──  читает users.json  ──►  hy2:// URI в подписку
+Клиент (Hiddify/v2rayNG)
+    ↓  GET /sub/TOKEN
+remna-sub-injector :3020
+    ↓  GET /uri/TOKEN → hy-webhook :8766
+    ←  hy2://user:pass@domain:port?...
+    ↓  проксирует на Remnawave sub :3010
+    ←  base64 подписка с инжектированным hy2:// URI
 ```
 
-### Обновление
+### Порты Hysteria2
 
-### Вариант 1 — через меню (рекомендуется)
-
-Если скрипт уже установлен и запущен:
-
-```
-Главное меню → 5) Обновить скрипт
-```
-
-Скачивает свежий архив с GitHub и обновляет все модули `lib/*.sh`.
-
----
-
-### Вариант 2 — полная переустановка с нуля
-
-Если скрипта ещё нет или нужна чистая установка:
-
-```bash
-mkdir -p /root/lib
-
-for mod in common panel telemt hysteria migrate; do
-    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/${mod}.sh" \
-        -o "/root/lib/${mod}.sh"
-done
-
-curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh" \
-    -o /root/server-manager.sh && chmod +x /root/server-manager.sh
-
-bash /root/server-manager.sh
-```
-
----
-
-### Вариант 3 — обновить один модуль
-
-Если нужно обновить только конкретный компонент:
-
-```bash
-# Заменить panel.sh (Remnawave Panel)
-curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/panel.sh" \
-    -o /root/lib/panel.sh
-
-# Или через tar-архив (все модули сразу)
-curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz \
-    | tar -xz --strip-components=2 -C /root/lib server-manager-main/lib
-```
-
----
-
-### После обновления
-
-Скрипт управления `remnawave_panel` (команда `rp`) хранится отдельно в `/usr/local/bin/remnawave_panel`. Он не обновляется автоматически. Чтобы применить изменения:
-
-```
-Главное меню → 1) Remnawave Panel → 2) Управление → 12) Переустановить скрипт (rp)
-```
-
----
-
-## Требования
-
-- `/opt/remnawave/` — Remnawave установлена через server-manager
-- `/etc/hysteria/config.yaml` — Hysteria2 установлена через server-manager
-- UFW разрешает `172.16.0.0/12 → 8766` (добавляется автоматически)
-
-### Webhook в .env Remnawave
-
-```env
-WEBHOOK_ENABLED=true
-WEBHOOK_URL=http://172.30.0.1:8766/webhook
-WEBHOOK_SECRET_HEADER=<hex64>
-```
-
-> Адрес `172.30.0.1` — gateway Docker сети `remnawave-network`. Не `127.0.0.1` — Docker контейнер не видит localhost хоста.
-
----
-
-## Перенос
-
-```
-1) Перенести Remnawave Panel
-2) Перенести MTProxy
-3) Перенести Hysteria2
-4) Перенести всё (Panel + MTProxy + Hysteria2)
-5) Бэкап / Восстановление
-```
-
-| Данные | Panel | MTProxy | Hysteria2 |
-|---|---|---|---|
-| Конфиг | ✓ | ✓ | ✓ |
-| БД (pg_dumpall + gzip) | ✓ | — | — |
-| SSL сертификаты | ✓ | — | ✓ |
-| Пользователи | ✓ | ✓ | ✓ |
-
----
-
-## Обновление
-
-### Вариант 1 — через меню (рекомендуется)
-
-Если скрипт уже установлен и запущен:
-
-```
-Главное меню → 5) Обновить скрипт
-```
-
-Скачивает свежий архив с GitHub и обновляет все модули `lib/*.sh`.
-
----
-
-### Вариант 2 — полная переустановка с нуля
-
-Если скрипта ещё нет или нужна чистая установка:
-
-```bash
-mkdir -p /root/lib
-
-for mod in common panel telemt hysteria migrate; do
-    curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/${mod}.sh" \
-        -o "/root/lib/${mod}.sh"
-done
-
-curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh" \
-    -o /root/server-manager.sh && chmod +x /root/server-manager.sh
-
-bash /root/server-manager.sh
-```
-
----
-
-### Вариант 3 — обновить один модуль
-
-Если нужно обновить только конкретный компонент:
-
-```bash
-# Заменить panel.sh (Remnawave Panel)
-curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/lib/panel.sh" \
-    -o /root/lib/panel.sh
-
-# Или через tar-архив (все модули сразу)
-curl -fsSL https://github.com/stump3/server-manager/archive/refs/heads/main.tar.gz \
-    | tar -xz --strip-components=2 -C /root/lib server-manager-main/lib
-```
-
----
-
-### После обновления
-
-Скрипт управления `remnawave_panel` (команда `rp`) хранится отдельно в `/usr/local/bin/remnawave_panel`. Он не обновляется автоматически. Чтобы применить изменения:
-
-```
-Главное меню → 1) Remnawave Panel → 2) Управление → 12) Переустановить скрипт (rp)
-```
-
----
-
-## Требования
-
-### Система
-- Ubuntu 20.04+ / Debian 11+
-- Root доступ
-- Docker, docker-compose, jq, certbot, openssl
-
-### Порты
-- `80` TCP — certbot (открывается на время выпуска SSL, потом закрывается)
-- `443` TCP — Xray/nginx (Remnawave Panel + selfsteal)
-- `8443` UDP — Hysteria2
-- `2222` TCP — remnanode (только из Docker сети 172.30.0.0/16)
-
-### RAM
-
-Минимум **2 GB RAM** для полного стека. Рекомендуется **4 GB**.
-
-| Компонент | Потребление | Тип |
+| Порт | Протокол | Назначение |
 |---|---|---|
-| remnawave (NestJS) | ~395 MB | Docker |
-| remnanode (Xray) | ~88 MB | Docker |
-| subscription-page | ~76 MB | Docker |
-| remnawave-db (Postgres) | ~50 MB + ~195 MB workers | Docker |
-| hysteria2 | ~17 MB (peak 53 MB) | systemd |
-| telemt | ~18 MB (peak 83 MB) | systemd |
-| hy-webhook | ~1 MB | systemd |
-| nginx + redis | ~10 MB | Docker |
-| **Итого** | **~850 MB** | |
-
-> **Примечание:** 395 MB для remnawave — норма для NestJS + BullMQ + TypeORM стека. eGames и другие скрипты на базе remnawave/backend:2 показывают те же цифры.
-
-### Swap
-Рекомендуется минимум **1 GB swap**. При 2 GB RAM telemt и другие сервисы в пике уходят в swap (~47-83 MB).
+| 443 | UDP | Hysteria2 |
+| 8766 | TCP | hy-webhook API (localhost) |
+| 3020 | TCP | sub-injector (localhost) |
 
 ---
 
-## Лицензия
+## Docker и образы
 
-MIT
+| Образ | Версия | Назначение |
+|---|---|---|
+| `remnawave/backend` | 2 | Remnawave Panel API |
+| `remnawave/node` | latest | remnanode (Xray) |
+| `remnawave/subscription-page` | latest | Страница подписки |
+| `postgres` | 18.3 | База данных |
+| `valkey/valkey` | 9.0.3-alpine | Redis (Unix socket) |
+| `nginx` | 1.28 | Веб-сервер (если выбран) |
+| `caddy` | 2.11.2 | Веб-сервер (если выбран) |
+
+Valkey работает через Unix-сокет `/var/run/valkey/valkey.sock` — нет TCP-порта, меньше overhead.
+
+---
+
+## Миграция
+
+Перенос любого компонента на другой сервер через SSH:
+- Дамп БД PostgreSQL → восстановление на целевом сервере
+- Передача конфигов, SSL-сертификатов, сайта
+- Установка зависимостей на целевом сервере
+- Запуск стека
+
+Вызов: `rp migrate` или пункт **4) Перенос** в главном меню.

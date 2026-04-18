@@ -103,23 +103,36 @@ panel_install() {
     fi
 
     echo ""
-    section "SSL сертификаты"
-    echo "  1) Cloudflare DNS-01 (wildcard, рекомендуется)"
-    echo "  2) ACME HTTP-01 (Let's Encrypt)"
-    echo "  3) Gcore DNS-01 (wildcard)"
-    local CERT_METHOD=""
-    while [[ ! "$CERT_METHOD" =~ ^[123]$ ]]; do
-        read -p "  Метод (1/2/3): " CERT_METHOD < /dev/tty
+    section "Веб-сервер"
+    echo "  1) Nginx   (SSL через certbot — Cloudflare / Let's Encrypt / Gcore)"
+    echo "  2) Caddy   (SSL автоматически — встроенный ACME, certbot не нужен)"
+    echo ""
+    local WEB_SERVER=""
+    while [[ ! "$WEB_SERVER" =~ ^[12]$ ]]; do
+        read -p "  Выбор (1/2): " WEB_SERVER < /dev/tty
     done
 
-    local PANEL_CF_EMAIL="" PANEL_CF_KEY="" PANEL_LE_EMAIL="" GCORE_TOKEN=""
-    case $CERT_METHOD in
-        1) ask PANEL_CF_KEY   "  Cloudflare API Token"
-           ask PANEL_CF_EMAIL "  Email Cloudflare" ;;
-        2) ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
-        3) ask GCORE_TOKEN    "  Gcore API Token"
-           ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
-    esac
+    local CERT_METHOD="" PANEL_CF_EMAIL="" PANEL_CF_KEY="" PANEL_LE_EMAIL="" GCORE_TOKEN=""
+    if [ "$WEB_SERVER" = "1" ]; then
+        echo ""
+        section "SSL сертификаты"
+        echo "  1) Cloudflare DNS-01 (wildcard, рекомендуется)"
+        echo "  2) ACME HTTP-01 (Let's Encrypt)"
+        echo "  3) Gcore DNS-01 (wildcard)"
+        while [[ ! "$CERT_METHOD" =~ ^[123]$ ]]; do
+            read -p "  Метод (1/2/3): " CERT_METHOD < /dev/tty
+        done
+        case $CERT_METHOD in
+            1) ask PANEL_CF_KEY   "  Cloudflare API Token"
+               ask PANEL_CF_EMAIL "  Email Cloudflare" ;;
+            2) ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
+            3) ask GCORE_TOKEN    "  Gcore API Token"
+               ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
+        esac
+    else
+        info "Caddy: SSL будет получен автоматически через ACME при первом запуске"
+        [ "$MODE" = "2" ] && info "Для ACME нужны порты 80 и 443 — откроются автоматически"
+    fi
 
     echo ""
     info "Проверка DNS..."
@@ -143,14 +156,17 @@ panel_install() {
     }
     apt-get update -y -q
     PKGS=(curl wget git nano htop socat jq openssl ca-certificates gnupg \
-          lsb-release dnsutils unzip cron certbot python3-certbot-dns-cloudflare)
-    [ "$CERT_METHOD" = "3" ] && PKGS+=(python3-pip)
+          lsb-release dnsutils unzip cron)
+    if [ "$WEB_SERVER" = "1" ]; then
+        PKGS+=(certbot python3-certbot-dns-cloudflare)
+        [ "$CERT_METHOD" = "3" ] && PKGS+=(python3-pip)
+    fi
     MISSING=(); for p in "${PKGS[@]}"; do dpkg -l "$p" &>/dev/null || MISSING+=("$p"); done
     [ ${#MISSING[@]} -gt 0 ] && apt-get install -y -q "${MISSING[@]}"
-    [ "$CERT_METHOD" = "3" ] && {
+    if [ "$WEB_SERVER" = "1" ] && [ "$CERT_METHOD" = "3" ]; then
         certbot plugins 2>/dev/null | grep -q "dns-gcore" || \
             python3 -m pip install --break-system-packages certbot-dns-gcore >/dev/null 2>&1 || true
-    }
+    fi
     systemctl is-active --quiet cron || systemctl start cron
     systemctl is-enabled --quiet cron || systemctl enable cron
     ok "Системные пакеты"
@@ -164,65 +180,71 @@ panel_install() {
     ufw --force enable >/dev/null 2>&1
     ok "UFW настроен"
 
-    # ── SSL ──────────────────────────────────────────────────────
-    STEP_NUM=$(( STEP_NUM + 1 ))
-    step "SSL сертификаты"
-    case $CERT_METHOD in
-        1)
-            mkdir -p ~/.secrets/certbot
-            if echo "$PANEL_CF_KEY" | grep -qE '[A-Z]'; then
-                cat > ~/.secrets/certbot/cloudflare.ini <<EOF
+    local PC="" SC="" STC=""
+    if [ "$WEB_SERVER" = "1" ]; then
+        # ── SSL (только Nginx) ──────────────────────────────────────
+        STEP_NUM=$(( STEP_NUM + 1 ))
+        step "SSL сертификаты"
+        case $CERT_METHOD in
+            1)
+                mkdir -p ~/.secrets/certbot
+                if echo "$PANEL_CF_KEY" | grep -qE '[A-Z]'; then
+                    cat > ~/.secrets/certbot/cloudflare.ini <<EOF
 dns_cloudflare_api_token = $PANEL_CF_KEY
 EOF
-            else
-                cat > ~/.secrets/certbot/cloudflare.ini <<EOF
+                else
+                    cat > ~/.secrets/certbot/cloudflare.ini <<EOF
 dns_cloudflare_email = $PANEL_CF_EMAIL
 dns_cloudflare_api_key = $PANEL_CF_KEY
 EOF
-            fi
-            chmod 600 ~/.secrets/certbot/cloudflare.ini ;;
-        3)
-            mkdir -p ~/.secrets/certbot
-            cat > ~/.secrets/certbot/gcore.ini <<EOF
+                fi
+                chmod 600 ~/.secrets/certbot/cloudflare.ini ;;
+            3)
+                mkdir -p ~/.secrets/certbot
+                cat > ~/.secrets/certbot/gcore.ini <<EOF
 dns_gcore_apitoken = $GCORE_TOKEN
 EOF
-            chmod 600 ~/.secrets/certbot/gcore.ini ;;
-    esac
+                chmod 600 ~/.secrets/certbot/gcore.ini ;;
+        esac
 
-    declare -A PANEL_CERT_MAP
-    local domains_arr=("$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN")
-    if [ "$CERT_METHOD" = "1" ] || [ "$CERT_METHOD" = "3" ]; then
-        declare -A UNIQUE_BASES
-        for d in "${domains_arr[@]}"; do
-            b=$(panel_get_base_domain "$d"); UNIQUE_BASES["$b"]=1
+        declare -A PANEL_CERT_MAP
+        local domains_arr=("$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN")
+        if [ "$CERT_METHOD" = "1" ] || [ "$CERT_METHOD" = "3" ]; then
+            declare -A UNIQUE_BASES
+            for d in "${domains_arr[@]}"; do
+                b=$(panel_get_base_domain "$d"); UNIQUE_BASES["$b"]=1
+            done
+            for base in "${!UNIQUE_BASES[@]}"; do panel_issue_cert "$base" "$CERT_METHOD"; done
+        else
+            for d in "${domains_arr[@]}"; do panel_issue_cert "$d" "$CERT_METHOD"; done
+        fi
+
+        PC=$(panel_get_cert_domain "$PANEL_DOMAIN"     "$CERT_METHOD")
+        SC=$(panel_get_cert_domain "$SUB_DOMAIN"       "$CERT_METHOD")
+        STC=$(panel_get_cert_domain "$SELFSTEAL_DOMAIN" "$CERT_METHOD")
+
+        # Cron автообновление
+        local CRON_CMD
+        [ "$CERT_METHOD" = "2" ] \
+            && CRON_CMD="ufw allow 80 && /usr/bin/certbot renew --quiet && ufw delete allow 80 && ufw reload" \
+            || CRON_CMD="/usr/bin/certbot renew --quiet"
+        crontab -u root -l 2>/dev/null | grep -q "certbot renew" || \
+            (crontab -u root -l 2>/dev/null; echo "0 5 * * 0 $CRON_CMD") | crontab -u root -
+
+        for cd in "$PC" "$SC" "$STC"; do
+            local renewal="/etc/letsencrypt/renewal/$cd.conf"
+            [ -f "$renewal" ] || continue
+            local hook="renew_hook = sh -c 'cd /opt/remnawave && docker compose down remnawave-nginx && docker compose up -d remnawave-nginx'"
+            grep -q "renew_hook" "$renewal" \
+                && sed -i "/renew_hook/c\\$hook" "$renewal" \
+                || echo "$hook" >> "$renewal"
         done
-        for base in "${!UNIQUE_BASES[@]}"; do panel_issue_cert "$base" "$CERT_METHOD"; done
+        ok "Сертификаты и автообновление настроены"
     else
-        for d in "${domains_arr[@]}"; do panel_issue_cert "$d" "$CERT_METHOD"; done
+        # Caddy: порт 80 нужен для ACME в MODE=2
+        [ "$MODE" = "2" ] && ufw allow 80/tcp comment 'HTTP (Caddy ACME)' >/dev/null 2>&1
+        ok "SSL — Caddy получит сертификаты автоматически при первом запуске"
     fi
-
-    local PC SC STC
-    PC=$(panel_get_cert_domain "$PANEL_DOMAIN"     "$CERT_METHOD")
-    SC=$(panel_get_cert_domain "$SUB_DOMAIN"       "$CERT_METHOD")
-    STC=$(panel_get_cert_domain "$SELFSTEAL_DOMAIN" "$CERT_METHOD")
-
-    # Cron автообновление
-    local CRON_CMD
-    [ "$CERT_METHOD" = "2" ] \
-        && CRON_CMD="ufw allow 80 && /usr/bin/certbot renew --quiet && ufw delete allow 80 && ufw reload" \
-        || CRON_CMD="/usr/bin/certbot renew --quiet"
-    crontab -u root -l 2>/dev/null | grep -q "certbot renew" || \
-        (crontab -u root -l 2>/dev/null; echo "0 5 * * 0 $CRON_CMD") | crontab -u root -
-
-    for cd in "$PC" "$SC" "$STC"; do
-        local renewal="/etc/letsencrypt/renewal/$cd.conf"
-        [ -f "$renewal" ] || continue
-        local hook="renew_hook = sh -c 'cd /opt/remnawave && docker compose down remnawave-nginx && docker compose up -d remnawave-nginx'"
-        grep -q "renew_hook" "$renewal" \
-            && sed -i "/renew_hook/c\\$hook" "$renewal" \
-            || echo "$hook" >> "$renewal"
-    done
-    ok "Сертификаты и автообновление настроены"
 
     # ── Генерация конфигурации ───────────────────────────────────
     STEP_NUM=$(( STEP_NUM + 1 ))
@@ -245,8 +267,7 @@ APP_PORT=3000
 METRICS_PORT=3001
 API_INSTANCES=1
 DATABASE_URL="postgresql://postgres:postgres@remnawave-db:5432/postgres"
-REDIS_HOST=remnawave-redis
-REDIS_PORT=6379
+REDIS_SOCKET=/var/run/valkey/valkey.sock
 JWT_AUTH_SECRET=$JWT_AUTH
 JWT_API_TOKENS_SECRET=$JWT_API
 JWT_AUTH_LIFETIME=168
@@ -262,9 +283,14 @@ WEBHOOK_URL=https://your-webhook-url.com/endpoint
 WEBHOOK_SECRET_HEADER=$(gen_hex64)
 IS_TELEGRAM_NOTIFICATIONS_ENABLED=false
 TELEGRAM_BOT_TOKEN=change_me
+# TELEGRAM_BOT_PROXY=socks5://user:password@host:port
+TELEGRAM_NOTIFY_SERVICE=change_me
+# Thread ID указывается через двоеточие в chat_id: "-100123:80"
 TELEGRAM_NOTIFY_USERS_CHAT_ID=change_me
 TELEGRAM_NOTIFY_NODES_CHAT_ID=change_me
 TELEGRAM_NOTIFY_CRM_CHAT_ID=change_me
+NOT_CONNECTED_USERS_NOTIFICATIONS_ENABLED=false
+NOT_CONNECTED_USERS_NOTIFICATIONS_AFTER_HOURS=[6, 24, 48]
 BANDWIDTH_USAGE_NOTIFICATIONS_ENABLED=false
 BANDWIDTH_USAGE_NOTIFICATIONS_THRESHOLD=[60, 80]
 POSTGRES_USER=postgres
@@ -272,23 +298,25 @@ POSTGRES_PASSWORD=postgres
 POSTGRES_DB=postgres
 EOF
 
-    # Монтирование сертификатов — уникальные домены
+    # Монтирование сертификатов — только для Nginx
     local CERT_VOLUMES=""
-    declare -A MOUNTED_CERTS
-    for cd in "$PC" "$SC" "$STC"; do
-        [ -n "${MOUNTED_CERTS[$cd]:-}" ] && continue
-        CERT_VOLUMES+="      - /etc/letsencrypt/live/${cd}/fullchain.pem:/etc/nginx/ssl/${cd}/fullchain.pem:ro
+    if [ "$WEB_SERVER" = "1" ]; then
+        declare -A MOUNTED_CERTS
+        for cd in "$PC" "$SC" "$STC"; do
+            [ -n "${MOUNTED_CERTS[$cd]:-}" ] && continue
+            CERT_VOLUMES+="      - /etc/letsencrypt/live/${cd}/fullchain.pem:/etc/nginx/ssl/${cd}/fullchain.pem:ro
       - /etc/letsencrypt/live/${cd}/privkey.pem:/etc/nginx/ssl/${cd}/privkey.pem:ro
 "
-        MOUNTED_CERTS["$cd"]=1
-    done
+            MOUNTED_CERTS["$cd"]=1
+        done
+    fi
 
     # docker-compose
-    if [ "$MODE" = "1" ]; then
+    if [ "$WEB_SERVER" = "1" ] && [ "$MODE" = "1" ]; then
         cat > /opt/remnawave/docker-compose.yml << EOFYML
 services:
   remnawave-db:
-    image: postgres:18.1
+    image: postgres:18.3
     container_name: remnawave-db
     hostname: remnawave-db
     restart: always
@@ -307,7 +335,7 @@ services:
       interval: 3s
       timeout: 10s
       retries: 3
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave:
     image: remnawave/backend:2
@@ -319,6 +347,8 @@ services:
     ports:
       - '127.0.0.1:3000:\${APP_PORT:-3000}'
       - '127.0.0.1:3001:\${METRICS_PORT:-3001}'
+    volumes:
+      - valkey-socket:/var/run/valkey
     networks: [remnawave-network]
     healthcheck:
       test: ['CMD-SHELL', 'curl -f http://localhost:\${METRICS_PORT:-3001}/health']
@@ -329,24 +359,28 @@ services:
     depends_on:
       remnawave-db: {condition: service_healthy}
       remnawave-redis: {condition: service_healthy}
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave-redis:
-    image: valkey/valkey:9.0.0-alpine
+    image: valkey/valkey:9.0.3-alpine
     container_name: remnawave-redis
     hostname: remnawave-redis
     restart: always
     ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    volumes:
+      - valkey-socket:/var/run/valkey
     networks: [remnawave-network]
     command: >
       valkey-server --save "" --appendonly no
       --maxmemory-policy noeviction --loglevel warning
+      --unixsocket /var/run/valkey/valkey.sock
+      --unixsocketperm 777
     healthcheck:
-      test: ['CMD', 'valkey-cli', 'ping']
+      test: ['CMD', 'valkey-cli', '-s', '/var/run/valkey/valkey.sock', 'ping']
       interval: 3s
       timeout: 10s
       retries: 3
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave-nginx:
     image: nginx:1.28
@@ -361,7 +395,7 @@ services:
       - /var/www/html:/var/www/html:ro
 ${CERT_VOLUMES}    command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
     depends_on: [remnawave, remnawave-subscription-page]
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave-subscription-page:
     image: remnawave/subscription-page:latest
@@ -377,7 +411,7 @@ ${CERT_VOLUMES}    command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "d
       - REMNAWAVE_API_TOKEN=PLACEHOLDER
     ports: ['127.0.0.1:3010:3010']
     networks: [remnawave-network]
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnanode:
     image: remnawave/node:latest
@@ -385,12 +419,14 @@ ${CERT_VOLUMES}    command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "d
     hostname: remnanode
     restart: always
     ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    cap_add:
+      - NET_ADMIN
     network_mode: host
     environment:
       - NODE_PORT=2222
       - SECRET_KEY="PUBLIC KEY FROM REMNAWAVE-PANEL"
     volumes: [/dev/shm:/dev/shm:rw]
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
 networks:
   remnawave-network:
@@ -404,12 +440,15 @@ volumes:
   remnawave-db-data:
     driver: local
     name: remnawave-db-data
+  valkey-socket:
+    name: valkey-socket
 EOFYML
-    else
+    elif [ "$WEB_SERVER" = "1" ] && [ "$MODE" = "2" ]; then
+        # ── Nginx, только панель ──────────────────────────────────
         cat > /opt/remnawave/docker-compose.yml << EOFYML
 services:
   remnawave-db:
-    image: postgres:18.1
+    image: postgres:18.3
     container_name: remnawave-db
     hostname: remnawave-db
     restart: always
@@ -428,7 +467,7 @@ services:
       interval: 3s
       timeout: 10s
       retries: 3
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave:
     image: remnawave/backend:2
@@ -440,6 +479,8 @@ services:
     ports:
       - '127.0.0.1:3000:\${APP_PORT:-3000}'
       - '127.0.0.1:3001:\${METRICS_PORT:-3001}'
+    volumes:
+      - valkey-socket:/var/run/valkey
     networks: [remnawave-network]
     healthcheck:
       test: ['CMD-SHELL', 'curl -f http://localhost:\${METRICS_PORT:-3001}/health']
@@ -450,24 +491,28 @@ services:
     depends_on:
       remnawave-db: {condition: service_healthy}
       remnawave-redis: {condition: service_healthy}
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave-redis:
-    image: valkey/valkey:9.0.0-alpine
+    image: valkey/valkey:9.0.3-alpine
     container_name: remnawave-redis
     hostname: remnawave-redis
     restart: always
     ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    volumes:
+      - valkey-socket:/var/run/valkey
     networks: [remnawave-network]
     command: >
       valkey-server --save "" --appendonly no
       --maxmemory-policy noeviction --loglevel warning
+      --unixsocket /var/run/valkey/valkey.sock
+      --unixsocketperm 777
     healthcheck:
-      test: ['CMD', 'valkey-cli', 'ping']
+      test: ['CMD', 'valkey-cli', '-s', '/var/run/valkey/valkey.sock', 'ping']
       interval: 3s
       timeout: 10s
       retries: 3
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave-nginx:
     image: nginx:1.28
@@ -479,7 +524,7 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
 ${CERT_VOLUMES}    depends_on: [remnawave, remnawave-subscription-page]
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave-subscription-page:
     image: remnawave/subscription-page:latest
@@ -495,7 +540,7 @@ ${CERT_VOLUMES}    depends_on: [remnawave, remnawave-subscription-page]
       - REMNAWAVE_API_TOKEN=PLACEHOLDER
     ports: ['127.0.0.1:3010:3010']
     networks: [remnawave-network]
-    logging: {driver: json-file, options: {max-size: 30m, max-file: '5'}}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
 networks:
   remnawave-network:
@@ -507,22 +552,294 @@ volumes:
   remnawave-db-data:
     driver: local
     name: remnawave-db-data
+  valkey-socket:
+    name: valkey-socket
+EOFYML
+    elif [ "$WEB_SERVER" = "2" ] && [ "$MODE" = "1" ]; then
+        # ── Caddy, панель + нода (selfsteal) ─────────────────────
+        cat > /opt/remnawave/docker-compose.yml << EOFYML
+services:
+  remnawave-db:
+    image: postgres:18.3
+    container_name: remnawave-db
+    hostname: remnawave-db
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    env_file: .env
+    environment:
+      - POSTGRES_USER=\${POSTGRES_USER}
+      - POSTGRES_PASSWORD=\${POSTGRES_PASSWORD}
+      - POSTGRES_DB=\${POSTGRES_DB}
+      - TZ=UTC
+    ports: ['127.0.0.1:6767:5432']
+    volumes: [remnawave-db-data:/var/lib/postgresql]
+    networks: [remnawave-network]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}']
+      interval: 3s
+      timeout: 10s
+      retries: 3
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave:
+    image: remnawave/backend:2
+    container_name: remnawave
+    hostname: remnawave
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    env_file: .env
+    ports:
+      - '127.0.0.1:3000:\${APP_PORT:-3000}'
+      - '127.0.0.1:3001:\${METRICS_PORT:-3001}'
+    volumes:
+      - valkey-socket:/var/run/valkey
+    networks: [remnawave-network]
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:\${METRICS_PORT:-3001}/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      remnawave-db: {condition: service_healthy}
+      remnawave-redis: {condition: service_healthy}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave-redis:
+    image: valkey/valkey:9.0.3-alpine
+    container_name: remnawave-redis
+    hostname: remnawave-redis
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    volumes:
+      - valkey-socket:/var/run/valkey
+    networks: [remnawave-network]
+    command: >
+      valkey-server --save "" --appendonly no
+      --maxmemory-policy noeviction --loglevel warning
+      --unixsocket /var/run/valkey/valkey.sock
+      --unixsocketperm 777
+    healthcheck:
+      test: ['CMD', 'valkey-cli', '-s', '/var/run/valkey/valkey.sock', 'ping']
+      interval: 3s
+      timeout: 10s
+      retries: 3
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave-caddy:
+    image: caddy:2.11.2
+    container_name: remnawave-caddy
+    hostname: remnawave-caddy
+    network_mode: host
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - /var/www/html:/var/www/html:ro
+      - /dev/shm:/dev/shm:rw
+      - caddy_data:/data
+    command: sh -c 'rm -f /dev/shm/nginx.sock && caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+    environment:
+      - PANEL_DOMAIN=${PANEL_DOMAIN}
+      - SUB_DOMAIN=${SUB_DOMAIN}
+      - SELF_STEAL_DOMAIN=${SELFSTEAL_DOMAIN}
+      - BACKEND_URL=127.0.0.1:3000
+      - SUB_BACKEND_URL=127.0.0.1:3010
+    healthcheck:
+      test: ["CMD", "test", "-S", "/dev/shm/nginx.sock"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    depends_on: [remnawave, remnawave-subscription-page]
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave-subscription-page:
+    image: remnawave/subscription-page:latest
+    container_name: remnawave-subscription-page
+    hostname: remnawave-subscription-page
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    depends_on:
+      remnawave: {condition: service_healthy}
+    environment:
+      - REMNAWAVE_PANEL_URL=http://remnawave:3000
+      - APP_PORT=3010
+      - REMNAWAVE_API_TOKEN=PLACEHOLDER
+    ports: ['127.0.0.1:3010:3010']
+    networks: [remnawave-network]
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnanode:
+    image: remnawave/node:latest
+    container_name: remnanode
+    hostname: remnanode
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    cap_add:
+      - NET_ADMIN
+    network_mode: host
+    environment:
+      - NODE_PORT=2222
+      - SECRET_KEY="PUBLIC KEY FROM REMNAWAVE-PANEL"
+    volumes: [/dev/shm:/dev/shm:rw]
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+networks:
+  remnawave-network:
+    name: remnawave-network
+    driver: bridge
+    ipam:
+      config: [{subnet: 172.30.0.0/16}]
+    external: false
+
+volumes:
+  remnawave-db-data:
+    driver: local
+    name: remnawave-db-data
+  valkey-socket:
+    name: valkey-socket
+  caddy_data:
+    name: caddy_data
+EOFYML
+    else
+        # ── Caddy, только панель ──────────────────────────────────
+        cat > /opt/remnawave/docker-compose.yml << EOFYML
+services:
+  remnawave-db:
+    image: postgres:18.3
+    container_name: remnawave-db
+    hostname: remnawave-db
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    env_file: .env
+    environment:
+      - POSTGRES_USER=\${POSTGRES_USER}
+      - POSTGRES_PASSWORD=\${POSTGRES_PASSWORD}
+      - POSTGRES_DB=\${POSTGRES_DB}
+      - TZ=UTC
+    ports: ['127.0.0.1:6767:5432']
+    volumes: [remnawave-db-data:/var/lib/postgresql]
+    networks: [remnawave-network]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}']
+      interval: 3s
+      timeout: 10s
+      retries: 3
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave:
+    image: remnawave/backend:2
+    container_name: remnawave
+    hostname: remnawave
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    env_file: .env
+    ports:
+      - '127.0.0.1:3000:\${APP_PORT:-3000}'
+      - '127.0.0.1:3001:\${METRICS_PORT:-3001}'
+    volumes:
+      - valkey-socket:/var/run/valkey
+    networks: [remnawave-network]
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:\${METRICS_PORT:-3001}/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      remnawave-db: {condition: service_healthy}
+      remnawave-redis: {condition: service_healthy}
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave-redis:
+    image: valkey/valkey:9.0.3-alpine
+    container_name: remnawave-redis
+    hostname: remnawave-redis
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    volumes:
+      - valkey-socket:/var/run/valkey
+    networks: [remnawave-network]
+    command: >
+      valkey-server --save "" --appendonly no
+      --maxmemory-policy noeviction --loglevel warning
+      --unixsocket /var/run/valkey/valkey.sock
+      --unixsocketperm 777
+    healthcheck:
+      test: ['CMD', 'valkey-cli', '-s', '/var/run/valkey/valkey.sock', 'ping']
+      interval: 3s
+      timeout: 10s
+      retries: 3
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave-caddy:
+    image: caddy:2.11.2
+    container_name: remnawave-caddy
+    hostname: remnawave-caddy
+    network_mode: host
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - /var/www/html:/var/www/html:ro
+      - caddy_data:/data
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    environment:
+      - PANEL_DOMAIN=${PANEL_DOMAIN}
+      - SUB_DOMAIN=${SUB_DOMAIN}
+      - SELF_STEAL_DOMAIN=${SELFSTEAL_DOMAIN}
+      - BACKEND_URL=127.0.0.1:3000
+      - SUB_BACKEND_URL=127.0.0.1:3010
+    depends_on: [remnawave, remnawave-subscription-page]
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+  remnawave-subscription-page:
+    image: remnawave/subscription-page:latest
+    container_name: remnawave-subscription-page
+    hostname: remnawave-subscription-page
+    restart: always
+    ulimits: {nofile: {soft: 1048576, hard: 1048576}}
+    depends_on:
+      remnawave: {condition: service_healthy}
+    environment:
+      - REMNAWAVE_PANEL_URL=http://remnawave:3000
+      - APP_PORT=3010
+      - REMNAWAVE_API_TOKEN=PLACEHOLDER
+    ports: ['127.0.0.1:3010:3010']
+    networks: [remnawave-network]
+    logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
+
+networks:
+  remnawave-network:
+    name: remnawave-network
+    driver: bridge
+    external: false
+
+volumes:
+  remnawave-db-data:
+    driver: local
+    name: remnawave-db-data
+  valkey-socket:
+    name: valkey-socket
+  caddy_data:
+    name: caddy_data
 EOFYML
     fi
 
-    # nginx.conf
-    local LISTEN_DIR REAL_IP_P REAL_IP_S
-    if [ "$MODE" = "1" ]; then
-        # selfsteal: nginx слушает ТОЛЬКО unix-сокет
-        # Xray занимает порт 443 и форвардит трафик в unix-сокет через proxy_protocol
-        LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;"
-        REAL_IP_P="\$proxy_protocol_addr"
-        REAL_IP_S="\$proxy_protocol_addr"
-    else
-        LISTEN_DIR="listen 443 ssl;"
-        REAL_IP_P="\$remote_addr"
-        REAL_IP_S="\$remote_addr"
-    fi
+    # Конфиг веб-сервера
+    if [ "$WEB_SERVER" = "1" ]; then
+        # ── nginx.conf ────────────────────────────────────────────
+        local LISTEN_DIR REAL_IP_P REAL_IP_S
+        if [ "$MODE" = "1" ]; then
+            LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;"
+            REAL_IP_P="\$proxy_protocol_addr"
+            REAL_IP_S="\$proxy_protocol_addr"
+        else
+            LISTEN_DIR="listen 443 ssl;"
+            REAL_IP_P="\$remote_addr"
+            REAL_IP_S="\$remote_addr"
+        fi
 
     cat > /opt/remnawave/nginx.conf << NGINX_CONF_EOF
 server_names_hash_bucket_size 64;
@@ -566,6 +883,22 @@ server {
     ssl_trusted_certificate "/etc/nginx/ssl/${PC}/fullchain.pem";
     add_header Set-Cookie \$set_cookie_header;
 
+    location ^~ /oauth2/ {
+        if (\$http_referer !~ "^https://oauth\\.telegram\\.org/") {
+            return 444;
+        }
+        proxy_http_version 1.1;
+        proxy_pass http://remnawave;
+        proxy_set_header Host \$host;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header X-Real-IP ${REAL_IP_P};
+        proxy_set_header X-Forwarded-For ${REAL_IP_P};
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_send_timeout 60s; proxy_read_timeout 60s;
+    }
     location / {
         error_page 418 = @unauthorized;
         recursive_error_pages on;
@@ -633,6 +966,161 @@ server {
     return 444;
 }
 NGINX_CONF_EOF
+    else
+        # ── Caddyfile ─────────────────────────────────────────────
+        if [ "$MODE" = "1" ]; then
+            # MODE=1: Caddy слушает unix-сокет (Xray→Caddy, selfsteal)
+            cat > /opt/remnawave/Caddyfile << CADDYEOF
+{
+    admin off
+    servers {
+        listener_wrappers {
+            proxy_protocol
+            tls
+        }
+    }
+    auto_https disable_redirects
+}
+
+https://{\$PANEL_DOMAIN} {
+    bind unix//dev/shm/nginx.sock
+
+    @has_token_param {
+        query ${COOKIE_KEY}=${COOKIE_VAL}
+    }
+    handle @has_token_param {
+        header +Set-Cookie "${COOKIE_KEY}=${COOKIE_VAL}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000"
+    }
+
+    @unauthorized {
+        not path /oauth2/*
+        not header Cookie *${COOKIE_KEY}=${COOKIE_VAL}*
+        not query ${COOKIE_KEY}=${COOKIE_VAL}
+    }
+    handle @unauthorized {
+        root * /var/www/html
+        try_files {path} /index.html
+        file_server
+    }
+
+    @oauth2_bad {
+        path /oauth2/*
+        not header Referer https://oauth.telegram.org/*
+    }
+    handle @oauth2_bad {
+        abort
+    }
+
+    @oauth2 {
+        path /oauth2/*
+        header Referer https://oauth.telegram.org/*
+    }
+    handle @oauth2 {
+        reverse_proxy {\$BACKEND_URL} {
+            header_up Host {host}
+        }
+    }
+
+    reverse_proxy {\$BACKEND_URL} {
+        header_up X-Real-IP {http.request.header.X-Forwarded-For}
+        header_up Host {host}
+    }
+}
+
+https://{\$SUB_DOMAIN} {
+    bind unix//dev/shm/nginx.sock
+    reverse_proxy {\$SUB_BACKEND_URL} {
+        header_up X-Real-IP {http.request.header.X-Forwarded-For}
+        header_up Host {host}
+    }
+}
+
+https://{\$SELF_STEAL_DOMAIN} {
+    bind unix//dev/shm/nginx.sock
+    root * /var/www/html
+    try_files {path} /index.html
+    file_server
+}
+CADDYEOF
+        else
+            # MODE=2: Caddy слушает напрямую, ACME автоматически
+            cat > /opt/remnawave/Caddyfile << CADDYEOF
+{
+    admin off
+}
+
+http://{\$PANEL_DOMAIN} {
+    bind 0.0.0.0
+    redir https://{\$PANEL_DOMAIN}{uri} permanent
+}
+
+https://{\$PANEL_DOMAIN} {
+    @has_token_param {
+        query ${COOKIE_KEY}=${COOKIE_VAL}
+    }
+    handle @has_token_param {
+        header +Set-Cookie "${COOKIE_KEY}=${COOKIE_VAL}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000"
+    }
+
+    @unauthorized {
+        not path /oauth2/*
+        not header Cookie *${COOKIE_KEY}=${COOKIE_VAL}*
+        not query ${COOKIE_KEY}=${COOKIE_VAL}
+    }
+    handle @unauthorized {
+        abort
+    }
+
+    @oauth2_bad {
+        path /oauth2/*
+        not header Referer https://oauth.telegram.org/*
+    }
+    handle @oauth2_bad {
+        abort
+    }
+
+    @oauth2 {
+        path /oauth2/*
+        header Referer https://oauth.telegram.org/*
+    }
+    handle @oauth2 {
+        reverse_proxy {\$BACKEND_URL} {
+            header_up Host {host}
+        }
+    }
+
+    reverse_proxy {\$BACKEND_URL} {
+        header_up X-Real-IP {remote_host}
+        header_up Host {host}
+    }
+}
+
+http://{\$SUB_DOMAIN} {
+    bind 0.0.0.0
+    redir https://{\$SUB_DOMAIN}{uri} permanent
+}
+
+https://{\$SUB_DOMAIN} {
+    reverse_proxy {\$SUB_BACKEND_URL} {
+        header_up X-Real-IP {remote_host}
+        header_up Host {host}
+    }
+}
+
+https://{\$SELF_STEAL_DOMAIN} {
+    root * /var/www/html
+    try_files {path} /index.html
+    file_server
+    header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet"
+}
+
+:80 {
+    bind 0.0.0.0
+    respond 204
+}
+CADDYEOF
+        fi
+    fi  # end WEB_SERVER branch
 
     ok "Конфигурация сгенерирована"
 
@@ -669,7 +1157,11 @@ HTMLEOF
     echo ""
     echo -e "  ${CYAN}nano /opt/remnawave/.env${NC}             ${GRAY}# секреты, JWT, домены${NC}"
     echo -e "  ${CYAN}nano /opt/remnawave/docker-compose.yml${NC}  ${GRAY}# образы, порты${NC}"
-    echo -e "  ${CYAN}nano /opt/remnawave/nginx.conf${NC}       ${GRAY}# SSL, cookie-защита${NC}"
+    if [ "$WEB_SERVER" = "1" ]; then
+        echo -e "  ${CYAN}nano /opt/remnawave/nginx.conf${NC}       ${GRAY}# SSL, cookie-защита${NC}"
+    else
+        echo -e "  ${CYAN}nano /opt/remnawave/Caddyfile${NC}        ${GRAY}# маршруты, cookie-защита${NC}"
+    fi
     echo ""
     echo -e "  ${GRAY}Ctrl+O → Enter — сохранить | Ctrl+X — выйти из nano${NC}"
     echo ""
@@ -777,7 +1269,7 @@ HTMLEOF
     ok "Стек перезапущен"
 
     # ── Команда управления ───────────────────────────────────────
-    panel_install_mgmt_script "$PANEL_DOMAIN" "$COOKIE_KEY" "$COOKIE_VAL" "$MODE"
+    panel_install_mgmt_script "$PANEL_DOMAIN" "$COOKIE_KEY" "$COOKIE_VAL" "$MODE" "$WEB_SERVER"
 
     # ── Итог ─────────────────────────────────────────────────────
     echo ""
@@ -825,9 +1317,12 @@ _spinner() {
         done
     done; printf "\r\033[K">/dev/tty
 }
+_detect_ws() { grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml 2>/dev/null && echo "caddy" || echo "nginx"; }
 do_status() {
+    local ws; ws=$(_detect_ws)
+    local ws_svc; [ "$ws" = "caddy" ] && ws_svc="remnawave-caddy" || ws_svc="remnawave-nginx"
     echo -e "${WHITE}📊 Статус:${NC}"
-    for c in remnawave remnawave-db remnawave-redis remnawave-nginx remnawave-subscription-page remnanode; do
+    for c in remnawave remnawave-db remnawave-redis $ws_svc remnawave-subscription-page remnanode; do
         s=$(docker ps --format '{{.Status}}' -f "name=$c" 2>/dev/null | head -1)
         [ -n "$s" ] && echo "$s" | grep -qE "^Up|healthy" \
             && echo -e "  ${GREEN}●${NC} $c — $s" || echo -e "  ${YELLOW}◐${NC} $c — $s" \
@@ -840,8 +1335,9 @@ do_status() {
 }
 do_logs() {
     local s="${1:-panel}"; cd "$DIR"
+    local ws; ws=$(_detect_ws)
     case $s in
-        nginx) docker logs remnawave-nginx --tail=50 -f ;;
+        nginx|caddy) docker logs "remnawave-${ws}" --tail=50 -f ;;
         sub)   docker logs remnawave-subscription-page --tail=50 -f ;;
         node)  docker logs remnanode --tail=50 -f ;;
         *)     docker compose logs --tail=50 -f remnawave ;;
@@ -849,8 +1345,10 @@ do_logs() {
 }
 do_restart() {
     local s="${1:-all}"; cd "$DIR"
+    local ws; ws=$(_detect_ws)
+    local ws_svc="remnawave-${ws}"
     case $s in
-        nginx)  docker compose restart remnawave-nginx; _ok "Nginx перезапущен" ;;
+        nginx|caddy) docker compose restart "$ws_svc"; _ok "${ws^} перезапущен" ;;
         panel)  docker compose restart remnawave; _ok "Панель перезапущена" ;;
         sub)    docker compose restart remnawave-subscription-page; _ok "Sub перезапущена" ;;
         node)   docker compose restart remnanode; _ok "Нода перезапущена" ;;
@@ -858,7 +1356,7 @@ do_restart() {
             docker compose down>/dev/null 2>&1 & _spinner $! "Остановка..."
             docker compose up -d>/dev/null 2>&1 & _spinner $! "Запуск..."
             _ok "Всё перезапущено" ;;
-        *) echo "Укажите: all|nginx|panel|sub|node" ;;
+        *) echo "Укажите: all|nginx|caddy|panel|sub|node" ;;
     esac
 }
 do_update() {
@@ -869,29 +1367,44 @@ do_update() {
     docker image prune -f>/dev/null 2>&1; _ok "Обновлено"
 }
 do_ssl() {
-    certbot renew --quiet; cd "$DIR"
-    docker compose restart remnawave-nginx
-    _ok "SSL обновлён"
+    local ws; ws=$(_detect_ws); cd "$DIR"
+    if [ "$ws" = "caddy" ]; then
+        _info "Caddy управляет SSL автоматически через ACME"
+        docker exec remnawave-caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null \
+            && _ok "Caddy конфиг перезагружен" \
+            || _warn "Не удалось перезагрузить Caddy"
+    else
+        certbot renew --quiet
+        docker compose restart remnawave-nginx
+        _ok "SSL обновлён"
+    fi
 }
 do_backup() {
-    local ts b
+    local ts b ws_cfg
     ts=$(date +%Y%m%d_%H%M%S); b="$DIR/backups"; mkdir -p "$b"; cd "$DIR"
+    [ -f "$DIR/Caddyfile" ] && ws_cfg="$DIR/Caddyfile" || ws_cfg="$DIR/nginx.conf"
     docker compose exec -T remnawave-db pg_dump -U postgres postgres>"$b/db_$ts.sql" 2>/dev/null \
         && _ok "БД → $b/db_$ts.sql" || _warn "Ошибка бэкапа БД"
-    tar -czf "$b/configs_$ts.tar.gz" "$DIR/.env" "$DIR/docker-compose.yml" "$DIR/nginx.conf" 2>/dev/null
+    tar -czf "$b/configs_$ts.tar.gz" "$DIR/.env" "$DIR/docker-compose.yml" "$ws_cfg" 2>/dev/null
     _ok "Конфиги → $b/configs_$ts.tar.gz"
     find "$b" -mtime +7 -delete 2>/dev/null||true
 }
 do_health() {
+    local ws; ws=$(_detect_ws)
     do_status; echo ""
-    echo -e "${WHITE}🔒 SSL:${NC}"
-    for d in /etc/letsencrypt/live/*/; do
-        dom=$(basename "$d")
-        exp=$(openssl x509 -in "$d/fullchain.pem" -noout -enddate 2>/dev/null|sed 's/notAfter=//')
-        [ -n "$exp" ] && echo -e "  ${GREEN}✓${NC} $dom — $exp"
-    done; echo ""
-    echo -e "${WHITE}Nginx:${NC}"
-    docker exec remnawave-nginx nginx -t 2>&1|sed 's/^/  /'||true; echo ""
+    if [ "$ws" = "nginx" ]; then
+        echo -e "${WHITE}🔒 SSL:${NC}"
+        for d in /etc/letsencrypt/live/*/; do
+            dom=$(basename "$d")
+            exp=$(openssl x509 -in "$d/fullchain.pem" -noout -enddate 2>/dev/null|sed 's/notAfter=//')
+            [ -n "$exp" ] && echo -e "  ${GREEN}✓${NC} $dom — $exp"
+        done; echo ""
+        echo -e "${WHITE}Nginx:${NC}"
+        docker exec remnawave-nginx nginx -t 2>&1|sed 's/^/  /'||true; echo ""
+    else
+        echo -e "${WHITE}🔒 Caddy SSL (ACME):${NC}"
+        docker exec remnawave-caddy caddy validate --config /etc/caddy/Caddyfile 2>&1|sed 's/^/  /'||true; echo ""
+    fi
     echo -e "${WHITE}API:${NC}"
     curl -s --max-time 5 "http://127.0.0.1:3000/api/auth/status" \
         -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Forwarded-Proto: https' 2>/dev/null | \
@@ -899,6 +1412,12 @@ do_health() {
         && echo -e "  ${GREEN}✓${NC} API доступен" || echo -e "  ${RED}✗${NC} API недоступен"
 }
 do_open_port() {
+    local ws; ws=$(_detect_ws)
+    if [ "$ws" = "caddy" ]; then
+        _warn "Открытие дополнительного порта не поддерживается для Caddy"
+        _info "Для экстренного доступа: rp restart && rp logs caddy"
+        return 0
+    fi
     local nc="/opt/remnawave/nginx.conf"
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     ss -tuln|grep -q ":8443" && { _warn "Порт 8443 занят"; return 1; }
@@ -913,6 +1432,8 @@ do_open_port() {
     _warn "Закройте после работы: remnawave_panel close_port"
 }
 do_close_port() {
+    local ws; ws=$(_detect_ws)
+    if [ "$ws" = "caddy" ]; then _warn "Не применимо для Caddy"; return 0; fi
     local nc="/opt/remnawave/nginx.conf"
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     sed -i "/server_name $pd;/,/}/{s/    listen 8443 ssl;//}" "$nc"
@@ -965,10 +1486,12 @@ do_migrate() {
 
     # ── Передача файлов ────────────────────────────────────────────
     _info "Передаём файлы панели..."
+    local ws_cfg_src
+    [ -f /opt/remnawave/Caddyfile ] && ws_cfg_src=/opt/remnawave/Caddyfile || ws_cfg_src=/opt/remnawave/nginx.conf
     PUT "$dump" \
         /opt/remnawave/.env \
         /opt/remnawave/docker-compose.yml \
-        /opt/remnawave/nginx.conf \
+        "$ws_cfg_src" \
         "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null \
         && _ok "Файлы панели переданы" || { err "Ошибка передачи файлов панели"; return 1; }
 
@@ -1073,7 +1596,8 @@ show_menu() {
     echo ""
     echo -e "${BOLD}${PURPLE}  REMNAWAVE PANEL${NC}"
     echo -e "${GRAY}  ────────────────────────────────────────────${NC}"
-    for c in remnawave remnawave-nginx remnawave-subscription-page remnanode; do
+    local ws_svc; ws_svc="remnawave-$(_detect_ws)"
+    for c in remnawave $ws_svc remnawave-subscription-page remnanode; do
         s=$(docker ps --format '{{.Status}}' -f "name=$c" 2>/dev/null|head -1)
         if [ -n "$s" ] && echo "$s"|grep -qE "^Up|healthy"; then
             echo -e "  ${GREEN}●${NC} $c"
@@ -1116,7 +1640,7 @@ case "$1" in
             show_menu
             read -p "  Выбор: " ch < /dev/tty
             case $ch in
-                1) read -p "  Логи (panel/nginx/sub/node) [panel]: " s < /dev/tty; do_logs "${s:-panel}" ;;
+                1) read -p "  Логи (panel/nginx/caddy/sub/node) [panel]: " s < /dev/tty; do_logs "${s:-panel}" ;;
                 2) do_status; read -t 0.1 -n 1000 _flush < /dev/tty 2>/dev/null || true; read -p "  Нажмите Enter для продолжения..." < /dev/tty ;;
                 3) read -p "  Что перезапустить? [all]: " s < /dev/tty; do_restart "${s:-all}"; read -p "  Нажмите Enter для продолжения..." < /dev/tty ;;
                 4) cd /opt/remnawave && docker compose up -d; _ok "Запущено"; read -p "  Нажмите Enter для продолжения..." < /dev/tty ;;
@@ -1322,34 +1846,46 @@ panel_update_script() {
 # ── Переустановка скрипта управления ─────────────────────────────
 panel_reinstall_mgmt() {
     header "Переустановить скрипт управления (rp)"
+
+    local pd ck cv mode web_server
     local nc="/opt/remnawave/nginx.conf"
-    [ -f "$nc" ] || { warn "nginx.conf не найден — панель не установлена?"; return 1; }
+    local cf="/opt/remnawave/Caddyfile"
 
-    # Извлекаем домен и cookie из nginx.conf
-    local pd ck cv mode
+    if [ -f "$cf" ]; then
+        # ── Caddy: извлекаем домен и cookie из Caddyfile ──────────
+        web_server="2"
+        pd=$(grep -m1 "^https://" "$cf" | sed 's|https://||;s|{.*||;s|{||' | tr -d ' ' | head -1)
+        ck=$(grep -oP 'query \K\w+(?==)' "$cf" | head -1)
+        cv=$(grep -oP 'query [^=]+=\K\w+' "$cf" | head -1)
+    elif [ -f "$nc" ]; then
+        # ── Nginx: извлекаем домен и cookie из nginx.conf ─────────
+        web_server="1"
+        pd=$(grep "server_name " "$nc" | grep -v "hash_bucket\|server_name _" \
+            | head -1 | awk '{print $2}' | tr -d ';')
+        ck=$(grep "map \$http_cookie" "$nc" -A2 | grep -oP '~\*\K\w+(?==)' | head -1)
+        cv=$(grep "map \$http_cookie" "$nc" -A2 | grep -oP '=\K\w+(?= 1)' | head -1)
+    else
+        warn "Ни nginx.conf ни Caddyfile не найдены — панель не установлена?"
+        return 1
+    fi
 
-    # Домен: первый server_name который выглядит как FQDN (не hash_bucket, не _)
-    pd=$(grep "server_name " "$nc" | grep -v "hash_bucket\|server_name _"         | head -1 | awk '{print $2}' | tr -d ';')
-
-    # Cookie ключ и значение: из строки "~*KEY=VALUE" 1
-    ck=$(grep "map \$http_cookie" "$nc" -A2 | grep -oP '~\*\K\w+(?==)' | head -1)
-    cv=$(grep "map \$http_cookie" "$nc" -A2 | grep -oP '=\K\w+(?= 1)' | head -1)
-
-    mode=$([ -f /opt/remnawave/docker-compose.yml ]         && grep -q "remnanode" /opt/remnawave/docker-compose.yml         && echo "1" || echo "2")
+    mode=$([ -f /opt/remnawave/docker-compose.yml ] \
+        && grep -q "remnanode" /opt/remnawave/docker-compose.yml \
+        && echo "1" || echo "2")
 
     if [ -z "$pd" ] || [ -z "$ck" ] || [ -z "$cv" ]; then
-        warn "Не удалось извлечь параметры из nginx.conf"
+        warn "Не удалось извлечь параметры из конфига веб-сервера"
         info "Домен: '${pd:-не найден}'  Ключ: '${ck:-не найден}'  Значение: '${cv:-не найдено}'"
         return 1
     fi
 
-    info "Домен: $pd  |  Cookie: $ck=$cv  |  Режим: $mode"
+    info "Домен: $pd  |  Cookie: $ck=$cv  |  Режим: $mode  |  Веб-сервер: $([ "$web_server" = "2" ] && echo Caddy || echo Nginx)"
     echo ""
     if ! confirm "Переустановить /usr/local/bin/remnawave_panel?" y; then
         return
     fi
 
-    panel_install_mgmt_script "$pd" "$ck" "$cv" "$mode"
+    panel_install_mgmt_script "$pd" "$ck" "$cv" "$mode" "$web_server"
     ok "Скрипт управления переустановлен. Изменения применены."
     info "Перезапустите терминал или выполните: source /etc/bash.bashrc"
 }

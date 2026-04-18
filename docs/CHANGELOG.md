@@ -1,5 +1,50 @@
 # Changelog
 
+## [3.2.0] — 2026-04-14
+
+### Выбор веб-сервера при установке панели: Nginx или Caddy
+
+Установка панели теперь предлагает выбор между двумя веб-серверами до ввода доменов. Выбор сохраняется на весь жизненный цикл установки и отражается во всех генерируемых файлах и скриптах управления.
+
+**Nginx** — поведение без изменений: certbot, три метода получения сертификатов (Cloudflare DNS-01, Let's Encrypt HTTP-01, Gcore DNS-01), renew_hook в certbot renewal конфигах, nginx.conf.
+
+**Caddy** — новый путь:
+- certbot **не устанавливается** — пакеты certbot и cloudflare-plugin пропускаются
+- SSL получается автоматически через встроенный ACME при первом запуске (Let's Encrypt)
+- `Caddyfile` генерируется вместо `nginx.conf`
+- В selfsteal-режиме (MODE=1) Caddy слушает unix-сокет `/dev/shm/nginx.sock` идентично Nginx — полная совместимость с Xray proxy_protocol
+- В режиме только-панель (MODE=2) Caddy слушает напрямую, включая 80/tcp для ACME challenge
+
+#### Четыре шаблона compose
+
+| WEB_SERVER | MODE | Контейнер | Особенности |
+|---|---|---|---|
+| Nginx | 1 (панель+нода) | remnawave-nginx | unix socket, proxy_protocol, certbot |
+| Nginx | 2 (только панель) | remnawave-nginx | listen 443, certbot |
+| Caddy | 1 (панель+нода) | remnawave-caddy | unix socket, автоSSL через ACME |
+| Caddy | 2 (только панель) | remnawave-caddy | прямой bind, автоSSL через ACME |
+
+#### Caddy: OAuth2 Telegram из коробки
+
+`Caddyfile` содержит обработчики `@oauth2` и `@oauth2_bad` — полный паритет с `location ^~ /oauth2/` в nginx.conf, включая проверку `Referer: oauth.telegram.org`.
+
+#### Скрипт управления `rp` — Caddy-осведомлённость
+
+`_detect_ws()` определяет веб-сервер в рантайме по наличию `remnawave-caddy` в docker-compose.yml. Все команды адаптированы:
+
+- `rp ssl` — для Caddy: `caddy reload` вместо `certbot renew`
+- `rp health` — для Caddy: `caddy validate` вместо `nginx -t`; SSL-секция через certbot пропускается
+- `rp backup` — сохраняет `Caddyfile` вместо `nginx.conf`
+- `rp logs nginx|caddy` — работает для обоих
+- `rp restart nginx|caddy` — работает для обоих
+- `rp open_port` / `rp close_port` — для Caddy выводит предупреждение (не применимо)
+
+#### `panel_reinstall_mgmt` — поддержка обоих конфигов
+
+При переустановке скрипта `rp` параметры (домен, cookie) извлекаются из `Caddyfile` если `nginx.conf` отсутствует.
+
+---
+
 ## [3.1.0] — 2026-03-25
 
 ### 🔧 Исправления — hysteria.sh
@@ -140,7 +185,6 @@ remna-sub-injector :3020
 
 ---
 
-
 ## [2.3.0] — 2026-03-20
 
 ### MTProxy (telemt) — новые возможности
@@ -150,12 +194,6 @@ remna-sub-injector :3020
 - **Управление пользователями через REST API** — добавление (`POST /v1/users`) и удаление (`DELETE /v1/users/{name}`) выполняются через API telemt. Изменения применяются мгновенно без SIGHUP; встроенная валидация секрета и имени
 - **Множественное удаление пользователей** — в меню удаления показываются активные подключения и трафик; можно ввести несколько номеров через пробел (`1 3 5`) для одновременного удаления
 - **Исправлен Docker-образ** — заменён сторонний `whn0thacked/telemt-docker:latest` на официальный `ghcr.io/telemt/telemt:latest` (GitHub Container Registry). Путь конфига внутри контейнера обновлён на `/run/telemt/config.toml`; добавлены `working_dir` и `tmpfs` для кэша proxy-secret
-
-### README.md
-
-- **Расширен раздел MTProxy** — добавлены: описание Direct vs Middle-End с архитектурными схемами, актуальные меню (Управление, Пользователи), таблица портов с telemt API, раздел REST API с примерами `curl`
-- **Обновлена таблица портов** — добавлены порт telemt (`2053`/`8443`), порт API (`9091 localhost`)
-- **Бейдж changelog** обновлён до v2.3.0
 
 ---
 
@@ -174,9 +212,6 @@ remna-sub-injector :3020
 - **`panel_update_script`** — теперь скачивает полный архив репозитория (`archive/refs/heads/main.tar.gz`) и обновляет все `lib/*.sh` модули. Ранее скачивался только loader (`server-manager.sh`, 64 строки), а модули оставались устаревшими
 - **`_load_module` SHA256** — опциональная проверка контрольной суммы модулей при скачивании с GitHub. Заполните `_MODULE_SHA256` в `server-manager.sh` для защиты от компрометации репозитория
 - **`_main_menu_load_cache`** — удалена (мёртвый код)
-- **`▶️ Старт`** — исправлен отступ в `panel_submenu_manage`
-- **`Enter...` без `/dev/tty`** — исправлены все broken redirects в heredoc `remnawave_panel`
-- **`docker stats` выравнивание** — `awk -F"\t" '{printf "%-36s %6s   %s\n"}'` вместо tab-разделителей
 
 ---
 
@@ -219,40 +254,6 @@ nginx НЕ слушает порт 443 в selfsteal режиме. Сокет `/d
 - `lib/migrate.sh` — перенос сервисов (248 строк)
 - `integrations/hy-sub-install.sh` — интеграция Hysteria2 → подписка
 - Поддержка `curl | bash` — модули скачиваются автоматически
-
-### Remnawave Panel
-- Новое меню: Установка / Управление / WARP / Подписка / Selfsteal / Обновить / Перенос / Удалить
-- WARP Native — добавление в профиль Xray через API панели
-- Subscription Page — Orion шаблон, брендинг, восстановление
-- Selfsteal шаблоны — Simple / SNI / Nothing SNI + случайный
-- Remnawave CLI — `docker exec -it remnawave remnawave`
-- Переустановка с подтверждением
-- API автоматизация: `create_config_profile`, `create_node`, `create_host`, `update_squad`, `create_api_token`
-
-### Hysteria2
-- Port Hopping — диапазон UDP портов, обход блокировок по порту
-- IPv6 поддержка
-- Переустановка с сохранением конфига
-- Проверка SSL сертификата после установки
-
-### Интеграция Hysteria2 → Remnawave
-- `hy-webhook.py` — Python HTTP-сервис синхронизации пользователей
-- `hy-sub-install.sh` — форк subscription-page с инжекцией `hy2://` URI
-- Port Hopping в URI подписки
-- Webhook signature `X-Remnawave-Signature` (HMAC-SHA256)
-
-### SSH-рефакторинг
-- `ask_ssh_target()` — единый ввод SSH данных (было 5 копий)
-- `init_ssh_helpers()` — инициализация RUN/PUT хелперов
-- `check_ssh_connection()` — проверка соединения
-- `remote_install_deps()` — установка зависимостей на remote
-
-### Исправления
-- `curl | bash` — все `read` используют `/dev/tty`
-- `BASH_SOURCE[0]` unbound variable при pipe-запуске
-- Версия из git commit date
-- `migrate_menu` была потеряна при разбивке — восстановлена
-- Hysteria2 статус — парсинг пользователя через Python regex
 
 ---
 
