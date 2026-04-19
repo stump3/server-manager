@@ -342,7 +342,16 @@ for line in config.split('\n'):
         elif line.strip() and not line.startswith(' '):
             break
 if not users:
-    print("WARN: пользователи не найдены в конфиге")
+    # В HTTP auth секция userpass может отсутствовать — это штатно.
+    try:
+        with open(USERS_DB) as f:
+            existing = json.load(f)
+        if isinstance(existing, dict):
+            print(f"INFO: userpass не найден (HTTP auth), оставляем users.json: {len(existing)}")
+        else:
+            print("INFO: userpass не найден (HTTP auth), users.json не изменён")
+    except Exception:
+        print("INFO: userpass не найден (HTTP auth), users.json ещё не создан")
     sys.exit(0)
 os.makedirs(os.path.dirname(USERS_DB), exist_ok=True)
 with open(USERS_DB, 'w') as f:
