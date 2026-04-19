@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.3.1] — 2026-04-19
+
+### Патч — Hysteria2 ↔ Remnawave интеграция
+
+- **Пауза после запуска установки интеграции в меню** — в пункте `1) Установить / переустановить` добавлено ожидание `Нажмите Enter для продолжения...` после выполнения `_hy_integration_install`.  
+  Это фиксирует сценарий, когда итог установки исчезал из-за немедленной перерисовки меню и `clear`.
+
+- **Очистка временного `hy-sub-install.sh` при ошибке** — `_hy_integration_install()` теперь удаляет временно скачанный скрипт не только при успехе, но и перед `return 1` в ветке ошибки.
+
+- **Убрана неявная повторная установка `sub-injector`** — после `hy-sub-install.sh` больше не вызывается `_hy_sub_injector_install()` автоматически.  
+  Это устраняет второй проход установки (визуально выглядел как «цикл установки» после Enter).
+
+- **Усилен systemd unit `remna-sub-injector`** в `_hy_sub_injector_install()`:
+  - добавлен `WorkingDirectory=/opt/remna-sub-injector`
+  - `ExecStart` запускает бинарник без передачи `config.toml` аргументом
+  - сохранены параметры устойчивости и диагностики: `Restart=on-failure`, `RestartSec=5`, `StandardOutput=journal`, `StandardError=journal`
+  
+  Это устраняет падения вида `Cannot read config file config.toml` при старте сервиса.
+
+---
+
 ## [3.3.0] — 2026-04-18
 
 ### MTProxy (telemt) — runtime статистика и IP-история
