@@ -14,13 +14,28 @@ set -euo pipefail
 
 _SOURCE_PATH="${BASH_SOURCE[0]:-$0}"
 _SOURCE_PATH="${_SOURCE_PATH%$'\r'}"
-SCRIPT_DIR="$(cd "$(dirname "$_SOURCE_PATH")" 2>/dev/null && pwd || echo "")"
+
+# Если запущено через симлинк (/usr/local/bin/server-manager), разворачиваем
+# до реального файла. Если не удалось — оставляем как есть.
+_RESOLVED_PATH="$(readlink -f "$_SOURCE_PATH" 2>/dev/null || echo "")"
+[ -n "$_RESOLVED_PATH" ] && _SOURCE_PATH="$_RESOLVED_PATH"
+
+SCRIPT_DIR=""
+if [ -f "$_SOURCE_PATH" ]; then
+    _CANDIDATE_DIR="$(cd "$(dirname "$_SOURCE_PATH")" 2>/dev/null && pwd || echo "")"
+    # Считаем путь валидным только если это корень репозитория server-manager.
+    if [ -n "$_CANDIDATE_DIR" ] && \
+       [ -f "$_CANDIDATE_DIR/server-manager.sh" ] && \
+       [ -f "$_CANDIDATE_DIR/lib/common.sh" ]; then
+        SCRIPT_DIR="$_CANDIDATE_DIR"
+    fi
+fi
 export SCRIPT_DIR
 REPO_RAW="https://raw.githubusercontent.com/stump3/server-manager/main"
 REPO_URL="https://github.com/stump3/server-manager"
 INSTALL_DIR="/root/server-manager"
 
-# При запуске через curl | bash — SCRIPT_DIR может быть пустым.
+# При запуске через curl | bash — SCRIPT_DIR обычно пустой.
 # Если репозиторий уже есть локально, используем его как fallback,
 # чтобы не уйти в цикл перезапуска.
 if [ -z "$SCRIPT_DIR" ] && [ -d "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/server-manager.sh" ]; then
