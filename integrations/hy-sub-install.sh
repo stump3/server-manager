@@ -56,7 +56,7 @@ trap 'cleanup $LINENO "$BASH_COMMAND"' ERR
 # ── Идемпотентность ───────────────────────────────────────────────
 DO_WEBHOOK=true
 DO_SUBPAGE=true
-TOTAL_STEPS=6
+TOTAL_STEPS=7
 
 if systemctl is-active --quiet hy-webhook 2>/dev/null && \
    systemctl is-active --quiet remna-sub-injector 2>/dev/null; then
@@ -74,8 +74,8 @@ if systemctl is-active --quiet hy-webhook 2>/dev/null && \
     read -rp "  Выбор: " reinstall_ch < /dev/tty
     case "$reinstall_ch" in
         1) info "Переустановка полностью..." ;;
-        2) DO_WEBHOOK=false; TOTAL_STEPS=5 ;;
-        3) DO_SUBPAGE=false; TOTAL_STEPS=4 ;;
+        2) DO_WEBHOOK=false; TOTAL_STEPS=6 ;;
+        3) DO_SUBPAGE=false; TOTAL_STEPS=5 ;;
         0) exit 0 ;;
         *) err "Неверный выбор" ;;
     esac
@@ -252,6 +252,8 @@ HY_NAME=${_HY_NAME_ESC}
 URI_CACHE_TTL=60
 PROXY_PORT=${_PROXY_PORT}
 UPSTREAM_URL=http://127.0.0.1:3010
+LISTEN_HOST=0.0.0.0
+DEBUG_LOG=0
 SECRETEOF
 chmod 600 "$SECRETS_FILE"
 ok "Secrets сохранены в $SECRETS_FILE с правами 600"
@@ -291,7 +293,33 @@ systemctl is-active --quiet hy-webhook \
     && ok "hy-webhook запущен на порту 8766" \
     || err "hy-webhook не запустился — journalctl -u hy-webhook -n 20"
 
-# ── Шаг 2: Синхронизация пользователей ───────────────────────────
+# ── Шаг 2: HTTP auth mode ────────────────────────────────────────
+step "Переключение Hysteria2 в HTTP auth"
+
+_HY_CFG=/etc/hysteria/config.yaml
+_CURRENT_AUTH=$(grep -A2 "^auth:" "$_HY_CFG" 2>/dev/null | grep "type:" | awk "{print \$2}" || echo "")
+
+if [ "$_CURRENT_AUTH" = "http" ]; then
+    ok "Hysteria2 уже в HTTP auth режиме"
+else
+    info "Переключаем в HTTP auth (без перезапуска при смене пользователей)..."
+    python3 - << PYEOF2
+import re
+cfg_path = "/etc/hysteria/config.yaml"
+with open(cfg_path) as f:
+    cfg = f.read()
+auth_http = "auth:\n  type: http\n  http:\n    url: http://127.0.0.1:8766/auth\n"
+cfg = re.sub(r"auth:.*?(?=^[a-z]|\Z)", auth_http, cfg, flags=re.MULTILINE|re.DOTALL)
+with open(cfg_path, "w") as f:
+    f.write(cfg)
+print("  auth: http записан в config.yaml")
+PYEOF2
+    systemctl restart hysteria-server 2>/dev/null \
+        && ok "Hysteria2 перезапущена в HTTP auth режиме" \
+        || warn "Hysteria2 не перезапустилась — проверьте конфиг"
+fi
+
+# ── Шаг 3: Синхронизация пользователей ───────────────────────────
 step "Синхронизация существующих пользователей Hysteria2"
 
 # Python вынесен во временный файл чтобы избежать конфликта скобок с bash
@@ -348,7 +376,13 @@ step "Установка sub-injector"
 INJECTOR_DIR="/opt/remna-sub-injector"
 INJECTOR_BIN="$INJECTOR_DIR/sub-injector"
 INJECTOR_CFG="$INJECTOR_DIR/config.toml"
-INJECTOR_URL="https://github.com/stump3/server-manager/releases/latest/download/sub-injector-x86_64-linux"
+_ARCH=$(uname -m)
+case "$_ARCH" in
+    x86_64|amd64)  _ARCH="x86_64" ;;
+    aarch64|arm64) _ARCH="aarch64" ;;
+    *) warn "Архитектура $_ARCH не поддерживается — попробуем x86_64"; _ARCH="x86_64" ;;
+esac
+INJECTOR_URL="https://github.com/stump3/server-manager/releases/latest/download/sub-injector-${_ARCH}-linux"
 
 mkdir -p "$INJECTOR_DIR"
 
@@ -421,7 +455,7 @@ bind_addr = "0.0.0.0:3020"
 
 [[injections]]
 header = "User-Agent"
-contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayng"]
+contains = ["throne", "hiddify", "happ", "nekobox", "nekoray", "v2rayn", "v2rayng", "sing-box", "clash.meta", "mihomo"]
 per_user_url = "http://127.0.0.1:8766/uri"
 TOMLEOF
     ok "Конфиг создан: $INJECTOR_CFG"
@@ -436,7 +470,7 @@ After=network.target hy-webhook.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/remna-sub-injector
-ExecStart=/opt/remna-sub-injector/sub-injector
+ExecStart=/opt/remna-sub-injector/sub-injector /opt/remna-sub-injector/config.toml
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -468,12 +502,35 @@ if [ -f /opt/remnawave/nginx.conf ]; then
     if grep -q "server 127.0.0.1:3010" /opt/remnawave/nginx.conf; then
         sed -i "s|server 127.0.0.1:3010|server 127.0.0.1:3020|g" /opt/remnawave/nginx.conf
         docker exec remnawave-nginx nginx -t >/dev/null 2>&1             && { cd /opt/remnawave && docker compose restart remnawave-nginx >/dev/null 2>&1
-                 ok "nginx: sub домен → injector :3020"; }             || warn "nginx конфиг невалиден — проверьте вручную"
-    elif grep -q "server 127.0.0.1:3020" /opt/remnawave/nginx.conf; then
-        ok "nginx уже настроен на :3020"
+# ── Веб-сервер: sub домен → injector :3020 ───────────────────────
+step "Обновление веб-сервера"
+
+if [ -f /opt/remnawave/Caddyfile ]; then
+    if grep -q "3010" /opt/remnawave/Caddyfile; then
+        sed -i "s|127.0.0.1:3010|127.0.0.1:3020|g" /opt/remnawave/Caddyfile
+        docker exec remnawave-caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null \
+            && ok "Caddy: sub домен → injector :3020" \
+            || { cd /opt/remnawave && docker compose restart remnawave-caddy >/dev/null 2>&1
+                 ok "Caddy перезапущен: sub → :3020"; }
+    elif grep -q "3020" /opt/remnawave/Caddyfile; then
+        ok "Caddy уже настроен на :3020"
     else
-        warn "Upstream :3010 не найден — настройте nginx вручную"
+        warn "Upstream :3010 не найден в Caddyfile — настройте вручную"
     fi
+elif [ -f /opt/remnawave/nginx.conf ]; then
+    if grep -q "3010" /opt/remnawave/nginx.conf; then
+        sed -i "s|127.0.0.1:3010|127.0.0.1:3020|g" /opt/remnawave/nginx.conf
+        docker exec remnawave-nginx nginx -t >/dev/null 2>&1 \
+            && { cd /opt/remnawave && docker compose restart remnawave-nginx >/dev/null 2>&1
+                 ok "Nginx: sub домен → injector :3020"; } \
+            || warn "Nginx конфиг невалиден — проверьте вручную"
+    elif grep -q "3020" /opt/remnawave/nginx.conf; then
+        ok "Nginx уже настроен на :3020"
+    else
+        warn "Upstream :3010 не найден в nginx.conf — настройте вручную"
+    fi
+else
+    warn "Конфиг веб-сервера не найден — обновите upstream вручную на :3020"
 fi
 
 fi # DO_SUBPAGE
