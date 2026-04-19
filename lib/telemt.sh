@@ -770,11 +770,43 @@ print(json.dumps(d))
     local resp; resp=$(telemt_api POST "/v1/users" "$body")
     if telemt_api_ok "$resp"; then
         ok "Пользователь '$uname' добавлен"
+        # Показываем ссылку только для нового пользователя
+        local user_resp; user_resp=$(telemt_api GET "/v1/users/${uname}" 2>/dev/null || true)
+        # Если GET /v1/users/:name не поддерживается — ищем в общем списке
+        if ! echo "$user_resp" | grep -q "tg://proxy"; then
+            user_resp=$(telemt_api GET "/v1/users" 2>/dev/null                 | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    users = data if isinstance(data, list) else data.get('data', data.get('users', []))
+    if isinstance(users, dict): users = list(users.values())
+    match = [u for u in users if u.get('username') == '${uname}']
+    print(json.dumps(match[0]) if match else '{}')
+except: print('{}')
+" 2>/dev/null || true)
+        fi
+        local tls_link=""
+        tls_link=$(echo "$user_resp" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    # Если это объект пользователя напрямую
+    if 'links' in d:
+        tls = d['links'].get('tls', [])
+        print(tls[0] if tls else '')
+except: pass
+" 2>/dev/null || true)
         echo ""
-        header "Ссылки"
-        telemt_fetch_links
-        echo ""
-        read -rp "  Нажмите Enter для продолжения..." < /dev/tty
+        if [ -n "$tls_link" ]; then
+            echo -e "  ${BOLD}${WHITE}Ссылка:${NC}"
+            echo -e "  ${CYAN}${tls_link}${NC}"
+            echo ""
+            if command -v qrencode &>/dev/null; then
+                qrencode -t ANSIUTF8 "$tls_link" 2>/dev/null || true
+            fi
+        else
+            warn "Ссылка не получена. Смотри: Пользователи → Пользователи и ссылки"
+        fi
     else
         local errmsg; errmsg=$(telemt_api_error "$resp")
         die "Ошибка API: $errmsg"
