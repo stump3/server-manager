@@ -1340,6 +1340,7 @@ hysteria_remnawave_integration() {
         echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
+        read -t 0.1 -n 1000 _hy_integration_menu_flush < /dev/tty 2>/dev/null || true
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
             1) _hy_integration_install ;;
@@ -1392,6 +1393,9 @@ _hy_integration_install() {
         echo ""
         read -rp "  Нажмите Enter для продолжения..." < /dev/tty
     fi
+    # Сбрасываем накопленный ввод (например, зажатый Enter), чтобы он не
+    # "нажимал" следующий пункт меню сразу после возврата из установщика.
+    read -t 0.1 -n 1000 _hy_integration_flush < /dev/tty 2>/dev/null || true
     [ "$cleanup_tmp" = true ] && rm -f "$install_script"
 }
 
