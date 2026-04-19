@@ -1382,9 +1382,143 @@ _hy_integration_install() {
         [ -n "$conn_name" ] && break
     done
 
-    HY_DOMAIN="$dom" HY_PORT="$port" HY_CONN_NAME="$conn_name" HY_CONFIG="$HYSTERIA_CONFIG" \
-        bash "$install_script"
+    info "Запускаем установку интеграции (hy-webhook + subscription)..."
+    if ! HY_DOMAIN="$dom" HY_PORT="$port" HY_CONN_NAME="$conn_name" HY_CONFIG="$HYSTERIA_CONFIG" \
+            bash "$install_script"; then
+        warn "hy-sub-install.sh завершился с ошибкой"
+        echo ""
+        echo -e "  ${GRAY}Последние логи hy-webhook:${NC}"
+        journalctl -u hy-webhook -n 20 --no-pager 2>/dev/null || true
+        echo ""
+        read -rp "  Нажмите Enter для продолжения..." < /dev/tty
+    fi
     [ "$cleanup_tmp" = true ] && rm -f "$install_script"
+
+    # Устанавливаем sub-injector (схема B — Rust HTTP прокси)
+    _hy_sub_injector_install "$dom" "$port"
+}
+
+# ── Установка sub-injector ─────────────────────────────────────────
+_hy_sub_injector_install() {
+    local domain="${1:-}" port="${2:-}"
+    local install_dir="/opt/remna-sub-injector"
+    local bin_path="${install_dir}/sub-injector"
+    local cfg_path="${install_dir}/config.toml"
+    local svc_path="/etc/systemd/system/remna-sub-injector.service"
+
+    header "Установка sub-injector"
+    mkdir -p "$install_dir"
+
+    # ── Скачиваем бинарь ──────────────────────────────────────────
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64)  arch="x86_64" ;;
+        aarch64|arm64) arch="aarch64" ;;
+        *) warn "Архитектура $arch не поддерживается sub-injector"; return 1 ;;
+    esac
+
+    local bin_url="https://github.com/stump3/server-manager/releases/latest/download/sub-injector-${arch}-linux"
+    info "Скачиваю sub-injector (${arch})..."
+
+    if curl -fsSL --max-time 30 "$bin_url" -o "$bin_path" 2>/dev/null && [ -s "$bin_path" ]; then
+        chmod +x "$bin_path"
+        ok "Бинарь скачан: $bin_path"
+    else
+        warn "Не удалось скачать бинарь — пробуем собрать из исходников..."
+        _hy_sub_injector_build "$bin_path" || return 1
+    fi
+
+    # ── Создаём config.toml если не существует ───────────────────
+    if [ ! -f "$cfg_path" ]; then
+        info "Создаю config.toml..."
+        local webhook_url="http://127.0.0.1:8766/uri"
+        cat > "$cfg_path" << TOMLEOF
+upstream_url = "http://127.0.0.1:3010"
+bind_addr = "0.0.0.0:3020"
+
+[[injections]]
+header = "User-Agent"
+contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayng"]
+per_user_url = "${webhook_url}"
+TOMLEOF
+        ok "config.toml создан: $cfg_path"
+    else
+        info "config.toml уже существует, пропускаю"
+    fi
+
+    # ── Создаём systemd unit ──────────────────────────────────────
+    info "Создаю systemd unit..."
+    cat > "$svc_path" << SVCEOF
+[Unit]
+Description=Remnawave Sub Injector
+Documentation=https://github.com/stump3/server-manager
+After=network.target hy-webhook.service
+
+[Service]
+Type=simple
+ExecStart=${bin_path} ${cfg_path}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable remna-sub-injector 2>/dev/null || true
+
+    # Останавливаем старый экземпляр если был
+    systemctl stop remna-sub-injector 2>/dev/null || true
+    systemctl start remna-sub-injector 2>/dev/null
+
+    sleep 1
+    if systemctl is-active --quiet remna-sub-injector 2>/dev/null; then
+        ok "sub-injector запущен на :3020"
+    else
+        warn "sub-injector не запустился — проверьте конфиг:"
+        journalctl -u remna-sub-injector -n 20 --no-pager 2>/dev/null || true
+    fi
+}
+
+# ── Сборка sub-injector из исходников (fallback) ───────────────────
+_hy_sub_injector_build() {
+    local bin_path="$1"
+    info "Устанавливаю зависимости сборки..."
+    apt-get install -y -q build-essential pkg-config libssl-dev 2>/dev/null || true
+
+    # Устанавливаем Rust если нет
+    if ! command -v cargo &>/dev/null; then
+        [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env" 2>/dev/null || true
+    fi
+    if ! command -v cargo &>/dev/null; then
+        info "Устанавливаю Rust..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path 2>/dev/null
+        source "$HOME/.cargo/env" 2>/dev/null || true
+    fi
+    command -v cargo &>/dev/null || { err "Не удалось установить Rust/cargo"; return 1; }
+
+    # Скачиваем исходники
+    local src_dir; src_dir=$(mktemp -d /tmp/sub-injector-src.XXXXXX)
+    info "Скачиваю исходники sub-injector..."
+    local raw="https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector"
+    mkdir -p "${src_dir}/src"
+    curl -fsSL --max-time 30 "${raw}/Cargo.toml" -o "${src_dir}/Cargo.toml" 2>/dev/null ||         { err "Не удалось скачать Cargo.toml"; rm -rf "$src_dir"; return 1; }
+    curl -fsSL --max-time 30 "${raw}/src/main.rs" -o "${src_dir}/src/main.rs" 2>/dev/null ||         { err "Не удалось скачать main.rs"; rm -rf "$src_dir"; return 1; }
+
+    info "Сборка (может занять 2-5 минут)..."
+    cd "$src_dir" && cargo build --release 2>/dev/null
+    if [ -f "${src_dir}/target/release/sub-injector" ]; then
+        install -m 0755 "${src_dir}/target/release/sub-injector" "$bin_path"
+        rm -rf "$src_dir"
+        ok "sub-injector собран и установлен"
+    else
+        rm -rf "$src_dir"
+        err "Сборка sub-injector завершилась с ошибкой"
+        return 1
+    fi
 }
 
 _hy_integration_add_ua() {

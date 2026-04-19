@@ -241,8 +241,18 @@ RTELEMT
     fi
 
     # ── Копируем скрипт ────────────────────────────────────────────
-    PUT "$0" "${ruser}@${rip}:/root/server-manager.sh" 2>/dev/null && \
-        RUN "chmod +x /root/server-manager.sh" 2>/dev/null && ok "server-manager.sh скопирован" || true
+    local sm_src="${SCRIPT_DIR:-/root/server-manager}"
+    if [ -d "$sm_src" ] && [ -f "${sm_src}/server-manager.sh" ]; then
+        RUN "mkdir -p /root/server-manager" 2>/dev/null || true
+        PUT "${sm_src}/." "${ruser}@${rip}:/root/server-manager/" 2>/dev/null && \
+            RUN "chmod +x /root/server-manager/server-manager.sh && \
+                 ln -sf /root/server-manager/server-manager.sh /usr/local/bin/server-manager" \
+                2>/dev/null && ok "server-manager установлен на новом сервере" || true
+    else
+        # Fallback: скачиваем через curl
+        RUN "curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash" \
+            2>/dev/null && ok "server-manager установлен через curl" || true
+    fi
 
     # ── Итог ───────────────────────────────────────────────────────
     echo ""
