@@ -1446,6 +1446,46 @@ TOMLEOF
         info "config.toml уже существует, пропускаю"
     fi
 
+    # ── Нормализуем config.toml в UTF-8 (без BOM) ────────────────
+    if ! CONFIG_PATH="$cfg_path" python3 << 'PYEOF'
+import os
+import pathlib
+
+path = pathlib.Path(os.environ["CONFIG_PATH"])
+data = path.read_bytes()
+
+decoded = None
+if data.startswith(b"\xef\xbb\xbf"):
+    decoded = data[3:].decode("utf-8")
+else:
+    try:
+        decoded = data.decode("utf-8")
+    except UnicodeDecodeError:
+        if data.startswith(b"\xff\xfe"):
+            decoded = data[2:].decode("utf-16-le")
+        elif data.startswith(b"\xfe\xff"):
+            decoded = data[2:].decode("utf-16-be")
+
+if decoded is None:
+    raise SystemExit(1)
+
+path.write_text(decoded, encoding="utf-8", newline="\n")
+PYEOF
+    then
+        warn "config.toml повреждён или в неподдерживаемой кодировке — пересоздаю с бэкапом"
+        cp -f "$cfg_path" "${cfg_path}.bak.$(date +%s)" 2>/dev/null || true
+        cat > "$cfg_path" << TOMLEOF
+upstream_url = "http://127.0.0.1:3010"
+bind_addr = "0.0.0.0:3020"
+
+[[injections]]
+header = "User-Agent"
+contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayng"]
+per_user_url = "http://127.0.0.1:8766/uri"
+TOMLEOF
+        ok "config.toml пересоздан: $cfg_path"
+    fi
+
     # ── Создаём systemd unit ──────────────────────────────────────
     info "Создаю systemd unit..."
     cat > "$svc_path" << SVCEOF
