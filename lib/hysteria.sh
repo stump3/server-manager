@@ -397,10 +397,9 @@ EOF
     # ── Сервис ─────────────────────────────────────────────────────
     systemctl daemon-reload
     if command -v ufw &>/dev/null; then
-        ufw --force enable >/dev/null 2>&1          # включаем UFW сначала
-        ufw allow 80/tcp >/dev/null 2>&1            # затем открываем порт
         ufw allow 22/tcp >/dev/null 2>&1            # ssh не теряем
-        sleep 2                                      # даём iptables применить правила
+        ufw allow 80/tcp >/dev/null 2>&1            # открываем 80 ДО enable
+        ufw --force enable >/dev/null 2>&1          # включаем после разрешений
         ok "UFW: временно открыт порт 80 для ACME"
     fi
     systemctl enable --now "$HYSTERIA_SVC"
