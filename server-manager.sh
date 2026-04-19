@@ -29,6 +29,17 @@ if [ -z "$SCRIPT_DIR" ]; then
         git clone "$REPO_URL" "$INSTALL_DIR" 2>/dev/null \
             || { echo "Ошибка: не удалось клонировать репозиторий"; exit 1; }
     fi
+    chmod +x "${INSTALL_DIR}/server-manager.sh" 2>/dev/null || true
+    # Симлинк для запуска из любого места
+    ln -sf "${INSTALL_DIR}/server-manager.sh" /usr/local/bin/server-manager 2>/dev/null || true
+    echo "  Симлинк: /usr/local/bin/server-manager → ${INSTALL_DIR}/server-manager.sh"
+    echo "  Запускаем из ${INSTALL_DIR}..."
+    exec bash "${INSTALL_DIR}/server-manager.sh"
+fi
+
+# Страхуемся: файл запуска должен быть исполняемым
+chmod +x "${SCRIPT_DIR}/server-manager.sh" 2>/dev/null || true
+
     # Симлинк для запуска из любого места
     ln -sf "${INSTALL_DIR}/server-manager.sh" /usr/local/bin/server-manager 2>/dev/null || true
     echo "  Симлинк: /usr/local/bin/server-manager → ${INSTALL_DIR}/server-manager.sh"
