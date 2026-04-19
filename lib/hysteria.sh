@@ -1302,10 +1302,6 @@ hysteria_remnawave_integration() {
         local hw_status hw_detail=""
         if systemctl is-active --quiet hy-webhook 2>/dev/null; then
             local hw_port; hw_port=$(grep "^LISTEN_PORT=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2)
-        # hy-webhook статус с деталями
-        local hw_status hw_detail=""
-        if systemctl is-active --quiet hy-webhook 2>/dev/null; then
-            local hw_port; hw_port=$(grep "^LISTEN_PORT=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2)
             local hw_users; hw_users=$(python3 - << 'PYEOF' 2>/dev/null
 import json
 try:
