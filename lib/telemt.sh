@@ -770,32 +770,30 @@ print(json.dumps(d))
     local resp; resp=$(telemt_api POST "/v1/users" "$body")
     if telemt_api_ok "$resp"; then
         ok "Пользователь '$uname' добавлен"
-        # Показываем ссылку только для нового пользователя
-        local user_resp; user_resp=$(telemt_api GET "/v1/users/${uname}" 2>/dev/null || true)
-        # Если GET /v1/users/:name не поддерживается — ищем в общем списке
-        if ! echo "$user_resp" | grep -q "tg://proxy"; then
-            user_resp=$(telemt_api GET "/v1/users" 2>/dev/null                 | python3 -c "
+        # Ждём появления ссылки в API (до 10 попыток)
+        local tls_link="" attempt=0
+        while [ $attempt -lt 10 ] && [ -z "$tls_link" ]; do
+            sleep 1
+            local user_resp; user_resp=$(telemt_api GET "/v1/users" 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    users = data if isinstance(data, list) else data.get('data', data.get('users', []))
+    users = data if isinstance(data, list) else data.get('users', data.get('data', []))
     if isinstance(users, dict): users = list(users.values())
     match = [u for u in users if u.get('username') == '${uname}']
     print(json.dumps(match[0]) if match else '{}')
 except: print('{}')
 " 2>/dev/null || true)
-        fi
-        local tls_link=""
-        tls_link=$(echo "$user_resp" | python3 -c "
+            tls_link=$(echo "$user_resp" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
-    # Если это объект пользователя напрямую
-    if 'links' in d:
-        tls = d['links'].get('tls', [])
-        print(tls[0] if tls else '')
+    tls = d.get('links', {}).get('tls', [])
+    print(tls[0] if tls else '')
 except: pass
 " 2>/dev/null || true)
+            attempt=$((attempt + 1))
+        done
         echo ""
         if [ -n "$tls_link" ]; then
             echo -e "  ${BOLD}${WHITE}Ссылка:${NC}"
@@ -955,7 +953,13 @@ print(f'  {GRAY}─────────────────────�
         fi
 
         info "Последние логи:"
-        journalctl -u telemt --no-pager -n 30
+        journalctl -u telemt --no-pager -n 30 --output=cat 2>/dev/null \
+            | sed \
+                -e 's/\(WARN\)/\o033[1;33m\1\o033[0m/g' \
+                -e 's/\(ERROR\)/\o033[0;31m\1\o033[0m/g' \
+                -e 's/\(INFO\)/\o033[0;36m\1\o033[0m/g' \
+                -e 's/\(tg:\/\/proxy[^ ]*\)/\o033[0;32m\1\o033[0m/g' \
+            || journalctl -u telemt --no-pager -n 30
     else
         cd "$TELEMT_WORK_DIR_DOCKER" 2>/dev/null || die "Директория не найдена"
         docker compose ps; echo ""; info "Последние логи:"; docker compose logs --tail=20
@@ -1377,8 +1381,8 @@ telemt_submenu_users() {
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
-            1) telemt_menu_add_user || true ;;
-            2) telemt_menu_delete_user || true ;;
+            1) telemt_menu_add_user || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            2) telemt_menu_delete_user || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             3) telemt_menu_links || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             4) telemt_menu_user_ips || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             5) telemt_menu_stats_settings || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
