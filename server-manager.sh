@@ -45,6 +45,11 @@ fi
 
 # Если путь скрипта все еще неизвестен — клонируем репозиторий и перезапускаемся из него.
 if [ -z "$SCRIPT_DIR" ]; then
+    if [ "${SM_BOOTSTRAP_REEXEC:-0}" = "1" ]; then
+        echo "Ошибка: не удалось определить рабочий каталог server-manager после перезапуска."
+        echo "Выполните: cd /root/server-manager && git reset --hard origin/main"
+        exit 1
+    fi
     echo "  Первый запуск — клонируем репозиторий в ${INSTALL_DIR}..."
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "  Репозиторий уже существует, обновляем..."
@@ -58,7 +63,7 @@ if [ -z "$SCRIPT_DIR" ]; then
     ln -sf "${INSTALL_DIR}/server-manager.sh" /usr/local/bin/server-manager 2>/dev/null || true
     echo "  Симлинк: /usr/local/bin/server-manager → ${INSTALL_DIR}/server-manager.sh"
     echo "  Запускаем из ${INSTALL_DIR}..."
-    exec bash "${INSTALL_DIR}/server-manager.sh"
+    exec env SM_BOOTSTRAP_REEXEC=1 bash "${INSTALL_DIR}/server-manager.sh"
 fi
 
 # Страхуемся: файл запуска должен быть исполняемым
