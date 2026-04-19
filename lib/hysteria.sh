@@ -396,20 +396,39 @@ EOF
 
     # ── Сервис ─────────────────────────────────────────────────────
     systemctl daemon-reload
-    command -v ufw &>/dev/null && ufw allow 80/tcp >/dev/null 2>&1 && ufw --force enable >/dev/null 2>&1
-    ok "UFW: временно открыт порт 80 для ACME"
+    if command -v ufw &>/dev/null; then
+        ufw --force enable >/dev/null 2>&1          # включаем UFW сначала
+        ufw allow 80/tcp >/dev/null 2>&1            # затем открываем порт
+        ufw allow 22/tcp >/dev/null 2>&1            # ssh не теряем
+        sleep 2                                      # даём iptables применить правила
+        ok "UFW: временно открыт порт 80 для ACME"
+    fi
     systemctl enable --now "$HYSTERIA_SVC"
 
-    # Ждём сертификат
-    info "Ждём получения сертификата..."
-    local i=0
-    while [ $i -lt 30 ]; do
-        journalctl -u "$HYSTERIA_SVC" -n 20 --no-pager 2>/dev/null | grep -q "server up and running" && break
+    # Ждём сертификат — до 60 секунд
+    info "Ждём получения сертификата (до 60 сек)..."
+    local i=0 cert_ok=false
+    while [ $i -lt 60 ]; do
+        if journalctl -u "$HYSTERIA_SVC" -n 30 --no-pager 2>/dev/null | grep -q "server up and running"; then
+            cert_ok=true; break
+        fi
+        # Проверяем на ошибку сертификата чтобы не ждать зря
+        if journalctl -u "$HYSTERIA_SVC" -n 10 --no-pager 2>/dev/null | grep -q "FATAL\|firewall problem\|connection refused"; then
+            break
+        fi
         sleep 1; i=$((i+1))
     done
     command -v ufw &>/dev/null && ufw delete allow 80/tcp >/dev/null 2>&1
     ok "UFW: порт 80 закрыт"
-    ok "Сервис $HYSTERIA_SVC запущен"
+    if ! $cert_ok; then
+        warn "Сертификат не получен за 60 сек — проверьте:"
+        warn "  1. Домен $domain указывает на этот IP ($server_ip)"
+        warn "  2. Порт 80 доступен снаружи (не заблокирован провайдером)"
+        warn "  Логи: journalctl -u hysteria-server -n 30"
+        warn "  После исправления: systemctl restart hysteria-server"
+    else
+        ok "Сертификат получен, сервис запущен"
+    fi
 
     # ── UFW ────────────────────────────────────────────────────────
     if command -v ufw &>/dev/null; then
