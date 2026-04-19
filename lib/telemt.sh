@@ -1011,6 +1011,42 @@ telemt_menu_logs() {
     done
 }
 
+telemt_menu_toggle_me() {
+    header "Режим подключения к Telegram"
+    [ ! -f "$TELEMT_CONFIG_FILE" ] && die "Конфиг не найден."
+
+    local current; current=$(grep -E "^use_middle_proxy" "$TELEMT_CONFIG_FILE" | grep -o 'true\|false' || echo "true")
+    if [ "$current" = "true" ]; then
+        echo -e "  Текущий режим: ${GREEN}Middle-Proxy (ME)${NC}"
+        echo -e "  ${GRAY}Трафик идёт через серверы Telegram. Стабильнее, но чуть медленнее.${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Переключить на Direct  ${GRAY}(прямое подключение к DC)${NC}"
+    else
+        echo -e "  Текущий режим: ${CYAN}Direct${NC}"
+        echo -e "  ${GRAY}Прямое подключение к DC Telegram. Быстрее, но зависит от доступности DC.${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${RESET} Переключить на ME  ${GRAY}(через Middle-Proxy серверы Telegram)${NC}"
+    fi
+    echo -e "  ${BOLD}0)${RESET} Назад"
+    echo ""
+    local ch; read -rp "  Выбор: " ch < /dev/tty
+    case "$ch" in
+        1)
+            local new_val; [ "$current" = "true" ] && new_val="false" || new_val="true"
+            sed -i "s/^use_middle_proxy.*/use_middle_proxy = $new_val/" "$TELEMT_CONFIG_FILE"
+            if [ "$TELEMT_MODE" = "systemd" ]; then
+                systemctl restart telemt && ok "Сервис перезапущен с новым режимом" || warn "Ошибка перезапуска"
+            else
+                cd "$TELEMT_WORK_DIR_DOCKER" && docker compose restart && ok "Контейнер перезапущен" || warn "Ошибка"
+            fi
+            local new_mode; [ "$new_val" = "true" ] && new_mode="Middle-Proxy (ME)" || new_mode="Direct"
+            ok "Режим переключён на: $new_mode"
+            ;;
+        0) return ;;
+        *) warn "Неверный выбор" ;;
+    esac
+}
+
 telemt_menu_update() {
     header "Обновление"
     if [ "$TELEMT_MODE" = "systemd" ]; then
@@ -1327,6 +1363,7 @@ telemt_submenu_manage() {
         echo -e "  ${BOLD}3)${RESET} 🔄  Обновить"
         echo -e "  ${BOLD}4)${RESET} ⏹️  Остановить"
         echo -e "  ${BOLD}5)${RESET} ▶️   Запустить / Перезапустить"
+        echo -e "  ${BOLD}6)${RESET} 🔀  Режим ME / Direct"
         echo ""
         echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
         echo ""
@@ -1342,6 +1379,7 @@ telemt_submenu_manage() {
                    cd "$TELEMT_WORK_DIR_DOCKER" && docker compose restart && ok "Контейнер перезапущен" || warn "Ошибка"
                fi
                read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            6) telemt_menu_toggle_me || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
