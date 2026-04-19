@@ -727,6 +727,8 @@ telemt_menu_install() {
     sleep 3; header "Ссылки"
     echo -e "${BOLD}IP:${RESET} $(get_public_ip)"
     telemt_fetch_links
+    echo ""
+    read -rp "  Нажмите Enter для продолжения..." < /dev/tty
 }
 
 # ── Добавить пользователя через API ──────────────────────────────
@@ -771,6 +773,8 @@ print(json.dumps(d))
         echo ""
         header "Ссылки"
         telemt_fetch_links
+        echo ""
+        read -rp "  Нажмите Enter для продолжения..." < /dev/tty
     else
         local errmsg; errmsg=$(telemt_api_error "$resp")
         die "Ошибка API: $errmsg"
