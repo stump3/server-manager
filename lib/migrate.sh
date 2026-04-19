@@ -132,7 +132,8 @@ RPANEL
         info "Переносим MTProxy..."
         local cp dp ub lb
         cp=$(grep -E "^port\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oE "[0-9]+" || echo "8443")
-        dp=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oP '(?<="K)[^"]+' || echo "petrovich.ru")
+        dp=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oP '(?<=")[^"]+' || echo "")
+        [ -z "$dp" ] && dp="1c.ru"  # fallback если regex не совпал
         ub=$(awk '/^\[access\.users\]/{f=1;next} f&&/^\[/{exit} f&&/=/{print}' "$TELEMT_CONFIG_SYSTEMD")
         if declare -f telemt_extract_limits_block >/dev/null 2>&1; then
             lb=$(telemt_extract_limits_block "$TELEMT_CONFIG_SYSTEMD")
@@ -230,8 +231,10 @@ RTELEMT
             [ -f "$f" ] && PUT "$f" "${ruser}@${rip}:/root/" 2>/dev/null || true
         done
         # Используем официальный установщик — тот же что в hysteria_migrate/hysteria_install
-        RUN "curl -fsSL --max-time 30 https://get.hy2.sh/ -o /tmp/hy2-install.sh && bash /tmp/hy2-install.sh; rm -f /tmp/hy2-install.sh && systemctl enable hysteria-server && systemctl restart hysteria-server" \
-            || { warn "Ошибка установки Hysteria2 на новом сервере"; }
+        RUN "curl -fsSL --max-time 30 https://get.hy2.sh/ -o /tmp/hy2-install.sh && bash /tmp/hy2-install.sh; rm -f /tmp/hy2-install.sh && systemctl enable hysteria-server"             || { warn "Ошибка установки Hysteria2 на новом сервере"; }
+        # Если использовался HTTP auth — конфиг уже содержит auth.type: http
+        # Hysteria стартует с ACME сертификатом из /var/lib/hysteria/acme/ (скопирован выше)
+        RUN "systemctl restart hysteria-server" 2>/dev/null || warn "Hysteria2 не запустилась — проверьте конфиг на новом сервере"
         ok "Hysteria2 перенесена"
     else
         warn "Hysteria2 не найдена, пропускаю"
