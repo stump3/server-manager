@@ -1393,9 +1393,6 @@ _hy_integration_install() {
         read -rp "  Нажмите Enter для продолжения..." < /dev/tty
     fi
     [ "$cleanup_tmp" = true ] && rm -f "$install_script"
-
-    # Устанавливаем sub-injector (схема B — Rust HTTP прокси)
-    _hy_sub_injector_install "$dom" "$port"
 }
 
 # ── Установка sub-injector ─────────────────────────────────────────
@@ -1509,7 +1506,9 @@ _hy_sub_injector_build() {
     curl -fsSL --max-time 30 "${raw}/src/main.rs" -o "${src_dir}/src/main.rs" 2>/dev/null ||         { err "Не удалось скачать main.rs"; rm -rf "$src_dir"; return 1; }
 
     info "Сборка (может занять 2-5 минут)..."
+    local old_pwd; old_pwd="$(pwd)"
     cd "$src_dir" && cargo build --release 2>/dev/null
+    cd "$old_pwd" 2>/dev/null || cd /
     if [ -f "${src_dir}/target/release/sub-injector" ]; then
         install -m 0755 "${src_dir}/target/release/sub-injector" "$bin_path"
         rm -rf "$src_dir"
