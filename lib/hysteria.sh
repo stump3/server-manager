@@ -1342,7 +1342,7 @@ hysteria_remnawave_integration() {
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
-            1) _hy_integration_install ;;
+            1) _hy_integration_install; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             2) _hy_integration_auth_mode ;;
             3) _hy_integration_add_ua ;;
             4) _hy_integration_threading ;;
