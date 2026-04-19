@@ -370,11 +370,18 @@ else
         fi
     fi
     if ! command -v cargo &>/dev/null; then
+        info "Устанавливаем зависимости сборки (gcc, pkg-config, libssl-dev)..."
+        apt-get install -y -q build-essential pkg-config libssl-dev 2>/dev/null             || { warn "apt не сработал — пробуем продолжить без него"; }
         info "Устанавливаем Rust (потребуется 2-3 минуты)..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path             || err "Не удалось установить Rust"
         # shellcheck source=/dev/null
         source "$HOME/.cargo/env"
         export PATH="$HOME/.cargo/bin:$PATH"
+    fi
+    # build-essential нужен даже если cargo уже есть (линкер cc)
+    if ! command -v cc &>/dev/null; then
+        info "Устанавливаем build-essential (линкер cc не найден)..."
+        apt-get install -y -q build-essential 2>/dev/null || true
     fi
     command -v cargo &>/dev/null || err "cargo не найден после установки Rust"
 
