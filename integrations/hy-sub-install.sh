@@ -495,13 +495,6 @@ for i in $(seq 1 10); do
 done
 systemctl is-active --quiet remna-sub-injector     && ok "remna-sub-injector запущен — порт 3020"     || err "remna-sub-injector не запустился — journalctl -u remna-sub-injector -n 20"
 
-# ── nginx: sub домен → injector :3020 ────────────────────────────
-step "Обновление nginx"
-
-if [ -f /opt/remnawave/nginx.conf ]; then
-    if grep -q "server 127.0.0.1:3010" /opt/remnawave/nginx.conf; then
-        sed -i "s|server 127.0.0.1:3010|server 127.0.0.1:3020|g" /opt/remnawave/nginx.conf
-        docker exec remnawave-nginx nginx -t >/dev/null 2>&1             && { cd /opt/remnawave && docker compose restart remnawave-nginx >/dev/null 2>&1
 # ── Веб-сервер: sub домен → injector :3020 ───────────────────────
 step "Обновление веб-сервера"
 
