@@ -12,14 +12,23 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+_SOURCE_PATH="${BASH_SOURCE[0]:-$0}"
+_SOURCE_PATH="${_SOURCE_PATH%$'\r'}"
+SCRIPT_DIR="$(cd "$(dirname "$_SOURCE_PATH")" 2>/dev/null && pwd || echo "")"
 export SCRIPT_DIR
 REPO_RAW="https://raw.githubusercontent.com/stump3/server-manager/main"
 REPO_URL="https://github.com/stump3/server-manager"
 INSTALL_DIR="/root/server-manager"
 
-# При запуске через curl | bash — SCRIPT_DIR пустой.
-# Клонируем репозиторий и перезапускаемся из него.
+# При запуске через curl | bash — SCRIPT_DIR может быть пустым.
+# Если репозиторий уже есть локально, используем его как fallback,
+# чтобы не уйти в цикл перезапуска.
+if [ -z "$SCRIPT_DIR" ] && [ -d "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/server-manager.sh" ]; then
+    SCRIPT_DIR="$INSTALL_DIR"
+    export SCRIPT_DIR
+fi
+
+# Если путь скрипта все еще неизвестен — клонируем репозиторий и перезапускаемся из него.
 if [ -z "$SCRIPT_DIR" ]; then
     echo "  Первый запуск — клонируем репозиторий в ${INSTALL_DIR}..."
     if [ -d "$INSTALL_DIR/.git" ]; then
@@ -39,13 +48,6 @@ fi
 
 # Страхуемся: файл запуска должен быть исполняемым
 chmod +x "${SCRIPT_DIR}/server-manager.sh" 2>/dev/null || true
-
-    # Симлинк для запуска из любого места
-    ln -sf "${INSTALL_DIR}/server-manager.sh" /usr/local/bin/server-manager 2>/dev/null || true
-    echo "  Симлинк: /usr/local/bin/server-manager → ${INSTALL_DIR}/server-manager.sh"
-    echo "  Запускаем из ${INSTALL_DIR}..."
-    exec bash "${INSTALL_DIR}/server-manager.sh"
-fi
 
 # При локальном запуске — тоже убедиться что симлинк актуален
 if [ ! -L /usr/local/bin/server-manager ] || \
