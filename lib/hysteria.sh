@@ -1391,11 +1391,10 @@ _hy_integration_install() {
         journalctl -u hy-webhook -n 20 --no-pager 2>/dev/null || true
         echo ""
         read -rp "  Нажмите Enter для продолжения..." < /dev/tty
+        [ "$cleanup_tmp" = true ] && rm -f "$install_script"
+        return 1
     fi
     [ "$cleanup_tmp" = true ] && rm -f "$install_script"
-
-    # Устанавливаем sub-injector (схема B — Rust HTTP прокси)
-    _hy_sub_injector_install "$dom" "$port"
 }
 
 # ── Установка sub-injector ─────────────────────────────────────────
@@ -1457,7 +1456,8 @@ After=network.target hy-webhook.service
 
 [Service]
 Type=simple
-ExecStart=${bin_path} ${cfg_path}
+WorkingDirectory=${install_dir}
+ExecStart=${bin_path}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
