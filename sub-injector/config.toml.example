@@ -7,7 +7,7 @@ bind_addr = "0.0.0.0:3020"
 # Приоритет над links_source если оба указаны.
 [[injections]]
 header = "User-Agent"
-contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayng"]
+contains = ["hiddify", "happ", "nekobox", "nekoray", "v2rayn", "v2rayng"]
 per_user_url = "http://127.0.0.1:8766/uri"
 
 # Clash/Mihomo — YAML пропускается без изменений (автоматически)
