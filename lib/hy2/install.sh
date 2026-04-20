@@ -355,3 +355,33 @@ PYEOF2
         ufw --force enable >/dev/null 2>&1
     fi
 }
+
+hysteria_uninstall() {
+    header "Hysteria2 — Удалить полностью"
+    echo ""
+    warn "Будут удалены: бинарник hysteria, конфиг, systemd-юнит"
+    echo -e "  ${GRAY}Сертификаты Let's Encrypt и URI-файлы сохранятся.${NC}"
+    echo ""
+    read -rp "  Продолжить? (y/N): " _yn < /dev/tty
+    [[ "${_yn:-N}" =~ ^[yY]$ ]] || { warn "Отмена"; return 1; }
+
+    systemctl stop    "${HYSTERIA_SVC:-hysteria-server}" 2>/dev/null || true
+    systemctl disable "${HYSTERIA_SVC:-hysteria-server}" 2>/dev/null || true
+
+    # Официальный деинсталлятор (если доступен)
+    if command -v hysteria &>/dev/null; then
+        local _hy_script; _hy_script=$(mktemp /tmp/hy2-install.XXXXXX.sh)
+        if curl -fsSL --max-time 30 https://get.hy2.sh/ -o "$_hy_script" 2>/dev/null && [ -s "$_hy_script" ]; then
+            env HYSTERIA_FORCE_NO_DETECT=1 bash "$_hy_script" --remove 2>/dev/null || true
+        fi
+        rm -f "$_hy_script"
+    fi
+
+    # Страховка — удаляем напрямую если deinstaller не сработал
+    rm -f /usr/bin/hysteria /usr/local/bin/hysteria
+    rm -f /etc/systemd/system/hysteria-server.service
+    rm -f "${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}"
+    systemctl daemon-reload 2>/dev/null || true
+
+    ok "Hysteria2 удалена"
+}
