@@ -54,6 +54,40 @@ hysteria_install() {
         warn "Некорректный домен. Нужен FQDN вида sub.example.com"
     done
 
+    # Предварительная DNS-проверка перед ACME, чтобы избежать типичных ошибок
+    # Let's Encrypt ("query timed out looking up A/AAAA", NXDOMAIN и т.п.).
+    local server_ip resolved_a resolved_aaaa resolved_a_cf resolved_a_google
+    local _placeholder_re='(^|\.)(example|your|test|sample|local|localhost)\.(com|net|org|lan|local)$'
+    if [[ "$domain" =~ $_placeholder_re ]]; then
+        err "Похоже на шаблонный домен: ${domain}"
+        warn "Укажите реальный FQDN с рабочей DNS-записью (например vpn.your-real-domain.tld)."
+        return 1
+    fi
+
+    server_ip="$(hy_get_public_ip || true)"
+    resolved_a="$(hy_resolve_a "$domain" | head -1 || true)"
+    resolved_aaaa="$(hy_resolve_aaaa "$domain" | head -1 || true)"
+    resolved_a_cf="$(hy_resolve_a_via_resolver "$domain" "1.1.1.1" | head -1 || true)"
+    resolved_a_google="$(hy_resolve_a_via_resolver "$domain" "8.8.8.8" | head -1 || true)"
+
+    if [ -z "$resolved_a" ] && [ -z "$resolved_aaaa" ]; then
+        warn "DNS для ${domain} не отвечает A/AAAA через локальный резолвер."
+        warn "Cloudflare DNS: ${resolved_a_cf:-нет A}, Google DNS: ${resolved_a_google:-нет A}"
+        warn "ACME-проверка почти наверняка завершится ошибкой."
+        local dns_continue
+        read -rp "  Продолжить установку без DNS? (y/N): " dns_continue < /dev/tty
+        [[ "${dns_continue:-N}" =~ ^[yY]$ ]] || { warn "Отмена"; return 1; }
+    elif [ -n "$server_ip" ] && [ -n "$resolved_a" ] && [ "$resolved_a" != "$server_ip" ]; then
+        warn "Домен указывает на другой IP: ${domain} → ${resolved_a}, сервер → ${server_ip}"
+        warn "Cloudflare DNS: ${resolved_a_cf:-нет A}, Google DNS: ${resolved_a_google:-нет A}"
+        warn "Проверьте A-запись у регистратора перед запуском ACME."
+        local dns_mismatch_continue
+        read -rp "  Продолжить установку с текущим DNS? (y/N): " dns_mismatch_continue < /dev/tty
+        [[ "${dns_mismatch_continue:-N}" =~ ^[yY]$ ]] || { warn "Отмена"; return 1; }
+    else
+        ok "DNS проверка: A=${resolved_a:-нет}, AAAA=${resolved_aaaa:-нет}"
+    fi
+
     # ── Email ──────────────────────────────────────────────────────
     local email=""
     read -rp "  Email для ACME (необязателен, Enter — пропустить): " email < /dev/tty
