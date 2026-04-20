@@ -88,6 +88,16 @@ hysteria_install() {
         ok "DNS проверка: A=${resolved_a:-нет}, AAAA=${resolved_aaaa:-нет}"
     fi
 
+    # ── Проверка порта 80 (нужен для ACME HTTP-01) ────────────────
+    if ! hy_port_is_free 80; then
+        local _p80_label; _p80_label=$(hy_port_label 80)
+        warn "Порт 80 занят ($_p80_label) — ACME HTTP-01 не сможет получить сертификат"
+        warn "Освободите порт 80 или остановите nginx/remnawave перед запуском Hysteria2."
+        local acme_continue
+        read -rp "  Продолжить установку? (y/N): " acme_continue < /dev/tty
+        [[ "${acme_continue:-N}" =~ ^[yY]$ ]] || { warn "Отмена"; return 1; }
+    fi
+
     # ── Email ──────────────────────────────────────────────────────
     local email=""
     read -rp "  Email для ACME (необязателен, Enter — пропустить): " email < /dev/tty
@@ -251,7 +261,7 @@ EOF
         # HTTP auth — пароль = sha256(username:WEBHOOK_SECRET)[:32]
         # тот же алгоритм что gen_password() в hy-webhook.py
         local _secret; _secret=$(grep "^WEBHOOK_SECRET=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2)
-        local _hash
+        local _hash=""
         if [ -n "$_secret" ]; then
             _hash=$(python3 -c "import hashlib; print(hashlib.sha256(f'${username}:$_secret'.encode()).hexdigest()[:32])" 2>/dev/null)
         fi
