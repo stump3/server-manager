@@ -158,7 +158,7 @@ hysteria_install() {
     fi
 
     # ── Пользователь ───────────────────────────────────────────────
-    local username pass
+    local username new_pass
     read -rp "  Логин [admin]: " username < /dev/tty
     username="${username:-admin}"
     read -rp "  Пароль (пусто = авто): " new_pass < /dev/tty
@@ -182,23 +182,23 @@ db = "$_users_db"
 try:
     with open(db) as f: u = json.load(f)
 except Exception: u = {}
-u["${new_user}"] = "$_hash"
+u["${username}"] = "$_hash"
 with open("$_tmp", "w") as f: json.dump(u, f, indent=2)
 PYEOF2
         mv "$_tmp" "$_users_db" && chmod 644 "$_users_db" || rm -f "$_tmp"
         systemctl restart hy-webhook 2>/dev/null || true
-        ok "Пользователь '${new_user}' добавлен (HTTP auth)"
+        ok "Пользователь '${username}' добавлен (HTTP auth)"
         # URI использует MD5 хеш как пароль
         new_pass="$_hash"
     else
         # userpass — пишем в config.yaml
         local _tmp; _tmp=$(mktemp)
-        awk "/^  userpass:/{print; print \"    ${new_user}: \\"${new_pass}\\"\" ; next}1" \
+        awk "/^  userpass:/{print; print \"    ${username}: \\"${new_pass}\\"\" ; next}1" \
             "$HYSTERIA_CONFIG" > "$_tmp" \
             && mv "$_tmp" "$HYSTERIA_CONFIG" && chmod 644 "$HYSTERIA_CONFIG" \
             || rm -f "$_tmp"
         systemctl restart "$HYSTERIA_SVC"
-        ok "Пользователь '${new_user}' добавлен"
+        ok "Пользователь '${username}' добавлен"
     fi
 
     # Генерируем URI для нового пользователя
