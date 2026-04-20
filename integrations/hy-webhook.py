@@ -34,6 +34,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 # ── Конфиг ────────────────────────────────────────────────────────
 WEBHOOK_SECRET  = os.environ.get("WEBHOOK_SECRET", "")
+WEBHOOK_SECRET_HEADER = os.environ.get("WEBHOOK_SECRET_HEADER", "X-Remnawave-Signature")
 HYSTERIA_CONFIG = os.environ.get("HYSTERIA_CONFIG", "/etc/hysteria/config.yaml")
 USERS_DB        = os.environ.get("USERS_DB", "/var/lib/hy-webhook/users.json")
 LISTEN_PORT     = int(os.environ.get("LISTEN_PORT", "8766"))
@@ -161,8 +162,9 @@ def update_hysteria_config(users):
 def verify_signature(body, signature):
     if not WEBHOOK_SECRET:
         return True
-    # Remnawave шлёт WEBHOOK_SECRET_HEADER как plain-text значение заголовка,
-    # а не как HMAC подпись. Сравниваем напрямую.
+    # Remnawave шлёт секрет в заголовке (имя задаётся через WEBHOOK_SECRET_HEADER),
+    # либо HMAC-SHA256 подпись. Сначала пробуем прямое сравнение,
+    # затем fallback на HMAC.
     if hmac.compare_digest(WEBHOOK_SECRET, signature):
         return True
     # Fallback: поддержка HMAC-SHA256 на случай других клиентов
@@ -402,7 +404,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", 0))
         body   = self.rfile.read(length)
-        sig    = self.headers.get("X-Remnawave-Signature", "")
+        sig = self.headers.get(WEBHOOK_SECRET_HEADER, "")
         if WEBHOOK_SECRET and not verify_signature(body, sig):
             log.warning("Неверная подпись")
             self.send_response(401)
