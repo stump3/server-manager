@@ -50,6 +50,21 @@ hy_resolve_a() {
     fi
 }
 
+hy_resolve_aaaa() {
+    local domain="$1"
+    if command -v dig &>/dev/null; then
+        dig +short AAAA "$domain" 2>/dev/null | tr -d '\r' | grep ':' || true
+    else
+        getent ahostsv6 "$domain" 2>/dev/null | awk '{print $1}' | grep ':' || true
+    fi
+}
+
+hy_resolve_a_via_resolver() {
+    local domain="$1" resolver="$2"
+    command -v dig &>/dev/null || return 0
+    dig +short A "$domain" "@$resolver" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+\.' || true
+}
+
 hy_get_domain() {
     local _d=""
     [ -f "$HYSTERIA_CONFIG" ] && _d=$(awk '/domains:/{f=1;next} f&&/^  - /{gsub(/[[:space:]]*-[[:space:]]*/,""); print; exit}' "$HYSTERIA_CONFIG" 2>/dev/null)
