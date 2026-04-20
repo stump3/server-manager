@@ -215,7 +215,20 @@ hysteria_install() {
     fi
 
     local _config_created=false
+    local _rebuild_config=false
+    local _existing_domain=""
+    _existing_domain="$(hy_get_domain)"
     if [ ! -f "$HYSTERIA_CONFIG" ]; then
+        _rebuild_config=true
+    elif [ -z "$_existing_domain" ] || [[ "$_existing_domain" =~ $_placeholder_re ]]; then
+        # get.hy2.sh может оставить шаблонный config.yaml (your.domain.net).
+        # В этом случае перезаписываем конфиг значениями, которые ввёл пользователь.
+        _rebuild_config=true
+        warn "Обнаружен шаблонный/пустой домен в текущем config.yaml: ${_existing_domain:-<empty>}"
+        info "Конфиг будет обновлён доменом: ${domain}"
+    fi
+
+    if $_rebuild_config; then
         info "Создание базового конфига Hysteria2..."
         local _acme_email_line=""
         [ -n "$email" ] && _acme_email_line="  email: ${email}"
