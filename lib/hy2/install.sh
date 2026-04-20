@@ -337,7 +337,18 @@ PYEOF2
     echo "  $uri"
     echo ""
     echo "  QR-код:"
-    qrencode -t ANSIUTF8 "$uri" 2>/dev/null || true
+    if ! command -v qrencode &>/dev/null; then
+        apt-get install -y qrencode >/dev/null 2>&1 || true
+    fi
+    if command -v qrencode &>/dev/null; then
+        qrencode -t ANSIUTF8 "$uri" 2>/dev/null || true
+        local qr_png="/root/hysteria-${dom}.png"
+        qrencode -o "$qr_png" -s 8 -m 2 "$uri" 2>/dev/null || true
+        [ -f "$qr_png" ] && info "PNG QR сохранён: $qr_png"
+    else
+        warn "qrencode не установлен — QR в терминале недоступен"
+        info "Установите вручную: apt-get install -y qrencode"
+    fi
     echo "$uri" >> "/root/hysteria-${dom}-users.txt"
     ok "URI сохранён: /root/hysteria-${dom}-users.txt"
 
