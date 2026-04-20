@@ -26,7 +26,7 @@ hysteria_add_user() {
     if $_is_http_auth; then
         # Пароль = SHA-256(username:WEBHOOK_SECRET)[:32] — совпадает с gen_password() в hy-webhook.py
         local _secret; _secret=$(grep "^WEBHOOK_SECRET=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2)
-        local _hash
+        local _hash=""
         if [ -n "$_secret" ]; then
             _hash=$(python3 -c "import hashlib; print(hashlib.sha256('${new_user}:$_secret'.encode()).hexdigest()[:32])" 2>/dev/null)
         fi
