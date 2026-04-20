@@ -1,6 +1,26 @@
 # shellcheck shell=bash
 # Hysteria2: меню, миграция и sub-режимы
 
+# ── Простые действия (были в старом hysteria.sh) ─────────────────────────────
+hysteria_logs() {
+    header "Hysteria2 — Логи"
+    journalctl -u "${HYSTERIA_SVC:-hysteria-server}" -n 80 --no-pager 2>/dev/null \
+        || warn "Логи недоступны"
+}
+
+hysteria_status() {
+    header "Hysteria2 — Статус"
+    hy_is_installed 2>/dev/null \
+        && echo -e "  Версия:  $(hysteria version 2>/dev/null | head -1)"
+    systemctl --no-pager status "${HYSTERIA_SVC:-hysteria-server}" 2>/dev/null \
+        || warn "Сервис не найден"
+}
+
+hysteria_restart() {
+    systemctl restart "${HYSTERIA_SVC:-hysteria-server}" \
+        && ok "Hysteria2 перезапущен" || warn "Ошибка перезапуска"
+}
+
 hysteria_migrate() {
     header "Hysteria2 — Перенос на новый сервер"
     [ -f "$HYSTERIA_CONFIG" ] || { warn "Hysteria2 не установлена на этом сервере"; return 1; }
