@@ -393,11 +393,34 @@ ok "Пользователи синхронизированы"
 step "Настройка вебхуков Remnawave"
 
 WEBHOOK_SECRET=$(grep '^WEBHOOK_SECRET=' /etc/hy-webhook.env | cut -d= -f2)
+WEBHOOK_GATEWAY_IP=""
+
+# Из контейнера Remnawave localhost указывает на сам контейнер, поэтому
+# определяем gateway docker-сети панели и используем его в WEBHOOK_URL.
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "remnawave"; then
+    RNW_NETWORK=$(docker inspect remnawave --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' 2>/dev/null | head -n1)
+    if [ -n "$RNW_NETWORK" ]; then
+        WEBHOOK_GATEWAY_IP=$(docker network inspect "$RNW_NETWORK" --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+    fi
+fi
+
+[ -z "$WEBHOOK_GATEWAY_IP" ] && WEBHOOK_GATEWAY_IP="172.17.0.1"
+
 sed -i "s|^WEBHOOK_ENABLED=.*|WEBHOOK_ENABLED=true|" /opt/remnawave/.env
-sed -i "s|^WEBHOOK_URL=.*|WEBHOOK_URL=http://127.0.0.1:8766/webhook|" /opt/remnawave/.env
-sed -i "s|^WEBHOOK_SECRET_HEADER=.*|WEBHOOK_SECRET_HEADER=${WEBHOOK_SECRET}|" /opt/remnawave/.env
+sed -i "s|^WEBHOOK_URL=.*|WEBHOOK_URL=http://${WEBHOOK_GATEWAY_IP}:8766/webhook|" /opt/remnawave/.env
+
+# Поддерживаем два формата конфигурации Remnawave:
+# 1) Новый: WEBHOOK_SECRET_HEADER=<имя заголовка>, WEBHOOK_SECRET=<секрет>
+# 2) Старый: WEBHOOK_SECRET_HEADER=<секрет>
+if grep -q "^WEBHOOK_SECRET=" /opt/remnawave/.env; then
+    sed -i "s|^WEBHOOK_SECRET_HEADER=.*|WEBHOOK_SECRET_HEADER=X-Remnawave-Signature|" /opt/remnawave/.env
+    sed -i "s|^WEBHOOK_SECRET=.*|WEBHOOK_SECRET=${WEBHOOK_SECRET}|" /opt/remnawave/.env
+else
+    sed -i "s|^WEBHOOK_SECRET_HEADER=.*|WEBHOOK_SECRET_HEADER=${WEBHOOK_SECRET}|" /opt/remnawave/.env
+fi
 
 ok "Вебхуки включены в .env"
+info "WEBHOOK_URL установлен: http://${WEBHOOK_GATEWAY_IP}:8766/webhook"
 cd /opt/remnawave && docker compose restart remnawave >/dev/null 2>&1
 ok "Remnawave перезапущена"
 
