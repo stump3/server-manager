@@ -24,7 +24,13 @@ hysteria_add_user() {
     grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && _is_http_auth=true
 
     if $_is_http_auth; then
-        local _hash; _hash=$(echo -n "$new_pass" | md5sum | awk '{print $1}')
+        # Пароль = SHA-256(username:WEBHOOK_SECRET)[:32] — совпадает с gen_password() в hy-webhook.py
+        local _secret; _secret=$(grep "^WEBHOOK_SECRET=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2)
+        local _hash
+        if [ -n "$_secret" ]; then
+            _hash=$(python3 -c "import hashlib; print(hashlib.sha256('${new_user}:$_secret'.encode()).hexdigest()[:32])" 2>/dev/null)
+        fi
+        [ -z "$_hash" ] && _hash="$new_pass"
         mkdir -p "$(dirname "$_users_db")"
         local _tmp; _tmp=$(mktemp)
         python3 << PYEOF
@@ -56,7 +62,13 @@ PYEOF
     local dom port
     dom=$(hy_get_domain)
     port=$(hy_get_port)
-    local uri="hy2://${new_user}:${new_pass}@${dom}:${port}?sni=${dom}&alpn=h3&insecure=0&allowInsecure=0#${new_user}"
+
+    # Название подключения
+    local conn_name
+    read -rp "  Название подключения [${new_user}]: " conn_name < /dev/tty
+    conn_name="${conn_name:-$new_user}"
+
+    local uri="hy2://${new_user}:${new_pass}@${dom}:${port}?sni=${dom}&alpn=h3&insecure=0&allowInsecure=0#${conn_name}"
     echo ""
     echo -e "  ${CYAN}URI:${NC}"
     echo "  $uri"
