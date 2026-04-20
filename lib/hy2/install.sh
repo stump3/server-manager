@@ -304,9 +304,13 @@ PYEOF2
     fi
 
     # Генерируем URI для нового пользователя
-    local dom port conn_name uri
-    dom=$(hy_get_domain)
-    port=$(hy_get_port)
+    # В процессе установки используем домен/порт, которые только что ввёл пользователь,
+    # а не уже существующий config.yaml (он может быть шаблонным после get.hy2.sh).
+    local dom uri_port conn_name uri
+    dom="${domain:-$(hy_get_domain)}"
+    uri_port="${port:-$(hy_get_port)}"
+    [ -z "$dom" ] && dom="$(hy_get_domain)"
+    [ -z "$uri_port" ] && uri_port="$(hy_get_port)"
 
     # Собираем существующие названия из URI-файла
     local users_file="/root/hysteria-${dom}-users.txt"
@@ -347,7 +351,7 @@ PYEOF2
         # Разрешаем ввести название напрямую в первом вопросе без повторного prompt.
         conn_name="$ch"
     fi
-    uri="hy2://${username}:${new_pass}@${dom}:${port}?sni=${dom}&alpn=h3&insecure=0&allowInsecure=0#${conn_name}"
+    uri="hy2://${username}:${new_pass}@${dom}:${uri_port}?sni=${dom}&alpn=h3&insecure=0&allowInsecure=0#${conn_name}"
     echo ""
     echo -e "  ${CYAN}URI:${NC}"
     echo "  $uri"
