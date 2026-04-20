@@ -52,8 +52,12 @@ hy_resolve_a() {
 
 # ── Вспомогательные функции для чтения конфига ───────────────────
 hy_get_domain() {
-    [ -f "$HYSTERIA_CONFIG" ] || { echo ""; return 1; }
-    awk '/domains:/{f=1;next} f&&/^  - /{gsub(/[[:space:]]*-[[:space:]]*/,""); print; exit}' "$HYSTERIA_CONFIG"
+    local _d=""
+    [ -f "$HYSTERIA_CONFIG" ] && _d=$(awk '/domains:/{f=1;next} f&&/^  - /{gsub(/[[:space:]]*-[[:space:]]*/,""); print; exit}' "$HYSTERIA_CONFIG" 2>/dev/null)
+    if [ -z "$_d" ]; then
+        _d=$(grep "^HY_DOMAIN=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2 | tr -d '"')
+    fi
+    echo "$_d"
 }
 
 hy_get_port() {
@@ -233,506 +237,45 @@ hysteria_install() {
     local username pass
     read -rp "  Логин [admin]: " username < /dev/tty
     username="${username:-admin}"
-    read -rp "  Пароль (пусто = авто): " pass < /dev/tty
-    if [ -z "$pass" ]; then
-        pass=$(openssl rand -base64 24 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
-        info "Сгенерирован пароль: $pass"
-    fi
-
-    # ── Название подключения ───────────────────────────────────────
-    local conn_name
-    read -rp "  Название подключения [Hysteria2]: " conn_name < /dev/tty
-    conn_name="${conn_name:-Hysteria2}"
-
-    # ── Masquerade ─────────────────────────────────────────────────
-    echo ""
-    echo -e "  ${WHITE}Режим маскировки:${NC}"
-    echo "  ┌─────────────────────────────────────────────────────────────┐"
-    echo "  │  1) bing.com          — рекомендуется, поддерживает HTTP/3  │"
-    echo "  │  2) yahoo.com         — стабильный, поддерживает HTTP/3     │"
-    echo "  │  3) cdn.apple.com     — нейтральный, поддерживает HTTP/3    │"
-    echo "  │  4) speed.hetzner.de  — нейтральный, поддерживает HTTP/3    │"
-    echo "  │  5) /var/www/html     — локальная заглушка (Remnawave)      │"
-    echo "  │  6) Ввести свой URL                                          │"
-    echo "  └─────────────────────────────────────────────────────────────┘"
-    local masq_choice="" masq_type masq_url
-    masq_type="proxy"; masq_url=""
-    while [[ ! "$masq_choice" =~ ^[123456]$ ]]; do
-        read -rp "  Выбор [1]: " masq_choice < /dev/tty
-        masq_choice="${masq_choice:-1}"
-    done
-    case "$masq_choice" in
-        1) masq_url="https://www.bing.com" ;;
-        2) masq_url="https://www.yahoo.com" ;;
-        3) masq_url="https://cdn.apple.com" ;;
-        4) masq_url="https://speed.hetzner.de" ;;
-        5) masq_type="file"
-           if [ ! -d /var/www/html ]; then
-               mkdir -p /var/www/html
-               cat > /var/www/html/index.html << 'HTML'
-<!DOCTYPE html><html><head><meta charset="utf-8"><title>Please wait</title><style>body{background:#080808;height:100vh;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif}.dots{display:flex;gap:15px;margin-bottom:30px}.d{width:20px;height:20px;background:#fff;border-radius:50%;animation:b 1.4s infinite ease-in-out both}.d:nth-child(1){animation-delay:-0.32s}.d:nth-child(2){animation-delay:-0.16s}@keyframes b{0%,80%,100%{transform:scale(0);opacity:0.2}40%{transform:scale(1);opacity:1}}.t{color:#555;font-size:14px;letter-spacing:2px;font-weight:600}</style></head><body><div class="dots"><div class="d"></div><div class="d"></div><div class="d"></div></div><div class="t">RETRYING CONNECTION</div></body></html>
-HTML
-               ok "Заглушка создана: /var/www/html"
-           else
-               ok "Используется существующая /var/www/html"
-           fi ;;
-        6) while true; do
-               read -rp "  URL (https://...): " masq_url < /dev/tty
-               [[ "$masq_url" =~ ^https?:// ]] && break
-               warn "URL должен начинаться с https://"
-           done ;;
-    esac
-    [ "$masq_type" = "proxy" ] && ok "Маскировка: proxy → $masq_url" \
-                                || ok "Маскировка: file → /var/www/html"
-
-    # ── Алгоритм скорости ──────────────────────────────────────────
-    echo ""
-    echo -e "  ${WHITE}Алгоритм контроля скорости:${NC}"
-    echo "  [1] BBR    — стандартный, рекомендуется для стабильных каналов"
-    echo "  [2] Brutal — агрессивный, для нестабильных каналов / мобильного"
-    local speed_mode use_brutal=false bw_up bw_down
-    read -rp "  Выбор [1]: " speed_mode < /dev/tty
-    speed_mode="${speed_mode:-1}"
-    if [ "$speed_mode" = "2" ]; then
-        use_brutal=true
-        warn "Указывайте реальную скорость — Brutal создаёт до 1.4× нагрузки"
-        read -rp "  Download (Mbps) [100]: " bw_down < /dev/tty; bw_down="${bw_down:-100}"
-        read -rp "  Upload (Mbps) [50]: "   bw_up   < /dev/tty; bw_up="${bw_up:-50}"
-        ok "Brutal: ↓${bw_down} / ↑${bw_up} Mbps"
-    else
-        ok "BBR (по умолчанию)"
-    fi
-
-    # ── Зависимости ────────────────────────────────────────────────
-    STEP_NUM=$(( STEP_NUM + 1 ))
-    step "Установка зависимостей"
-    apt-get update -y -q && apt-get install -y -q curl ca-certificates openssl qrencode dnsutils
-
-    # ── Проверка DNS ───────────────────────────────────────────────
-    STEP_NUM=$(( STEP_NUM + 1 ))
-    step "Проверка DNS"
-    local server_ip domain_ips
-    server_ip=$(hy_get_public_ip || true)
-    [ -z "$server_ip" ] && { err "Не удалось определить IP сервера"; return 1; }
-    ok "IP сервера: $server_ip"
-    domain_ips=$(hy_resolve_a "$domain" || true)
-    [ -z "$domain_ips" ] && { err "Домен $domain не резолвится. Создайте A-запись → $server_ip"; return 1; }
-    echo "  A-записи: $(echo "$domain_ips" | tr '\n' ' ')"
-    if ! echo "$domain_ips" | grep -qx "$server_ip"; then
-        warn "Домен не указывает на этот сервер ($server_ip)!"
-        local fc; read -rp "  Продолжить принудительно? (y/N): " fc < /dev/tty
-        [[ "${fc:-N}" =~ ^[yY]$ ]] || { warn "Исправьте DNS и запустите снова"; return 1; }
-    else
-        ok "DNS корректен: $domain → $server_ip"
-    fi
-
-    # ── Установка бинарника ────────────────────────────────────────
-    STEP_NUM=$(( STEP_NUM + 1 ))
-    step "Установка Hysteria2"
-    local hy_script; hy_script=$(mktemp /tmp/hy2-install.XXXXXX.sh)
-    info "Скачиваю установщик Hysteria2..."
-    if ! curl -fsSL --max-time 30 https://get.hy2.sh/ -o "$hy_script" 2>/dev/null; then
-        rm -f "$hy_script"
-        err "Не удалось скачать установщик Hysteria2. Проверьте соединение."
-        return 1
-    fi
-    [ -s "$hy_script" ] || { rm -f "$hy_script"; err "Установщик Hysteria2 пустой"; return 1; }
-    local hy_rc=0; bash "$hy_script" || hy_rc=$?; rm -f "$hy_script"
-    [ $hy_rc -ne 0 ] && { err "Ошибка установки Hysteria2"; return 1; }
-    command -v hysteria &>/dev/null || { err "Бинарник hysteria не найден"; return 1; }
-    ok "Hysteria2 установлен: $(hysteria version 2>/dev/null | grep Version | awk '{print $2}')"
-
-    # ── Конфиг ────────────────────────────────────────────────────
-    STEP_NUM=$(( STEP_NUM + 1 ))
-    step "Запись конфигурации"
-    install -d -m 0755 "$HYSTERIA_DIR"
-    local acme_email_line=""
-    [ -n "$email" ] && acme_email_line="  email: ${email}"
-
-    local bw_block=""
-    $use_brutal && bw_block="
-bandwidth:
-  up: ${bw_up} mbps
-  down: ${bw_down} mbps"
-
-    local masq_block
-    if [ "$masq_type" = "file" ]; then
-        masq_block="masquerade:
-  type: file
-  file:
-    dir: /var/www/html"
-    else
-        masq_block="masquerade:
-  type: proxy
-  proxy:
-    url: ${masq_url}
-    rewriteHost: true"
-    fi
-
-    cat > "$HYSTERIA_CONFIG" << EOF
-listen: ${listen_addr}
-
-acme:
-  type: http
-  domains:
-    - ${domain}
-  ca: ${ca_name}
-${acme_email_line}
-
-auth:
-  type: userpass
-  userpass:
-    ${username}: "${pass}"
-${bw_block}
-${masq_block}
-
-quic:
-  initStreamReceiveWindow: 26843545
-  maxStreamReceiveWindow: 26843545
-  initConnReceiveWindow: 67108864
-  maxConnReceiveWindow: 67108864
-EOF
-    ok "Конфигурация записана: $HYSTERIA_CONFIG"
-
-    # ── Сервис ─────────────────────────────────────────────────────
-    systemctl daemon-reload
-    if command -v ufw &>/dev/null; then
-        ufw allow 22/tcp >/dev/null 2>&1            # ssh не теряем
-        ufw allow 80/tcp >/dev/null 2>&1            # открываем 80 ДО enable
-        ufw --force enable >/dev/null 2>&1          # включаем после разрешений
-        ok "UFW: временно открыт порт 80 для ACME"
-    fi
-    systemctl enable --now "$HYSTERIA_SVC"
-
-    # Ждём сертификат — до 60 секунд
-    info "Ждём получения сертификата (до 60 сек)..."
-    local i=0 cert_ok=false
-    while [ $i -lt 60 ]; do
-        if journalctl -u "$HYSTERIA_SVC" -n 30 --no-pager 2>/dev/null | grep -q "server up and running"; then
-            cert_ok=true; break
-        fi
-        # Проверяем на ошибку сертификата чтобы не ждать зря
-        if journalctl -u "$HYSTERIA_SVC" -n 10 --no-pager 2>/dev/null | grep -q "FATAL\|firewall problem\|connection refused"; then
-            break
-        fi
-        sleep 1; i=$((i+1))
-    done
-    command -v ufw &>/dev/null && ufw delete allow 80/tcp >/dev/null 2>&1
-    ok "UFW: порт 80 закрыт"
-    if ! $cert_ok; then
-        warn "Сертификат не получен за 60 сек — проверьте:"
-        warn "  1. Домен $domain указывает на этот IP ($server_ip)"
-        warn "  2. Порт 80 доступен снаружи (не заблокирован провайдером)"
-        warn "  Логи: journalctl -u hysteria-server -n 30"
-        warn "  После исправления: systemctl restart hysteria-server"
-    else
-        ok "Сертификат получен, сервис запущен"
-    fi
-
-    # ── UFW ────────────────────────────────────────────────────────
-    if command -v ufw &>/dev/null; then
-        ufw allow 22/tcp >/dev/null 2>&1
-        if [ "$port_mode" = "2" ]; then
-            ufw allow "${port_hop_start}:${port_hop_end}/udp" >/dev/null 2>&1
-            ok "UFW: открыт диапазон ${port_hop_start}-${port_hop_end}/udp"
-        else
-            ufw allow "${port}/udp" >/dev/null 2>&1
-            ufw allow "${port}/tcp" >/dev/null 2>&1
-            ok "UFW: открыт ${port}/udp и ${port}/tcp"
-        fi
-        ufw --force enable >/dev/null 2>&1
-    fi
-
-    # ── Проверка сертификата ───────────────────────────────────────
-    sleep 3
-    local cert_expiry=""
-    local cert_path="/var/lib/hysteria/acme/certificates/acme-v02.api.letsencrypt.org-directory/${domain}/${domain}.crt"
-    if [ -f "$cert_path" ]; then
-        cert_expiry=$(openssl x509 -enddate -noout -in "$cert_path" 2>/dev/null | cut -d= -f2 || true)
-        [ -n "$cert_expiry" ] && ok "Сертификат действует до: $cert_expiry"
-    fi
-
-    # ── URI и файлы ────────────────────────────────────────────────
-    local uri txt_file yaml_file qr_file
-    local uri_port="$port"
-    [ "$port_mode" = "2" ] && uri_port="${port_hop_start}-${port_hop_end}"
-    uri="hy2://${username}:${pass}@${domain}:${uri_port}?sni=${domain}&alpn=h3&insecure=0&allowInsecure=0#${conn_name}"
-    txt_file="/root/hysteria-${domain}.txt"
-    yaml_file="/root/hysteria-${domain}.yaml"
-    qr_file="/root/hysteria-${domain}.png"
-
-    echo "$uri" > "$txt_file"
-
-    cat > "$yaml_file" << EOF
-proxies:
-  - name: ${conn_name}
-    type: hysteria2
-    server: ${domain}
-    port: ${port}
-$([ "$port_mode" = "2" ] && echo "    ports: ${port_hop_start}-${port_hop_end}")
-    username: ${username}
-    password: "${pass}"
-    sni: ${domain}
-    alpn:
-      - h3
-    skip-cert-verify: false
-$($use_brutal && echo "    up: \"${bw_up} mbps\"" && echo "    down: \"${bw_down} mbps\"")
-
-proxy-groups:
-  - name: Proxy
-    type: select
-    proxies:
-      - ${conn_name}
-
-rules:
-  - MATCH,Proxy
-EOF
-
-    qrencode -o "$qr_file" -s 8 "$uri" 2>/dev/null && ok "QR PNG: $qr_file"
-
-    # ── Итог ───────────────────────────────────────────────────────
-    echo ""
-    echo -e "${BOLD}${GREEN}  ✓ Hysteria2 установлен${NC}"
-    echo ""
-    echo -e "${BOLD}${WHITE}  Конфигурация${NC}"
-    echo -e "${GRAY}  ──────────────────────────────${NC}"
-    echo -e "  ${GRAY}Сервер    ${NC}${domain}:${uri_port}"
-    echo -e "  ${GRAY}Логин     ${NC}${username}"
-    echo -e "  ${GRAY}Пароль    ${NC}${pass}"
-    echo -e "  ${GRAY}Режим     ${NC}$( [ "$port_mode" = "2" ] && echo "Port Hopping ${port_hop_start}-${port_hop_end}" || echo "Один порт" )"
-    echo -e "  ${GRAY}IPv6      ${NC}$( $use_ipv6 && echo "включён" || echo "выключен" )"
-    echo -e "  ${GRAY}Алгоритм  ${NC}$( $use_brutal && echo "Brutal ↓${bw_down}/↑${bw_up} Mbps" || echo "BBR" )"
-    [ -n "$cert_expiry" ] && echo -e "  ${GRAY}SSL до    ${NC}${cert_expiry}"
-    echo ""
-    echo -e "${BOLD}${WHITE}  URI подключения${NC}"
-    echo -e "${GRAY}  ──────────────────────────────${NC}"
-    echo -e "  ${CYAN}${uri}${NC}"
-    echo ""
-    echo -e "${BOLD}${WHITE}  Файлы${NC}"
-    echo -e "${GRAY}  ──────────────────────────────${NC}"
-    echo -e "  ${GRAY}URI          ${NC}${txt_file}"
-    echo -e "  ${GRAY}Clash/Mihomo ${NC}${yaml_file}"
-    echo -e "  ${GRAY}QR PNG       ${NC}${qr_file}"
-    echo ""
-    if command -v qrencode &>/dev/null; then
-        echo -e "${BOLD}${WHITE}  QR-код${NC}"
-        echo -e "${GRAY}  ──────────────────────────────${NC}"
-        qrencode -t ANSIUTF8 "$uri" 2>/dev/null || true
-        echo ""
-    fi
-}
-
-
-# ── Полное удаление Hysteria2 ─────────────────────────────────────
-hysteria_uninstall() {
-    header "Hysteria2 — Полное удаление"
-    echo ""
-    echo -e "  ${YELLOW}Будет удалено:${NC}"
-    echo -e "  ${GRAY}  · сервис hysteria-server${NC}"
-    echo -e "  ${GRAY}  · бинарник /usr/local/bin/hysteria${NC}"
-    echo -e "  ${GRAY}  · конфиг /etc/hysteria/${NC}"
-    echo -e "  ${GRAY}  · данные ACME /var/lib/hysteria/${NC}"
-    echo -e "  ${GRAY}  · URI-файлы /root/hysteria-*.{txt,yaml,png}${NC}"
-    echo -e "  ${GRAY}  · правила ufw для порта Hysteria2${NC}"
-    echo ""
-    warn "Это действие необратимо!"
-    echo ""
-    local yn; read -rp "  Продолжить? Введите YES: " yn < /dev/tty
-    [ "$yn" != "YES" ] && { info "Отменено"; return; }
-
-    # Порт для ufw — читаем до остановки сервиса
-    local hy_port=""
-    [ -f "$HYSTERIA_CONFIG" ] && hy_port=$(hy_get_port 2>/dev/null || true)
-
-    # Домен для удаления файлов
-    local hy_domain=""
-    [ -f "$HYSTERIA_CONFIG" ] && hy_domain=$(hy_get_domain 2>/dev/null || true)
-
-    # Останавливаем и отключаем сервис
-    systemctl stop "$HYSTERIA_SVC" 2>/dev/null || true
-    systemctl disable "$HYSTERIA_SVC" 2>/dev/null || true
-
-    # Удаляем бинарник через официальный деинсталлятор если доступен
-    if command -v hysteria &>/dev/null; then
-        local hy_uninstall
-        hy_uninstall=$(mktemp /tmp/hy2-uninstall.XXXXXX.sh)
-        if curl -fsSL --max-time 15 https://get.hy2.sh/ -o "$hy_uninstall" 2>/dev/null && [ -s "$hy_uninstall" ]; then
-            bash "$hy_uninstall" --remove 2>/dev/null || true
-        fi
-        rm -f "$hy_uninstall"
-        # Если официальный деинсталлятор не сработал — удаляем вручную
-        rm -f /usr/local/bin/hysteria
-    fi
-
-    # Пользователь hysteria (создаётся официальным инсталлятором)
-    userdel -r hysteria 2>/dev/null || true
-    systemctl daemon-reload 2>/dev/null || true
-
-    # Конфиг и данные
-    rm -rf "$HYSTERIA_DIR"
-    rm -rf /var/lib/hysteria
-
-    # URI-файлы
-    [ -n "$hy_domain" ] && rm -f /root/hysteria-${hy_domain}.txt         /root/hysteria-${hy_domain}.yaml         /root/hysteria-${hy_domain}.png         /root/hysteria-${hy_domain}-users.txt
-
-    # UFW
-    if command -v ufw &>/dev/null && [ -n "$hy_port" ]; then
-        ufw delete allow "${hy_port}/udp" >/dev/null 2>&1 || true
-        ufw delete allow "${hy_port}/tcp" >/dev/null 2>&1 || true
-        ok "ufw: правила для порта $hy_port удалены"
-    fi
-
-    ok "Hysteria2 полностью удалена"
-}
-
-# ── Статус ────────────────────────────────────────────────────────
-hysteria_status() {
-    header "Hysteria2 — Статус"
-    if hy_is_installed; then
-        echo -e "  Версия:  $(hysteria version 2>/dev/null | head -1)"
-    fi
-    systemctl --no-pager status "$HYSTERIA_SVC" 2>/dev/null || warn "Сервис не найден"
-    if [ -f "$HYSTERIA_CONFIG" ]; then
-        echo ""
-        echo -e "  ${WHITE}Конфигурация:${NC}"
-        local dom port usr dp
-        dp=$(hy_get_domain_port 2>/dev/null || true)
-        dom="${dp%%:*}"; [ -z "$dom" ] && dom="—"
-        port="${dp##*:}"; [ -z "$port" ] && port="—"
-        # Первый пользователь из userpass (Python для надёжности)
-        usr=$(python3 -c "
-import re
-try:
-    cfg = open('$HYSTERIA_CONFIG').read()
-    m = re.search(r'userpass:\n([ ]{4}([^\n:]+)):', cfg)
-    print(m.group(2).strip() if m else chr(8212))
-except: print(chr(8212))
-" 2>/dev/null || echo "—")
-        echo "    Домен: $dom    Порт: $port    Пользователь: $usr"
-    fi
-}
-
-# ── Логи ──────────────────────────────────────────────────────────
-hysteria_logs() {
-    header "Hysteria2 — Логи"
-    journalctl -u "$HYSTERIA_SVC" -n 80 --no-pager 2>/dev/null || warn "Логи недоступны"
-}
-
-# ── Перезапуск ────────────────────────────────────────────────────
-hysteria_restart() {
-    systemctl restart "$HYSTERIA_SVC" && ok "Hysteria2 перезапущен" || warn "Ошибка перезапуска"
-}
-
-# ── Добавить пользователя ─────────────────────────────────────────
-# ── Удалить пользователя Hysteria2 ───────────────────────────────
-hysteria_delete_user() {
-    header "Hysteria2 — Удалить пользователя"
-    [ -f "$HYSTERIA_CONFIG" ] || { warn "Конфиг не найден"; return 1; }
-
-    # Читаем пользователей из users.json (HTTP auth) или из config.yaml (userpass)
-    local -a users=()
-    local _users_db="/var/lib/hy-webhook/users.json"
-    if [ -f "$_users_db" ] && python3 -c "import json; json.load(open('$_users_db'))" 2>/dev/null; then
-        while IFS= read -r u; do
-            [ -n "$u" ] && users+=("$u")
-        done < <(python3 -c "import json; [print(u) for u in json.load(open('$_users_db'))]" 2>/dev/null)
-    fi
-    # Fallback: читаем из userpass блока в конфиге
-    if [ ${#users[@]} -eq 0 ]; then
-        while IFS= read -r line; do
-            local u; u=$(echo "$line" | sed 's/:.*//' | tr -d ' ')
-            [ -n "$u" ] && users+=("$u")
-        done < <(awk '/^  userpass:/,/^[^ ]/' "$HYSTERIA_CONFIG" | grep -E "^    [^:]+:")
-    fi
-
-    if [ ${#users[@]} -eq 0 ]; then
-        warn "Пользователи не найдены"; return 1
-    fi
-
-    echo -e "  ${WHITE}Выберите пользователя для удаления:${NC}"
-    echo ""
-    local i=1
-    for u in "${users[@]}"; do
-        echo -e "  ${BOLD}${i})${RESET} ${u}"
-        i=$((i+1))
-    done
-    echo -e "  ${BOLD}0)${RESET} Назад"
-    echo ""
-    local ch; read -rp "  Выбор: " ch < /dev/tty
-    [[ "$ch" == "0" ]] && return
-    if ! [[ "$ch" =~ ^[0-9]+$ ]] || [ "$ch" -lt 1 ] || [ "$ch" -gt ${#users[@]} ]; then
-        warn "Неверный выбор"; return 1
-    fi
-
-    local selected="${users[$((ch-1))]}"
-    read -rp "  Удалить '${selected}'? (y/N): " _yn < /dev/tty
-    [[ "${_yn:-N}" =~ ^[yY]$ ]] || { warn "Отменено"; return; }
-
-    # Удаляем строку из userpass (атомарная запись)
-    local _tmp; _tmp=$(mktemp)
-    grep -v "^    ${selected}:" "$HYSTERIA_CONFIG" > "$_tmp" && mv "$_tmp" "$HYSTERIA_CONFIG" || rm -f "$_tmp"
-
-    ok "Пользователь '${selected}' удалён"
-
-    # Перезапускаем сервис
-    systemctl reload "$HYSTERIA_SVC" 2>/dev/null || systemctl restart "$HYSTERIA_SVC"
-    sleep 1
-    ok "Конфиг применён"
-}
-
-hysteria_add_user() {
-    header "Hysteria2 — Добавить пользователя"
-    [ -f "$HYSTERIA_CONFIG" ] || { warn "Конфиг не найден. Сначала установите Hysteria2"; return 1; }
-
-    local new_user new_pass
-    # Показываем существующих пользователей
-    local existing
-    existing=$(awk '/^  userpass:/,/^[^ ]/' "$HYSTERIA_CONFIG" | grep -E "^    [^:]+:" | sed 's/:.*//' | tr -d ' ' | tr '\n' ' ')
-    [ -n "$existing" ] && info "Существующие пользователи: ${existing}"
-
-    # Ввод имени с проверкой на дубликат
-    while true; do
-        read -rp "  Имя пользователя: " new_user < /dev/tty
-        [ -z "$new_user" ] && { warn "Имя не может быть пустым"; continue; }
-        if grep -qE "^    ${new_user}:" "$HYSTERIA_CONFIG" 2>/dev/null; then
-            warn "Пользователь '${new_user}' уже существует."
-            echo ""
-            echo -e "  ${BOLD}1)${RESET} Ввести другое имя"
-            echo -e "  ${BOLD}2)${RESET} Заменить пароль для '${new_user}'"
-            echo -e "  ${BOLD}0)${RESET} Отмена"
-            local ch; read -rp "  Выбор: " ch < /dev/tty
-            case "$ch" in
-                1) continue ;;
-                2)
-                    read -rp "  Новый пароль (пусто = авто): " new_pass < /dev/tty
-                    if [ -z "$new_pass" ]; then
-                        new_pass=$(openssl rand -base64 18 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
-                        info "Сгенерирован пароль: $new_pass"
-                    fi
-                    local _tmp; _tmp=$(mktemp)
-                    sed "s/^    ${new_user}:.*$/    ${new_user}: \"${new_pass}\"/" "$HYSTERIA_CONFIG" > "$_tmp" && mv "$_tmp" "$HYSTERIA_CONFIG" || rm -f "$_tmp"
-                    systemctl reload "$HYSTERIA_SVC" 2>/dev/null || systemctl restart "$HYSTERIA_SVC"
-                    ok "Пароль для '${new_user}' обновлён"
-                    return 0 ;;
-                *) return 0 ;;
-            esac
-        else
-            break
-        fi
-    done
-
     read -rp "  Пароль (пусто = авто): " new_pass < /dev/tty
     if [ -z "$new_pass" ]; then
         new_pass=$(openssl rand -base64 18 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
         info "Сгенерирован пароль: $new_pass"
     fi
 
-    # Вставляем под userpass: (атомарная запись)
-    local _tmp; _tmp=$(mktemp)
-    awk "/^  userpass:/{print; print \"    ${new_user}: \\\"${new_pass}\\\"\"; next}1" \
-        "$HYSTERIA_CONFIG" > "$_tmp" && mv "$_tmp" "$HYSTERIA_CONFIG" || rm -f "$_tmp"
-    systemctl reload "$HYSTERIA_SVC" 2>/dev/null || systemctl restart "$HYSTERIA_SVC"
-    ok "Пользователь '${new_user}' добавлен"
+    local _users_db="/var/lib/hy-webhook/users.json"
+    local _is_http_auth=false
+    grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && _is_http_auth=true
+
+    if $_is_http_auth; then
+        # HTTP auth — пишем MD5 хеш в users.json, Hysteria не перезапускаем
+        local _hash; _hash=$(echo -n "$new_pass" | md5sum | awk '{print $1}')
+        mkdir -p "$(dirname "$_users_db")"
+        local _tmp; _tmp=$(mktemp)
+        python3 << PYEOF2
+import json
+db = "$_users_db"
+try:
+    with open(db) as f: u = json.load(f)
+except Exception: u = {}
+u["${new_user}"] = "$_hash"
+with open("$_tmp", "w") as f: json.dump(u, f, indent=2)
+PYEOF2
+        mv "$_tmp" "$_users_db" && chmod 644 "$_users_db" || rm -f "$_tmp"
+        systemctl restart hy-webhook 2>/dev/null || true
+        ok "Пользователь '${new_user}' добавлен (HTTP auth)"
+        # URI использует MD5 хеш как пароль
+        new_pass="$_hash"
+    else
+        # userpass — пишем в config.yaml
+        local _tmp; _tmp=$(mktemp)
+        awk "/^  userpass:/{print; print \"    ${new_user}: \\"${new_pass}\\"\" ; next}1" \
+            "$HYSTERIA_CONFIG" > "$_tmp" \
+            && mv "$_tmp" "$HYSTERIA_CONFIG" && chmod 644 "$HYSTERIA_CONFIG" \
+            || rm -f "$_tmp"
+        systemctl restart "$HYSTERIA_SVC"
+        ok "Пользователь '${new_user}' добавлен"
+    fi
 
     # Генерируем URI для нового пользователя
     local dom port conn_name uri
