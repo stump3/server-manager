@@ -167,11 +167,52 @@ hysteria_install() {
         info "Сгенерирован пароль: $new_pass"
     fi
 
+    # ── Бинарник + базовый конфиг (первичная установка) ───────────
+    if ! hy_is_installed; then
+        info "Установка бинарника Hysteria2..."
+        local _hy_script; _hy_script=$(mktemp /tmp/hy2-install.XXXXXX.sh)
+        if ! curl -fsSL --max-time 30 https://get.hy2.sh/ -o "$_hy_script" 2>/dev/null; then
+            rm -f "$_hy_script"; err "Не удалось скачать установщик Hysteria2"; return 1
+        fi
+        [ -s "$_hy_script" ] || { rm -f "$_hy_script"; err "Установщик Hysteria2 пустой"; return 1; }
+        local _rc=0; bash "$_hy_script" || _rc=$?; rm -f "$_hy_script"
+        [ $_rc -ne 0 ] && { err "Ошибка установки Hysteria2"; return 1; }
+        ok "Бинарник Hysteria2 установлен"
+    fi
+
+    local _config_created=false
+    if [ ! -f "$HYSTERIA_CONFIG" ]; then
+        info "Создание базового конфига Hysteria2..."
+        local _acme_email_line=""
+        [ -n "$email" ] && _acme_email_line="  email: ${email}"
+        mkdir -p "$(dirname "$HYSTERIA_CONFIG")"
+        cat > "$HYSTERIA_CONFIG" <<EOF
+listen: ${listen_addr}
+
+acme:
+  domains:
+    - ${domain}
+${_acme_email_line}
+  ca: ${ca_name}
+
+auth:
+  type: userpass
+  userpass:
+    ${username}: "${new_pass}"
+EOF
+        chmod 644 "$HYSTERIA_CONFIG"
+        _config_created=true
+    fi
+
     local _users_db="/var/lib/hy-webhook/users.json"
     local _is_http_auth=false
     grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && _is_http_auth=true
 
     if $_is_http_auth; then
+    if $_config_created; then
+        systemctl restart "$HYSTERIA_SVC" 2>/dev/null || true
+        ok "Пользователь '${username}' добавлен"
+    elif $_is_http_auth; then
         # HTTP auth — пишем MD5 хеш в users.json, Hysteria не перезапускаем
         local _hash; _hash=$(echo -n "$new_pass" | md5sum | awk '{print $1}')
         mkdir -p "$(dirname "$_users_db")"
