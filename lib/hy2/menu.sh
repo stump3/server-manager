@@ -331,6 +331,63 @@ SVCEOF
     echo -e "  ${CYAN}systemctl restart hy-merger${NC}"
 }
 
+
+hysteria_publish_sub() {
+    header "Hysteria2 — Опубликовать подписку"
+    [ -f "$HYSTERIA_CONFIG" ] || { warn "Hysteria2 не установлена"; return 1; }
+
+    local dom; dom=$(hy_get_domain)
+    local port; port=$(hy_get_port)
+
+    # Собираем все URI из файлов
+    local -a uris=()
+    for f in "/root/hysteria-${dom}.txt" "/root/hysteria-${dom}-users.txt"; do
+        [ -f "$f" ] || continue
+        while IFS= read -r line; do
+            [[ "$line" =~ ^hy2:// ]] && uris+=("$line")
+        done < "$f"
+    done
+
+    if [ ${#uris[@]} -eq 0 ]; then
+        warn "URI не найдены в /root/hysteria-${dom}*.txt"
+        return 1
+    fi
+
+    info "Найдено URI: ${#uris[@]}"
+    echo ""
+
+    # Кодируем в base64
+    local sub_content; sub_content=$(printf '%s
+' "${uris[@]}" | base64 -w 0)
+
+    # Путь для публикации
+    local sub_dir="/var/www/html/sub"
+    local sub_file="${sub_dir}/${dom}"
+    mkdir -p "$sub_dir"
+    echo "$sub_content" > "$sub_file"
+    chmod 644 "$sub_file"
+    ok "Подписка сохранена: $sub_file"
+
+    # Ищем порт Nginx (не 443, не внутренний)
+    local nginx_port=""
+    [ -f /opt/remnawave/nginx.conf ] &&         nginx_port=$(grep -E "listen [0-9]+" /opt/remnawave/nginx.conf | grep -v "443\|ssl\|127\." |             awk '{print $2}' | tr -d ';' | head -1)
+
+    echo ""
+    echo -e "  ${CYAN}Ссылка на подписку:${NC}"
+    if [ -n "$nginx_port" ]; then
+        echo -e "  ${WHITE}http://${dom}:${nginx_port}/sub/${dom}${NC}"
+    else
+        echo -e "  ${WHITE}http://${dom}/sub/${dom}${NC}"
+        echo -e "  ${GRAY}(убедитесь что Nginx отдаёт /var/www/html/sub/)${NC}"
+    fi
+    echo ""
+    echo -e "  ${GRAY}Содержимое (base64):${NC}"
+    echo "  $sub_content" | head -c 80
+    echo "..."
+    echo ""
+    read -rp "  Enter для возврата..." < /dev/tty
+}
+
 hysteria_menu() {
     # Загружаем данные один раз при входе (hy_get_domain_port — один проход файла)
     local ver dom port dp
