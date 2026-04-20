@@ -183,8 +183,34 @@ else
     fi
 fi
 
-read -rp "  Название подключения [🇩🇪 Germany Hysteria2]: " HY_NAME < /dev/tty
-HY_NAME="${HY_NAME:-🇩🇪 Germany Hysteria2}"
+get_saved_hy_name() {
+    local env_file="/etc/hy-webhook.env"
+    local line value
+
+    [ -f "$env_file" ] || return 0
+    line=$(grep -m1 '^HY_NAME=' "$env_file" 2>/dev/null || true)
+    [ -n "$line" ] || return 0
+
+    value="${line#HY_NAME=}"
+    value="$(printf '%s' "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+    # Поддерживаем оба формата:
+    # HY_NAME=ger-hy2
+    # HY_NAME="ger hy2"
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value:1:${#value}-2}"
+        value="${value//\\\"/\"}"
+        value="${value//\\\\/\\}"
+    fi
+
+    printf '%s' "$value"
+}
+
+DEFAULT_HY_NAME="$(get_saved_hy_name)"
+DEFAULT_HY_NAME="${DEFAULT_HY_NAME:-🇩🇪 Germany Hysteria2}"
+
+read -rp "  Название подключения [${DEFAULT_HY_NAME}]: " HY_NAME < /dev/tty
+HY_NAME="${HY_NAME:-$DEFAULT_HY_NAME}"
 
 # API токен Remnawave для GET /uri/:shortUuid в hy-webhook
 # Создайте в панели: Settings → API Tokens → Create (опционально)
