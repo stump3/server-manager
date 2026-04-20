@@ -193,10 +193,17 @@ PYEOF2
     else
         # userpass — пишем в config.yaml
         local _tmp; _tmp=$(mktemp)
-        awk "/^  userpass:/{print; print \"    ${username}: \\"${new_pass}\\"\" ; next}1" \
-            "$HYSTERIA_CONFIG" > "$_tmp" \
-            && mv "$_tmp" "$HYSTERIA_CONFIG" && chmod 644 "$HYSTERIA_CONFIG" \
-            || rm -f "$_tmp"
+        awk -v user="$username" -v pass="$new_pass" '
+        /^  userpass:/ {
+            print
+            print "    " user ": \"" pass "\""
+            next
+        }
+        1
+        ' "$HYSTERIA_CONFIG" > "$_tmp" && \
+        mv "$_tmp" "$HYSTERIA_CONFIG" && \
+        chmod 644 "$HYSTERIA_CONFIG" || \
+        rm -f "$_tmp"
         systemctl restart "$HYSTERIA_SVC"
         ok "Пользователь '${username}' добавлен"
     fi
