@@ -14,7 +14,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Версия обновляется автоматически через GitHub Actions (update-version.yml)
 # при каждом push в main. Не редактировать вручную.
-SCRIPT_VERSION_STATIC="v2604.202144"
+SCRIPT_VERSION_STATIC="v2604.202159"
 SCRIPT_VERSION="$SCRIPT_VERSION_STATIC"
 
 # ═══════════════════════════════════════════════════════════════════
