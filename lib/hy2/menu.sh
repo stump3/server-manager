@@ -434,7 +434,7 @@ hysteria_submenu_manage() {
         echo -e "  ${BOLD}2)${RESET} 📋  Логи"
         echo -e "  ${BOLD}3)${RESET} 🔄  Перезапустить"
         echo -e "  ${BOLD}4)${RESET} 🗑️  Удалить полностью"
-        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo -e "  ${BOLD}0)${RESET}  ◀️ Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
