@@ -73,7 +73,23 @@ hy_resolve_a_via_resolver() {
 
 hy_get_domain() {
     local _d=""
-    [ -f "$HYSTERIA_CONFIG" ] && _d=$(awk '/domains:/{f=1;next} f&&/^  - /{gsub(/[[:space:]]*-[[:space:]]*/,""); print; exit}' "$HYSTERIA_CONFIG" 2>/dev/null)
+    [ -f "$HYSTERIA_CONFIG" ] && _d=$(
+        awk '
+            /^[[:space:]]*domains:[[:space:]]*$/ { f=1; next }
+            f {
+                if ($0 ~ /^[[:space:]]*-[[:space:]]*/) {
+                    line=$0
+                    sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                    gsub(/^["'\''"]|["'\''"]$/, "", line)
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                    print line
+                    exit
+                }
+                if ($0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:]]/) { exit }
+            }
+        ' "$HYSTERIA_CONFIG" 2>/dev/null
+    )
     if [ -z "$_d" ]; then
         _d=$(grep "^HY_DOMAIN=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2 | tr -d '"')
     fi
@@ -82,15 +98,19 @@ hy_get_domain() {
 
 hy_get_port() {
     [ -f "$HYSTERIA_CONFIG" ] || { echo ""; return 1; }
-    awk '/^listen:/{match($0,/:[0-9]+/); print substr($0,RSTART+1,RLENGTH-1); exit}' "$HYSTERIA_CONFIG"
+    local _listen_line _port
+    _listen_line=$(grep -m1 -E '^[[:space:]]*listen:[[:space:]]*' "$HYSTERIA_CONFIG" 2>/dev/null || true)
+    _port=$(
+        printf '%s\n' "$_listen_line" \
+            | sed -nE 's/^[[:space:]]*listen:[[:space:]]*["'"'"']?.*:([0-9]+)(,[0-9]+-[0-9]+)?["'"'"']?[[:space:]]*$/\1/p' \
+            | head -1
+    )
+    echo "${_port}"
 }
 
 hy_get_domain_port() {
-    [ -f "$HYSTERIA_CONFIG" ] || { echo ":"; return 1; }
-    awk '
-        /^listen:/{match($0,/:[0-9]+/); port=substr($0,RSTART+1,RLENGTH-1)}
-        /domains:/{f=1; next}
-        f&&/^  - /{gsub(/[[:space:]]*-[[:space:]]*/,""); dom=$0; f=0}
-        END{print dom ":" port}
-    ' "$HYSTERIA_CONFIG"
+    local _dom _port
+    _dom=$(hy_get_domain)
+    _port=$(hy_get_port)
+    echo "${_dom}:${_port}"
 }
