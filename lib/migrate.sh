@@ -288,7 +288,7 @@ migrate_menu() {
         echo -e "  ${BOLD}3)${RESET} 🚀  Перенести Hysteria2"
         echo -e "  ${BOLD}4)${RESET} 📦  Перенести всё (Panel + MTProxy + Hysteria2)"
         echo -e "  ${BOLD}5)${RESET} 💾  Бэкап / Восстановление (backup-restore)"
-        echo -e "  ${BOLD}0)${RESET} ◀️  Назад"
+        echo -e "  ${BOLD}0)${RESET}  ◀️ Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
