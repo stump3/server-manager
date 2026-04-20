@@ -6,6 +6,12 @@ hy_is_installed() { command -v hysteria &>/dev/null; }
 
 hy_is_running() { systemctl is-active --quiet hysteria-server 2>/dev/null; }
 
+get_hysteria_version() {
+    hysteria version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 \
+        || hysteria version 2>/dev/null | awk 'NR==1{print $NF}' | head -1
+}
+
+
 
 hy_port_is_free() {
     local p="$1"
@@ -76,13 +82,13 @@ hy_get_domain() {
 
 hy_get_port() {
     [ -f "$HYSTERIA_CONFIG" ] || { echo ""; return 1; }
-    awk '/^listen:/{match($0,/[0-9]+$/); print substr($0,RSTART,RLENGTH); exit}' "$HYSTERIA_CONFIG"
+    awk '/^listen:/{match($0,/:[0-9]+/); print substr($0,RSTART+1,RLENGTH-1); exit}' "$HYSTERIA_CONFIG"
 }
 
 hy_get_domain_port() {
     [ -f "$HYSTERIA_CONFIG" ] || { echo ":"; return 1; }
     awk '
-        /^listen:/{match($0,/[0-9]+$/); port=substr($0,RSTART,RLENGTH)}
+        /^listen:/{match($0,/:[0-9]+/); port=substr($0,RSTART+1,RLENGTH-1)}
         /domains:/{f=1; next}
         f&&/^  - /{gsub(/[[:space:]]*-[[:space:]]*/,""); dom=$0; f=0}
         END{print dom ":" port}
