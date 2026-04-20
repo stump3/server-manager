@@ -47,7 +47,13 @@ server-manager/
 │   ├── common.sh               # Утилиты, цвета, главное меню, SSH-хелперы
 │   ├── panel.sh                # Remnawave Panel + Extensions
 │   ├── telemt.sh               # MTProxy (telemt)
-│   ├── hysteria.sh             # Hysteria2 + интеграция с Remnawave
+│   ├── hysteria.sh             # Loader: подключает модули из lib/hy2/
+│   ├── hy2/
+│   │   ├── core.sh             # Утилиты, проверки, чтение config.yaml
+│   │   ├── install.sh          # hysteria_install
+│   │   ├── users.sh            # add/delete/show links
+│   │   ├── integration.sh      # Интеграция с Remnawave
+│   │   └── menu.sh             # Меню, migrate, merge-sub, submenu_*
 │   └── migrate.sh              # Перенос сервисов между серверами
 ├── integrations/
 │   ├── hy-sub-install.sh       # Установка интеграции Hysteria2 → Remnawave
@@ -204,6 +210,15 @@ use_middle_proxy = true   # обязательно при ad_tag
 ---
 
 ## Hysteria2
+
+> Начиная с модульной версии, `lib/hysteria.sh` — это loader, а основная логика вынесена в `lib/hy2/*.sh`.
+> Это упрощает поддержку и командную разработку без изменения внешнего интерфейса (`_load_module hysteria`).
+
+### Как это работает при `curl | bash`
+
+- `server-manager.sh` загружает `lib/hysteria.sh` через `_load_module hysteria`.
+- Loader `lib/hysteria.sh` последовательно подключает `lib/hy2/core.sh`, `install.sh`, `users.sh`, `integration.sh`, `menu.sh`.
+- Для удалённого запуска используется универсальный загрузчик `_sm_source_file`, который умеет скачивать не только `lib/*.sh`, но и пути в подпапках (`lib/hy2/*.sh`).
 
 ### Установка
 
