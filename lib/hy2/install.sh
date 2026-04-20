@@ -327,9 +327,12 @@ PYEOF2
     ch="${ch:-$i}"
     if [[ "$ch" =~ ^[0-9]+$ ]] && [ "$ch" -ge 1 ] && [ "$ch" -lt "$i" ]; then
         conn_name="${unique_names[$((ch-1))]}"
-    else
+    elif [[ "$ch" =~ ^[0-9]+$ ]]; then
         read -rp "  Новое название [${username}]: " conn_name < /dev/tty
         conn_name="${conn_name:-$username}"
+    else
+        # Разрешаем ввести название напрямую в первом вопросе без повторного prompt.
+        conn_name="$ch"
     fi
     uri="hy2://${username}:${new_pass}@${dom}:${port}?sni=${dom}&alpn=h3&insecure=0&allowInsecure=0#${conn_name}"
     echo ""
