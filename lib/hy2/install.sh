@@ -208,7 +208,6 @@ EOF
     local _is_http_auth=false
     grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && _is_http_auth=true
 
-    if $_is_http_auth; then
     if $_config_created; then
         systemctl restart "$HYSTERIA_SVC" 2>/dev/null || true
         ok "Пользователь '${username}' добавлен"
