@@ -324,11 +324,16 @@ step "Переключение Hysteria2 в HTTP auth"
 
 _HY_CFG=/etc/hysteria/config.yaml
 _CURRENT_AUTH=$(grep -A2 "^auth:" "$_HY_CFG" 2>/dev/null | grep "type:" | awk "{print \$2}" || echo "")
+_USERPASS_SNAPSHOT="/tmp/hy2-userpass-snapshot.yaml"
+rm -f "$_USERPASS_SNAPSHOT"
 
 if [ "$_CURRENT_AUTH" = "http" ]; then
     ok "Hysteria2 уже в HTTP auth режиме"
 else
     info "Переключаем в HTTP auth (без перезапуска при смене пользователей)..."
+    # Снимок нужен, чтобы после переключения auth не потерять userpass-учётки
+    # при первой установке интеграции.
+    cp -f "$_HY_CFG" "$_USERPASS_SNAPSHOT" 2>/dev/null || true
     python3 - << PYEOF2
 import re
 cfg_path = "/etc/hysteria/config.yaml"
@@ -353,7 +358,9 @@ cat > /tmp/hy_patch_sync.py << 'PYEOF'
 import re, json, os, sys
 HYSTERIA_CONFIG = "/etc/hysteria/config.yaml"
 USERS_DB = "/var/lib/hy-webhook/users.json"
-with open(HYSTERIA_CONFIG) as f:
+SNAPSHOT = "/tmp/hy2-userpass-snapshot.yaml"
+source_cfg = SNAPSHOT if os.path.exists(SNAPSHOT) else HYSTERIA_CONFIG
+with open(source_cfg) as f:
     config = f.read()
 users = {}
 in_userpass = False
@@ -387,6 +394,7 @@ for u in users:
     print(f"  - {u}")
 PYEOF
 python3 /tmp/hy_patch_sync.py
+rm -f "$_USERPASS_SNAPSHOT" 2>/dev/null || true
 ok "Пользователи синхронизированы"
 
 # ── Шаг 3: Вебхуки в панели ──────────────────────────────────────
