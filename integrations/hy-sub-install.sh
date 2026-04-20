@@ -342,7 +342,7 @@ for line in config.split('\n'):
         elif line.strip() and not line.startswith(' '):
             break
 if not users:
-    # В HTTP auth секция userpass может отсутствовать — это штатно.
+    # В HTTP auth режиме секция userpass может отсутствовать — это штатно.
     try:
         with open(USERS_DB) as f:
             existing = json.load(f)
@@ -504,7 +504,7 @@ for i in $(seq 1 10); do
 done
 systemctl is-active --quiet remna-sub-injector     && ok "remna-sub-injector запущен — порт 3020"     || err "remna-sub-injector не запустился — journalctl -u remna-sub-injector -n 20"
 
-# ── Веб-сервер: sub домен → injector :3020 ───────────────────────
+# ── nginx: sub домен → injector :3020 ────────────────────────────
 step "Обновление веб-сервера"
 
 if [ -f /opt/remnawave/Caddyfile ]; then
