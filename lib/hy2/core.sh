@@ -102,7 +102,7 @@ hy_get_port() {
     _listen_line=$(grep -m1 -E '^[[:space:]]*listen:[[:space:]]*' "$HYSTERIA_CONFIG" 2>/dev/null || true)
     _port=$(
         printf '%s\n' "$_listen_line" \
-            | sed -nE 's/^[[:space:]]*listen:[[:space:]]*["'"'"']?.*:([0-9]+)(,[0-9]+-[0-9]+)?["'"'"']?[[:space:]]*$/\1/p' \
+            | sed -nE 's/^[[:space:]]*listen:[[:space:]]*["'"'"']?.*:([0-9]+)(,[0-9]+-[0-9]+)?["'"'"']?([[:space:]]*#.*)?[[:space:]]*$/\1/p' \
             | head -1
     )
     echo "${_port}"
