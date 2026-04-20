@@ -86,34 +86,42 @@ declare -A _MODULE_SHA256=(
 )
 
 _load_module() {
-    local mod="$1"
-    local local_path="${SCRIPT_DIR}/lib/${mod}.sh"
+    _sm_source_file "lib/$1.sh"
+}
+
+_sm_source_file() {
+    local rel_path="$1"
+    local mod_key="${rel_path#lib/}"
+    mod_key="${mod_key%.sh}"
+    local local_path="${SCRIPT_DIR}/${rel_path}"
+
     if [ -n "$SCRIPT_DIR" ] && [ -f "$local_path" ]; then
         # shellcheck source=/dev/null
         source "$local_path"
-    else
-        local tmp; tmp=$(mktemp)
-        if ! curl -fsSL "${REPO_RAW}/lib/${mod}.sh" -o "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
-            rm -f "$tmp"
-            echo "Ошибка загрузки модуля: ${mod}.sh"; exit 1
-        fi
-        # Проверяем SHA256 если задан
-        local expected_sha="${_MODULE_SHA256[$mod]:-}"
-        if [ -n "$expected_sha" ]; then
-            local actual_sha; actual_sha=$(sha256sum "$tmp" | awk '{print $1}')
-            if [ "$actual_sha" != "$expected_sha" ]; then
-                rm -f "$tmp"
-                echo "ОШИБКА: SHA256 модуля ${mod}.sh не совпадает!"
-                echo "  Ожидалось: $expected_sha"
-                echo "  Получено:  $actual_sha"
-                echo "  Возможна компрометация репозитория. Выполнение прервано."
-                exit 1
-            fi
-        fi
-        # shellcheck source=/dev/null
-        source "$tmp"
-        rm -f "$tmp"
+        return 0
     fi
+
+    local tmp; tmp=$(mktemp)
+    if ! curl -fsSL "${REPO_RAW}/${rel_path}" -o "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        echo "Ошибка загрузки модуля: ${rel_path}"; exit 1
+    fi
+    # Проверяем SHA256 если задан
+    local expected_sha="${_MODULE_SHA256[$mod_key]:-}"
+    if [ -n "$expected_sha" ]; then
+        local actual_sha; actual_sha=$(sha256sum "$tmp" | awk '{print $1}')
+        if [ "$actual_sha" != "$expected_sha" ]; then
+            rm -f "$tmp"
+            echo "ОШИБКА: SHA256 модуля ${rel_path} не совпадает!"
+            echo "  Ожидалось: $expected_sha"
+            echo "  Получено:  $actual_sha"
+            echo "  Возможна компрометация репозитория. Выполнение прервано."
+            exit 1
+        fi
+    fi
+    # shellcheck source=/dev/null
+    source "$tmp"
+    rm -f "$tmp"
 }
 
 _load_module common
