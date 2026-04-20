@@ -224,6 +224,7 @@ hysteria_install() {
 listen: ${listen_addr}
 
 acme:
+  type: http
   domains:
     - ${domain}
 ${_acme_email_line}
@@ -243,11 +244,18 @@ EOF
     grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && _is_http_auth=true
 
     if $_config_created; then
+        systemctl enable "$HYSTERIA_SVC" 2>/dev/null || true
         systemctl restart "$HYSTERIA_SVC" 2>/dev/null || true
         ok "Пользователь '${username}' добавлен"
     elif $_is_http_auth; then
-        # HTTP auth — пишем MD5 хеш в users.json, Hysteria не перезапускаем
-        local _hash; _hash=$(echo -n "$new_pass" | md5sum | awk '{print $1}')
+        # HTTP auth — пароль = sha256(username:WEBHOOK_SECRET)[:32]
+        # тот же алгоритм что gen_password() в hy-webhook.py
+        local _secret; _secret=$(grep "^WEBHOOK_SECRET=" /etc/hy-webhook.env 2>/dev/null | cut -d= -f2)
+        local _hash
+        if [ -n "$_secret" ]; then
+            _hash=$(python3 -c "import hashlib; print(hashlib.sha256(f'${username}:$_secret'.encode()).hexdigest()[:32])" 2>/dev/null)
+        fi
+        [ -z "$_hash" ] && _hash="$new_pass"
         mkdir -p "$(dirname "$_users_db")"
         local _tmp; _tmp=$(mktemp)
         python3 << PYEOF2
@@ -332,4 +340,18 @@ PYEOF2
     qrencode -t ANSIUTF8 "$uri" 2>/dev/null || true
     echo "$uri" >> "/root/hysteria-${dom}-users.txt"
     ok "URI сохранён: /root/hysteria-${dom}-users.txt"
+
+    # ── UFW ────────────────────────────────────────────────────────
+    if command -v ufw &>/dev/null; then
+        ufw allow 22/tcp >/dev/null 2>&1
+        if [ "${port_mode:-1}" = "2" ]; then
+            ufw allow "${port_hop_start}:${port_hop_end}/udp" >/dev/null 2>&1
+            ok "UFW: открыт диапазон ${port_hop_start}-${port_hop_end}/udp"
+        else
+            ufw allow "${port}/udp" >/dev/null 2>&1
+            ufw allow "${port}/tcp" >/dev/null 2>&1
+            ok "UFW: открыт ${port}/udp и ${port}/tcp"
+        fi
+        ufw --force enable >/dev/null 2>&1
+    fi
 }
