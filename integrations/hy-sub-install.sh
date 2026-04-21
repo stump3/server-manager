@@ -429,7 +429,7 @@ fi
 
 ok "Вебхуки включены в .env"
 info "WEBHOOK_URL установлен: http://${WEBHOOK_GATEWAY_IP}:8766/webhook"
-cd /opt/remnawave && docker compose restart remnawave >/dev/null 2>&1
+cd /opt/remnawave && docker compose up -d --force-recreate remnawave >/dev/null 2>&1
 ok "Remnawave перезапущена"
 
 fi # DO_WEBHOOK
