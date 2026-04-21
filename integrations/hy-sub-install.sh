@@ -443,7 +443,7 @@ ok "Remnawave перезапущена"
         _TRAFFIC_SECRET=$(grep -A3 "^trafficStats:" /etc/hysteria/config.yaml | grep "secret:" | awk '{print $2}' || true)
         echo -e "  ${GREEN}●${NC} trafficStats обнаружен в конфиге Hysteria2"
         echo ""
-        enable_agg
+        enable_agg=""
         read -rp "  Включить агрегацию трафика с панелью? (Y/n): " enable_agg < /dev/tty
         if [[ "${enable_agg:-Y}" =~ ^[Yy]$ ]]; then
             # psycopg2
