@@ -256,6 +256,22 @@ EOF
     local _is_http_auth=false
     grep -q "type: http" "$HYSTERIA_CONFIG" 2>/dev/null && _is_http_auth=true
 
+    # ── UFW ────────────────────────────────────────────────────────
+    if command -v ufw &>/dev/null; then
+        ufw allow 22/tcp >/dev/null 2>&1
+        ufw allow 80/tcp >/dev/null 2>&1
+        if [ "${port_mode:-1}" = "2" ]; then
+            ufw allow "${port_hop_start}:${port_hop_end}/udp" >/dev/null 2>&1
+            ok "UFW: открыт диапазон ${port_hop_start}-${port_hop_end}/udp"
+        else
+            ufw allow "${port}/udp" >/dev/null 2>&1
+            ufw allow "${port}/tcp" >/dev/null 2>&1
+            ok "UFW: открыт ${port}/udp и ${port}/tcp"
+        fi
+        ufw --force enable >/dev/null 2>&1
+        ok "UFW: открыт 80/tcp для ACME HTTP-01"
+    fi
+
     if true; then
         systemctl enable "$HYSTERIA_SVC" 2>/dev/null || true
         systemctl restart "$HYSTERIA_SVC" 2>/dev/null || true
@@ -417,19 +433,6 @@ TRAFFICEOF
         info "Сбор трафика пропущен"
     fi
 
-    # ── UFW ────────────────────────────────────────────────────────
-    if command -v ufw &>/dev/null; then
-        ufw allow 22/tcp >/dev/null 2>&1
-        if [ "${port_mode:-1}" = "2" ]; then
-            ufw allow "${port_hop_start}:${port_hop_end}/udp" >/dev/null 2>&1
-            ok "UFW: открыт диапазон ${port_hop_start}-${port_hop_end}/udp"
-        else
-            ufw allow "${port}/udp" >/dev/null 2>&1
-            ufw allow "${port}/tcp" >/dev/null 2>&1
-            ok "UFW: открыт ${port}/udp и ${port}/tcp"
-        fi
-        ufw --force enable >/dev/null 2>&1
-    fi
 }
 
 hysteria_uninstall() {
