@@ -372,6 +372,51 @@ PYEOF2
     echo "$uri" >> "/root/hysteria-${dom}-users.txt"
     ok "URI сохранён: /root/hysteria-${dom}-users.txt"
 
+    # ── Сбор трафика (trafficStats) ──────────────────────────────
+    echo ""
+    echo -e "  ${WHITE}Сбор статистики трафика:${NC}"
+    echo -e "  ${GRAY}Позволяет видеть трафик по каждому пользователю${NC}"
+    echo -e "  ${GRAY}и агрегировать его с панелью Remnawave${NC}"
+    echo ""
+    local enable_traffic
+    read -rp "  Включить сбор трафика? (Y/n): " enable_traffic < /dev/tty
+    if [[ "${enable_traffic:-Y}" =~ ^[Yy]$ ]]; then
+        local traffic_secret=""
+        read -rp "  Секрет trafficStats (Enter — сгенерировать): " traffic_secret < /dev/tty
+        if [ -z "$traffic_secret" ]; then
+            traffic_secret=$(openssl rand -hex 16)
+            info "Сгенерирован секрет: $traffic_secret"
+        fi
+        # Убираем старую секцию trafficStats если была
+        python3 -c "
+import re
+with open('/etc/hysteria/config.yaml') as f: cfg = f.read()
+cfg = re.sub(r'\ntrafficStats:.*', '', cfg, flags=re.DOTALL)
+with open('/etc/hysteria/config.yaml', 'w') as f: f.write(cfg.rstrip())
+" 2>/dev/null || true
+        # Добавляем секцию
+        local _ts="$traffic_secret"
+        cat >> /etc/hysteria/config.yaml << TRAFFICEOF
+
+trafficStats:
+  listen: 127.0.0.1:9999
+  secret: ${_ts}
+TRAFFICEOF
+        systemctl restart "${HYSTERIA_SVC:-hysteria-server}" 2>/dev/null || true
+        ok "trafficStats включён: 127.0.0.1:9999"
+        info "Секрет: $traffic_secret"
+        info "Агрегация с Remnawave — настраивается через: Подписка → Интеграция с Remnawave"
+        # Сохраняем секрет в hy-webhook.env если он уже существует
+        if [ -f /etc/hy-webhook.env ]; then
+            sed -i '/^HY_TRAFFIC_SECRET=/d;/^HY_TRAFFIC_PORT=/d' /etc/hy-webhook.env
+            printf 'HY_TRAFFIC_SECRET=%s\nHY_TRAFFIC_PORT=9999\n' "$traffic_secret" >> /etc/hy-webhook.env
+            systemctl is-active --quiet hy-webhook 2>/dev/null && systemctl restart hy-webhook || true
+            ok "Секрет сохранён в /etc/hy-webhook.env"
+        fi
+    else
+        info "Сбор трафика пропущен"
+    fi
+
     # ── UFW ────────────────────────────────────────────────────────
     if command -v ufw &>/dev/null; then
         ufw allow 22/tcp >/dev/null 2>&1
