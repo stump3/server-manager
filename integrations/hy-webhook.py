@@ -363,7 +363,7 @@ def write_traffic_to_db(deltas: dict):
             # Общий счётчик ноды — одним запросом после цикла
             if HY_NODE_ID and total_delta > 0:
                 cur.execute("""
-                    UPDATE nodes SET traffic_used_bytes = traffic_used_bytes + %s
+                    UPDATE nodes SET traffic_used_bytes = COALESCE(traffic_used_bytes, 0) + %s
                     WHERE id = %s
                 """, (total_delta, HY_NODE_ID))
         conn.close()
