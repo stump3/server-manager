@@ -432,6 +432,47 @@ info "WEBHOOK_URL установлен: http://${WEBHOOK_GATEWAY_IP}:8766/webhoo
 cd /opt/remnawave && docker compose up -d --force-recreate remnawave >/dev/null 2>&1
 ok "Remnawave перезапущена"
 
+# ── Агрегация трафика Hysteria2 → Remnawave ──────────────────────
+    echo ""
+    echo -e "  ${BOLD}Агрегация трафика Hysteria2 → Remnawave${NC}"
+    echo -e "  ${GRAY}Трафик пользователей Hysteria2 будет виден в панели${NC}"
+    echo ""
+
+    # Проверяем что trafficStats настроен в Hysteria2
+    if grep -q "^trafficStats:" /etc/hysteria/config.yaml 2>/dev/null; then
+        _TRAFFIC_SECRET=$(grep -A3 "^trafficStats:" /etc/hysteria/config.yaml | grep "secret:" | awk '{print $2}' || true)
+        echo -e "  ${GREEN}●${NC} trafficStats обнаружен в конфиге Hysteria2"
+        echo ""
+        local enable_agg
+        read -rp "  Включить агрегацию трафика с панелью? (Y/n): " enable_agg < /dev/tty
+        if [[ "${enable_agg:-Y}" =~ ^[Yy]$ ]]; then
+            # psycopg2
+            if ! python3 -c "import psycopg2" 2>/dev/null; then
+                info "Устанавливаем psycopg2..."
+                pip3 install psycopg2-binary --break-system-packages 2>/dev/null                     || apt-get install -y python3-psycopg2 2>/dev/null                     || warn "Не удалось установить psycopg2 — установите вручную: pip install psycopg2-binary"
+            fi
+            # Добавляем переменные в hy-webhook.env (удаляем старые)
+            sed -i '/^HY_TRAFFIC_SECRET=/d;/^HY_TRAFFIC_PORT=/d;/^DATABASE_URL=/d;/^TRAFFIC_POLL_INTERVAL=/d' /etc/hy-webhook.env
+            cat >> /etc/hy-webhook.env << TRAFFICEOF
+HY_TRAFFIC_SECRET=${_TRAFFIC_SECRET}
+HY_TRAFFIC_PORT=9999
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:6767/postgres
+TRAFFIC_POLL_INTERVAL=60
+TRAFFICEOF
+            systemctl restart hy-webhook
+            sleep 2
+            ok "Агрегация трафика настроена"
+            info "Трафик обновляется каждые 60 секунд"
+            info "Проверить: journalctl -u hy-webhook -f"
+        else
+            info "Агрегация пропущена"
+        fi
+    else
+        echo -e "  ${GRAY}○${NC} trafficStats не найден в конфиге Hysteria2"
+        echo -e "  ${GRAY}  Включите через: Hysteria2 → Установка, затем вернитесь сюда${NC}"
+        info "Агрегация пропущена"
+    fi
+
 fi # DO_WEBHOOK
 
 
