@@ -202,6 +202,8 @@ td:first-child{font-family:var(--mono);font-size:12.5px;color:var(--cyan);white-
     <a href="#mtproxy" class="nav-link"><span class="nav-dot" style="background:#a78bfa"></span> MTProxy</a>
     <a href="#hysteria" class="nav-link"><span class="nav-dot" style="background:#22d3ee"></span> Hysteria2</a>
     <a href="#integration" class="nav-link"><span class="nav-dot" style="background:#22d3ee"></span> Интеграция hy2</a>
+    <a href="#traffic" class="nav-link"><span class="nav-dot" style="background:#22c55e"></span> Учёт трафика</a>
+    <a href="#traffic" class="nav-link"><span class="nav-dot" style="background:#22c55e"></span> Учёт трафика</a>
     <a href="#migrate" class="nav-link"><span class="nav-dot" style="background:#f59e0b"></span> Перенос</a>
   </div>
   <div class="nav-group">
@@ -699,6 +701,106 @@ map <span class="cs">"$auth_cookie$auth_query"</span> $authorized {
 <span class="tw">  0)</span><span class="td">  ◀️   Назад</span>
     </div>
   </div>
+
+<div class="divider"></div>
+
+<!-- УЧЁТ ТРАФИКА -->
+<section class="section" id="traffic">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2)">📊</div>
+    <div><div class="sec-title">Учёт трафика Hysteria2</div></div>
+  </div>
+
+  <p>Трафик Hysteria2 агрегируется в БД Remnawave каждые 60 секунд. Панель показывает суммарное потребление — VLESS + Hysteria2 вместе. При отключении пользователя активные сессии разрываются мгновенно через <code>/kick</code>.</p>
+
+  <div class="alert al-info">
+    <span class="alert-icon">📍</span>
+    <div>Включается при установке Hysteria2, либо через: <strong>Hysteria2 → Подписка → Интеграция с Remnawave → Установить</strong></div>
+  </div>
+
+  <h3>Схема работы</h3>
+  <div class="code-block">
+    <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">flow</span></div>
+    <pre><span class="tg">Hysteria2</span> trafficStats API (:9999)
+    ↓  GET /traffic?clear=1  каждые 60с
+    ↓  {username: {tx, rx}}  →  delta = tx + rx
+<span class="tb">hy-webhook</span> traffic_poller (фоновый поток)
+    ↓  _save_pending()  — буфер на случай краша
+    ↓  psycopg2 → PostgreSQL :6767
+    ↓  UPDATE user_traffic SET used_traffic_bytes += delta
+    ↓  _delete_pending()
+<span class="tp">Remnawave Panel</span>  — показывает обновлённый трафик
+
+<span class="tg">Remnawave</span> user.deleted / disabled / expired
+    ↓  handle_user_deleted() + POST /kick
+    ↓  <span class="tg">Hysteria2</span> разрывает сессии немедленно</pre>
+  </div>
+
+  <h3>Переменные окружения /etc/hy-webhook.env</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Переменная</th><th>Дефолт</th><th>Описание</th></tr></thead>
+      <tbody>
+        <tr><td><code>HY_TRAFFIC_PORT</code></td><td>9999</td><td>Порт trafficStats API</td></tr>
+        <tr><td><code>HY_TRAFFIC_SECRET</code></td><td>—</td><td>Секрет для Authorization заголовка</td></tr>
+        <tr><td><code>DATABASE_URL</code></td><td>—</td><td>DSN PostgreSQL. <strong>Пустой = поллер отключён</strong></td></tr>
+        <tr><td><code>TRAFFIC_POLL_INTERVAL</code></td><td>60</td><td>Интервал опроса в секундах</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="alert al-warn">
+    <span class="alert-icon">⚠️</span>
+    <div>Если <code>DATABASE_URL</code> не задан — поллер завершается сразу: <code>DATABASE_URL не задан — учёт трафика отключён</code>. На основную работу не влияет.</div>
+  </div>
+
+  <h3>Конфиг Hysteria2 — секция trafficStats</h3>
+  <div class="code-block">
+    <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">yaml</span></div>
+    <pre>trafficStats:
+  listen: 127.0.0.1:9999
+  secret: &lt;секрет&gt;</pre>
+  </div>
+  <p>Добавляется автоматически при установке Hysteria2. Секрет генерируется как <code>openssl rand -hex 16</code> и сохраняется в <code>/etc/hy-webhook.env</code>.</p>
+
+  <h3>Ручное включение</h3>
+  <div class="code-block">
+    <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">bash</span></div>
+    <pre><span class="cm"># 1. Добавить секцию в config.yaml и перезапустить</span>
+printf '\ntrafficStats:\n  listen: 127.0.0.1:9999\n  secret: my-secret\n' \
+    >> /etc/hysteria/config.yaml
+systemctl restart hysteria-server
+
+<span class="cm"># 2. Установить psycopg2</span>
+pip3 install psycopg2-binary --break-system-packages
+
+<span class="cm"># 3. Добавить переменные и перезапустить hy-webhook</span>
+sed -i '/^HY_TRAFFIC_SECRET=/d;/^DATABASE_URL=/d;/^TRAFFIC_POLL_INTERVAL=/d' /etc/hy-webhook.env
+printf 'HY_TRAFFIC_SECRET=my-secret\nHY_TRAFFIC_PORT=9999\nDATABASE_URL=postgresql://postgres:postgres@127.0.0.1:6767/postgres\nTRAFFIC_POLL_INTERVAL=60\n' >> /etc/hy-webhook.env
+systemctl restart hy-webhook
+
+<span class="cm"># 4. Проверить логи</span>
+journalctl -u hy-webhook -f
+<span class="cm"># Ожидаемые строки:
+# Traffic poller запущен, интервал 60с
+# Traffic записан в БД: N пользователей</span></pre>
+  </div>
+
+  <h3>Полезные SQL-запросы</h3>
+  <div class="code-block">
+    <div class="code-head"><div class="dots"><div class="dot d-r"></div><div class="dot d-y"></div><div class="dot d-g"></div></div><span class="code-lang">sql</span></div>
+    <pre><span class="cm">-- Пользователи с трафиком</span>
+SELECT u.username, u.status,
+       round(t.used_traffic_bytes / 1073741824.0, 2) AS used_gb,
+       round(t.lifetime_used_traffic_bytes / 1073741824.0, 2) AS lifetime_gb
+FROM users u JOIN user_traffic t ON u.t_id = t.t_id
+ORDER BY t.used_traffic_bytes DESC;
+
+<span class="cm">-- Сбросить трафик пользователя</span>
+UPDATE user_traffic SET used_traffic_bytes = 0
+WHERE t_id = (SELECT t_id FROM users WHERE username = 'admin');</pre>
+  </div>
+</section>
 
 <div class="divider"></div>
 
