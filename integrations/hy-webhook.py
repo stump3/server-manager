@@ -61,6 +61,10 @@ DATABASE_URL      = os.environ.get("DATABASE_URL", "")
 TRAFFIC_POLL_INTERVAL = int(os.environ.get("TRAFFIC_POLL_INTERVAL", "60"))
 PENDING_FILE      = "/var/lib/hy-webhook/traffic-pending.json"
 
+# Виртуальная нода Hysteria2 в Remnawave (id из таблицы nodes)
+HY_NODE_ID   = int(os.environ.get("HY_NODE_ID", "0"))
+HY_NODE_UUID = os.environ.get("HY_NODE_UUID", "")
+
 # User-Agent паттерны для инъекции
 INJECT_UA_PATTERNS = [
     p.strip().lower()
@@ -331,9 +335,12 @@ def write_traffic_to_db(deltas: dict):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         with conn, conn.cursor() as cur:
+            total_delta = 0
             for username, delta in deltas.items():
                 if delta <= 0:
                     continue
+                total_delta += delta
+                # Трафик пользователя
                 cur.execute("""
                     UPDATE user_traffic ut
                     SET used_traffic_bytes          = ut.used_traffic_bytes + %s,
@@ -341,6 +348,24 @@ def write_traffic_to_db(deltas: dict):
                     FROM users u
                     WHERE ut.t_id = u.t_id AND u.username = %s
                 """, (delta, delta, username))
+                # Ежедневный разрез по ноде (график в панели)
+                if HY_NODE_ID:
+                    cur.execute("""
+                        INSERT INTO nodes_user_usage_history
+                            (node_id, user_id, total_bytes, created_at, updated_at)
+                        SELECT %s, u.t_id, %s, CURRENT_DATE, now()
+                        FROM users u WHERE u.username = %s
+                        ON CONFLICT (node_id, created_at, user_id)
+                        DO UPDATE SET
+                            total_bytes = nodes_user_usage_history.total_bytes + EXCLUDED.total_bytes,
+                            updated_at  = now()
+                    """, (HY_NODE_ID, delta, username))
+            # Общий счётчик ноды — одним запросом после цикла
+            if HY_NODE_ID and total_delta > 0:
+                cur.execute("""
+                    UPDATE nodes SET traffic_used_bytes = traffic_used_bytes + %s
+                    WHERE id = %s
+                """, (total_delta, HY_NODE_ID))
         conn.close()
         log.info(f"Traffic записан в БД: {len(deltas)} пользователей")
     except Exception as e:
