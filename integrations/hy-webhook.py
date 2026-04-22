@@ -61,9 +61,11 @@ DATABASE_URL      = os.environ.get("DATABASE_URL", "")
 TRAFFIC_POLL_INTERVAL = int(os.environ.get("TRAFFIC_POLL_INTERVAL", "60"))
 PENDING_FILE      = "/var/lib/hy-webhook/traffic-pending.json"
 
-# Виртуальная нода Hysteria2 в Remnawave (id из таблицы nodes)
-HY_NODE_ID   = int(os.environ.get("HY_NODE_ID", "0"))
-HY_NODE_UUID = os.environ.get("HY_NODE_UUID", "")
+# Виртуальная нода Hysteria2 в Remnawave (id из таблицы nodes).
+# Задать через /etc/hy-webhook.env: HY_NODE_ID=2
+# Если не задан — запись в nodes и nodes_user_usage_history отключена.
+_hy_node_id_raw = os.environ.get("HY_NODE_ID")
+HY_NODE_ID: int | None = int(_hy_node_id_raw) if _hy_node_id_raw else None
 
 # User-Agent паттерны для инъекции
 INJECT_UA_PATTERNS = [
@@ -341,6 +343,7 @@ def write_traffic_to_db(deltas: dict):
                     continue
                 total_delta += delta
                 # Трафик пользователя
+                # user_traffic — всегда
                 cur.execute("""
                     UPDATE user_traffic ut
                     SET used_traffic_bytes          = ut.used_traffic_bytes + %s,
@@ -348,8 +351,9 @@ def write_traffic_to_db(deltas: dict):
                     FROM users u
                     WHERE ut.t_id = u.t_id AND u.username = %s
                 """, (delta, delta, username))
-                # Ежедневный разрез по ноде (график в панели)
-                if HY_NODE_ID:
+                # Еженедельный разрез по ноде (график в панели)
+                # nodes_user_usage_history — только если нода задана
+                if HY_NODE_ID is not None:
                     cur.execute("""
                         INSERT INTO nodes_user_usage_history
                             (node_id, user_id, total_bytes, created_at, updated_at)
@@ -360,10 +364,12 @@ def write_traffic_to_db(deltas: dict):
                             total_bytes = nodes_user_usage_history.total_bytes + EXCLUDED.total_bytes,
                             updated_at  = now()
                     """, (HY_NODE_ID, delta, username))
-            # Общий счётчик ноды — одним запросом после цикла
-            if HY_NODE_ID and total_delta > 0:
+            # Общий счетчик ноды
+            # nodes.traffic_used_bytes — одним запросом после цикла
+            if HY_NODE_ID is not None and total_delta > 0:
                 cur.execute("""
-                    UPDATE nodes SET traffic_used_bytes = COALESCE(traffic_used_bytes, 0) + %s
+                    UPDATE nodes
+                    SET traffic_used_bytes = COALESCE(traffic_used_bytes, 0) + %s
                     WHERE id = %s
                 """, (total_delta, HY_NODE_ID))
         conn.close()
