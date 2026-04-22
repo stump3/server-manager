@@ -563,7 +563,7 @@ for u in users:
     delta = 0
     if last_raw is None:
         total_acc = oct
-        delta = oct
+        delta = 0
     else:
         try:
             last_raw = int(last_raw)
