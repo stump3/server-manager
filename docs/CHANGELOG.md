@@ -1,5 +1,43 @@
 # Changelog
 
+## [3.4.0] — 2026-04-22
+
+### Hysteria2 — учёт трафика и интеграция с Remnawave
+
+#### Сбор статистики трафика (trafficStats API)
+
+- **`trafficStats` в `config.yaml`** — установщик (`install.sh`) теперь предлагает включить сбор трафика сразу после установки Hysteria2. Генерирует или принимает секрет, дописывает секцию `trafficStats: listen: 127.0.0.1:9999` в конфиг, перезапускает сервис. Секрет автоматически сохраняется в `/etc/hy-webhook.env` если интеграция уже установлена.
+
+- **Traffic poller в `hy-webhook.py`** — фоновый поток опрашивает `GET /traffic?clear=1` каждые `TRAFFIC_POLL_INTERVAL` секунд (по умолчанию 60). Авторизация через заголовок `Authorization: <secret>`. Дельта `tx + rx` записывается в PostgreSQL напрямую.
+
+- **Защита от потери данных (`pending.json`)** — перед записью в БД дельта сохраняется в `/var/lib/hy-webhook/traffic-pending.json`. При краше или рестарте между `?clear=1` и записью в БД — данные накатываются при следующем старте сервиса.
+
+- **Kick при отключении** — при событиях `user.deleted`, `user.disabled`, `user.expired` из вебхука Remnawave вызывается `POST /kick` к Hysteria2 API. Активные сессии пользователя разрываются немедленно, не дожидаясь таймаута.
+
+#### Агрегация трафика в Remnawave
+
+- **Запись в `user_traffic`** — трафик каждого пользователя Hysteria2 пишется в `user_traffic.used_traffic_bytes` и `lifetime_used_traffic_bytes`. Отображается в профиле пользователя в панели.
+
+- **Виртуальная нода Hysteria2** — `hy-sub-install.sh` автоматически создаёт запись в таблице `nodes` (`INSERT ... ON CONFLICT (address) DO UPDATE`) и сохраняет полученный `id` в `HY_NODE_ID` в `/etc/hy-webhook.env`. Нода отображается в разделе «Ноды» панели Remnawave.
+
+- **Запись в `nodes_user_usage_history`** — ежедневный разрез трафика по пользователям и ноде. Используется для построения графиков в «Статистика трафика». При конфликте (повторная запись за тот же день) — инкремент через `ON CONFLICT DO UPDATE SET total_bytes += EXCLUDED.total_bytes`.
+
+- **Обновление `nodes.traffic_used_bytes`** — суммарный счётчик ноды обновляется одним запросом после цикла по пользователям. Использует `COALESCE(traffic_used_bytes, 0)` для защиты от NULL.
+
+- **`HY_NODE_ID: int | None`** — безопасный парсинг: `None` если переменная не задана, `int` если задана. Все проверки через `is not None`. При `HY_NODE_ID = None` запись в ноды отключена, `user_traffic` продолжает работать.
+
+#### Новые переменные окружения (`/etc/hy-webhook.env`)
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `HY_TRAFFIC_SECRET` | Секрет для `Authorization` к trafficStats API | — |
+| `HY_TRAFFIC_PORT` | Порт trafficStats API | `9999` |
+| `DATABASE_URL` | DSN PostgreSQL Remnawave | — |
+| `TRAFFIC_POLL_INTERVAL` | Интервал опроса в секундах | `60` |
+| `HY_NODE_ID` | id виртуальной ноды Hysteria2 в таблице `nodes` | — |
+
+---
+
 ## [3.3.1] — 2026-04-19
 
 ### Патч — Hysteria2 ↔ Remnawave интеграция
