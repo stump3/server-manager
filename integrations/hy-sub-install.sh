@@ -452,21 +452,24 @@ ok "Remnawave перезапущена"
                 pip3 install psycopg2-binary --break-system-packages 2>/dev/null                     || apt-get install -y python3-psycopg2 2>/dev/null                     || warn "Не удалось установить psycopg2 — установите вручную: pip install psycopg2-binary"
             fi
             # Добавляем переменные в hy-webhook.env (удаляем старые)
-            sed -i '/^HY_TRAFFIC_SECRET=/d;/^HY_TRAFFIC_PORT=/d;/^DATABASE_URL=/d;/^TRAFFIC_POLL_INTERVAL=/d;/^HY_NODE_ID=/d' /etc/hy-webhook.env
+            sed -i '/^HY_TRAFFIC_SECRET=/d;/^HY_TRAFFIC_PORT=/d;/^DATABASE_URL=/d;/^TRAFFIC_POLL_INTERVAL=/d;/^HY_NODE_ID=/d;/^HY_NODE_UUID=/d;/^ONLINE_POLL_INTERVAL=/d' /etc/hy-webhook.env
 
             # Создаём виртуальную ноду Hysteria2 в Remnawave если не существует
             _HY_NODE_ADDRESS="hysteria2://${HY_DOMAIN}:${MAIN_PORT}"
             _HY_NODE_ID=""
             if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-db"; then
                 # Вставляем ноду, при конфликте по address — просто получаем существующий id
-                _HY_NODE_ID=$(docker exec remnawave-db psql -U postgres postgres -tAc "
+                local _HY_NODE_ROW
+                _HY_NODE_ROW=$(docker exec remnawave-db psql -U postgres postgres -tAc "
 INSERT INTO nodes (name, address, is_connected, is_connecting, is_disabled,
     is_traffic_tracking_active, country_code, consumption_multiplier)
 VALUES ('Hysteria2', '${_HY_NODE_ADDRESS}', false, false, false, true, 'XX', 1000000000)
 ON CONFLICT (address) DO UPDATE SET name = EXCLUDED.name
-RETURNING id;" 2>/dev/null | tr -d ' ')
+RETURNING id, uuid;" 2>/dev/null | tr -d ' ')
+                _HY_NODE_ID=$(echo "$_HY_NODE_ROW" | cut -d'|' -f1 | tr -d ' ')
+                _HY_NODE_UUID=$(echo "$_HY_NODE_ROW" | cut -d'|' -f2 | tr -d ' ')
                 if [ -n "$_HY_NODE_ID" ]; then
-                    ok "Нода Hysteria2 в Remnawave: id=${_HY_NODE_ID}"
+                    ok "Нода Hysteria2 в Remnawave: id=${_HY_NODE_ID}, uuid=${_HY_NODE_UUID}"
                 else
                     warn "Не удалось создать ноду в БД — HY_NODE_ID не будет задан"
                 fi
@@ -481,7 +484,11 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:6767/postgres
 TRAFFIC_POLL_INTERVAL=60
 TRAFFICEOF
             # HY_NODE_ID — только если нода создана успешно
-            [ -n "$_HY_NODE_ID" ] && echo "HY_NODE_ID=${_HY_NODE_ID}" >> /etc/hy-webhook.env
+            if [ -n "$_HY_NODE_ID" ]; then
+                echo "HY_NODE_ID=${_HY_NODE_ID}" >> /etc/hy-webhook.env
+                [ -n "$_HY_NODE_UUID" ] && echo "HY_NODE_UUID=${_HY_NODE_UUID}" >> /etc/hy-webhook.env
+                echo "ONLINE_POLL_INTERVAL=30" >> /etc/hy-webhook.env
+            fi
             systemctl restart hy-webhook
             sleep 2
             ok "Агрегация трафика настроена"
