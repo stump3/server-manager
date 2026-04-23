@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.4.1] — 2026-04-23
+
+### Hysteria2 — онлайн-статус пользователей в Remnawave
+
+- **Online poller в `hy-webhook.py`** — отдельный фоновый поток опрашивает `GET /online` каждые `ONLINE_POLL_INTERVAL` секунд (по умолчанию 30). Для каждого онлайн-пользователя обновляет `user_traffic.online_at = now()` — панель показывает актуальный статус активности.
+
+- **`last_connected_node_uuid`** — если задан `HY_NODE_UUID`, дополнительно обновляет `user_traffic.last_connected_node_uuid`. В списке пользователей панели отображается нода последнего подключения (Hysteria2 вместо Germany).
+
+- **`hy-sub-install.sh`** — при создании виртуальной ноды теперь получает и сохраняет оба значения: `HY_NODE_ID` (integer) и `HY_NODE_UUID` (uuid). Также автоматически записывает `ONLINE_POLL_INTERVAL=30` в `/etc/hy-webhook.env`.
+
+#### Новые переменные окружения (`/etc/hy-webhook.env`)
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `HY_NODE_UUID` | UUID виртуальной ноды для `last_connected_node_uuid` | — |
+| `ONLINE_POLL_INTERVAL` | Интервал опроса `/online` в секундах | `30` |
+
+---
+
 ## [3.4.0] — 2026-04-22
 
 ### Hysteria2 — учёт трафика и интеграция с Remnawave
