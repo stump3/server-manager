@@ -1052,11 +1052,16 @@ telemt_menu_update() {
     if [ "$TELEMT_MODE" = "systemd" ]; then
         need_root
         info "Текущая версия: $($TELEMT_BIN --version 2>/dev/null || echo неизвестна)"
-        telemt_pick_version; systemctl stop telemt
-        telemt_download_binary "$TELEMT_CHOSEN_VERSION"; systemctl start telemt
+        telemt_pick_version
+        systemctl stop telemt
+        telemt_download_binary "$TELEMT_CHOSEN_VERSION"
+        systemctl restart telemt
+        sleep 3
     else
         cd "$TELEMT_WORK_DIR_DOCKER" || die "Директория не найдена"
-        docker compose pull; docker compose up -d
+        docker compose pull
+        docker compose up -d
+        sleep 3
     fi
     ok "Обновлено"
 }
