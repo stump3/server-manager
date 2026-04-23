@@ -66,6 +66,11 @@ PENDING_FILE      = "/var/lib/hy-webhook/traffic-pending.json"
 # Если не задан — запись в nodes и nodes_user_usage_history отключена.
 _hy_node_id_raw = os.environ.get("HY_NODE_ID")
 HY_NODE_ID: int | None = int(_hy_node_id_raw) if _hy_node_id_raw else None
+HY_NODE_UUID = os.environ.get("HY_NODE_UUID", "")  # для last_connected_node_uuid
+
+# Интервал обновления онлайн-статуса (независим от traffic poller)
+ONLINE_POLL_INTERVAL = int(os.environ.get("ONLINE_POLL_INTERVAL", "30"))
+HY_ONLINE_URL        = f"http://127.0.0.1:{HY_TRAFFIC_PORT}/online"
 
 # User-Agent паттерны для инъекции
 INJECT_UA_PATTERNS = [
@@ -391,6 +396,61 @@ def _load_clear_pending() -> dict:
     except FileNotFoundError:
         return {}
 
+def fetch_hy_online() -> dict:
+    """GET /online → {username: connections_count}"""
+    req = urllib.request.Request(HY_ONLINE_URL)
+    if HY_TRAFFIC_SECRET:
+        req.add_header("Authorization", HY_TRAFFIC_SECRET)
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read())
+
+def update_online_status(online_users: dict):
+    """Обновляет online_at и last_connected_node_uuid для онлайн-пользователей."""
+    if not online_users or not DATABASE_URL:
+        return
+    try:
+        import psycopg2
+    except ImportError:
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        with conn, conn.cursor() as cur:
+            for username in online_users:
+                if HY_NODE_UUID:
+                    cur.execute("""
+                        UPDATE user_traffic ut
+                        SET online_at                = now(),
+                            last_connected_node_uuid = %s
+                        FROM users u
+                        WHERE ut.t_id = u.t_id AND u.username = %s
+                    """, (HY_NODE_UUID, username))
+                else:
+                    cur.execute("""
+                        UPDATE user_traffic ut
+                        SET online_at = now()
+                        FROM users u
+                        WHERE ut.t_id = u.t_id AND u.username = %s
+                    """, (username,))
+        conn.close()
+        log.debug(f"Online статус обновлён: {list(online_users.keys())}")
+    except Exception as e:
+        log.warning(f"Online status update error: {e}")
+
+def online_poller():
+    """Фоновый поток: обновляет online_at каждые ONLINE_POLL_INTERVAL секунд."""
+    if not DATABASE_URL or not HY_TRAFFIC_SECRET:
+        log.info("Online poller отключён (DATABASE_URL или HY_TRAFFIC_SECRET не заданы)")
+        return
+    log.info(f"Online poller запущен, интервал {ONLINE_POLL_INTERVAL}с")
+    while True:
+        time.sleep(ONLINE_POLL_INTERVAL)
+        try:
+            online = fetch_hy_online()
+            if online:
+                update_online_status(online)
+        except Exception as e:
+            log.debug(f"Online poller: {e}")
+
 def traffic_poller():
     if not DATABASE_URL:
         log.info("DATABASE_URL не задан — учёт трафика отключён")
@@ -623,6 +683,7 @@ def main():
 
     # Traffic poller (отключается если DATABASE_URL не задан)
     threading.Thread(target=traffic_poller, daemon=True).start()
+    threading.Thread(target=online_poller, daemon=True).start()
 
     # Proxy в отдельном потоке (отключается если PROXY_PORT=0)
     if PROXY_PORT > 0:
