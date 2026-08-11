@@ -47,7 +47,9 @@ migrate_all() {
     local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
 
     # ── Зависимости ────────────────────────────────────────────────
-    remote_install_deps full
+    local _remote_ws="nginx"
+    [ -f /opt/remnawave/docker-compose.yml ] && grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml && _remote_ws="caddy"
+    remote_install_deps full "$_remote_ws"
 
     # ── Panel ──────────────────────────────────────────────────────
     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
