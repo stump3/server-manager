@@ -327,7 +327,7 @@ services:
     logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave:
-    image: remnawave/backend:2
+    image: remnawave/backend:3
     container_name: remnawave
     hostname: remnawave
     restart: always
@@ -459,7 +459,7 @@ services:
     logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave:
-    image: remnawave/backend:2
+    image: remnawave/backend:3
     container_name: remnawave
     hostname: remnawave
     restart: always
@@ -571,7 +571,7 @@ services:
     logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave:
-    image: remnawave/backend:2
+    image: remnawave/backend:3
     container_name: remnawave
     hostname: remnawave
     restart: always
@@ -718,7 +718,7 @@ services:
     logging: {driver: json-file, options: {max-size: 100m, max-file: '5'}}
 
   remnawave:
-    image: remnawave/backend:2
+    image: remnawave/backend:3
     container_name: remnawave
     hostname: remnawave
     restart: always
@@ -1208,8 +1208,8 @@ HTMLEOF
 
     local PUB_R PUB_KEY
     PUB_R=$(panel_api "GET" "http://$API/api/keygen" "$TOKEN")
-    PUB_KEY=$(echo "$PUB_R" | jq -r '.response.pubKey // empty' 2>/dev/null)
-    [ -z "$PUB_KEY" ] && err "Ошибка получения публичного ключа"
+    PUB_KEY=$(echo "$PUB_R" | jq -r '.response.secretKey // empty' 2>/dev/null)
+    [ -z "$PUB_KEY" ] && err "Ошибка получения SECRET_KEY ноды"
     sed -i "s|SECRET_KEY=\"PUBLIC KEY FROM REMNAWAVE-PANEL\"|SECRET_KEY=\"$PUB_KEY\"|g" \
         /opt/remnawave/docker-compose.yml
     ok "Ключи Reality готовы"
