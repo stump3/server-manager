@@ -354,7 +354,7 @@ def write_traffic_to_db(deltas: dict):
                     SET used_traffic_bytes          = ut.used_traffic_bytes + %s,
                         lifetime_used_traffic_bytes = ut.lifetime_used_traffic_bytes + %s
                     FROM users u
-                    WHERE ut.t_id = u.t_id AND u.username = %s
+                    WHERE ut.id = u.id AND u.username = %s
                 """, (delta, delta, username))
                 # Еженедельный разрез по ноде (график в панели)
                 # nodes_user_usage_history — только если нода задана
@@ -362,7 +362,7 @@ def write_traffic_to_db(deltas: dict):
                     cur.execute("""
                         INSERT INTO nodes_user_usage_history
                             (node_id, user_id, total_bytes, created_at, updated_at)
-                        SELECT %s, u.t_id, %s, CURRENT_DATE, now()
+                        SELECT %s, u.id, %s, CURRENT_DATE, now()
                         FROM users u WHERE u.username = %s
                         ON CONFLICT (node_id, created_at, user_id)
                         DO UPDATE SET
@@ -422,14 +422,14 @@ def update_online_status(online_users: dict):
                         SET online_at                = now(),
                             last_connected_node_uuid = %s
                         FROM users u
-                        WHERE ut.t_id = u.t_id AND u.username = %s
+                        WHERE ut.id = u.id AND u.username = %s
                     """, (HY_NODE_UUID, username))
                 else:
                     cur.execute("""
                         UPDATE user_traffic ut
                         SET online_at = now()
                         FROM users u
-                        WHERE ut.t_id = u.t_id AND u.username = %s
+                        WHERE ut.id = u.id AND u.username = %s
                     """, (username,))
         conn.close()
         log.debug(f"Online статус обновлён: {list(online_users.keys())}")
