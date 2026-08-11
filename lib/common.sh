@@ -241,12 +241,15 @@ check_ssh_connection() {
 }
 
 # ── Remote: установка зависимостей ───────────────────────────────
-# remote_install_deps [panel|full]
+# remote_install_deps [panel|full] [nginx|caddy]
 #   panel — base (без qrencode/unzip/cron, без /etc/hysteria)
 #   full  — base + unzip cron qrencode + /etc/hysteria
+#   nginx — ставит certbot-пакеты для nginx SSL
+#   caddy — пропускает certbot, сертификатами управляет Caddy
 remote_install_deps() {
-    local variant="${1:-panel}"
-    local extra_pkgs="" extra_dirs=""
+    local variant="${1:-panel}" web_server="${2:-nginx}"
+    local extra_pkgs="" extra_dirs="" ssl_pkgs=""
+    [ "$web_server" != "caddy" ] && ssl_pkgs=" certbot python3-certbot-dns-cloudflare"
     if [ "$variant" = "full" ]; then
         extra_pkgs=" unzip cron qrencode"
         extra_dirs=" /etc/hysteria"
@@ -256,7 +259,7 @@ remote_install_deps() {
     echo ""
     warn "На сервере ${_SSH_IP} будут выполнены следующие действия:"
     echo ""
-    echo "  · apt-get update && apt-get install (curl, docker-deps, certbot...)"
+    echo "  · apt-get update && apt-get install (curl, docker-deps${ssl_pkgs:+, certbot}...)"
     echo "  · Установка Docker (если не установлен)"
     echo "  · Создание swap-файла 2 GB (если нет)"
     echo "  · Включение BBR (sysctl)"
@@ -273,7 +276,7 @@ remote_install_deps() {
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y -q 2>/dev/null
 apt-get install -y -q curl wget git jq openssl ca-certificates gnupg dnsutils \
-    certbot python3-certbot-dns-cloudflare sshpass${extra_pkgs} 2>/dev/null
+    sshpass${ssl_pkgs}${extra_pkgs} 2>/dev/null${extra_pkgs} 2>/dev/null
 command -v docker &>/dev/null || { curl -fsSL https://get.docker.com | sh >/dev/null 2>&1; systemctl enable docker >/dev/null 2>&1; } # intentional: official Docker installer
 [ ! -f /swapfile ] && { fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab; }
 grep -q "bbr" /etc/sysctl.conf 2>/dev/null || {
