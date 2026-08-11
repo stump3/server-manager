@@ -433,7 +433,8 @@ hysteria_submenu_manage() {
         echo -e "  ${BOLD}1)${RESET} 📊  Статус"
         echo -e "  ${BOLD}2)${RESET} 📋  Логи"
         echo -e "  ${BOLD}3)${RESET} 🔄  Перезапустить"
-        echo -e "  ${BOLD}4)${RESET} 🗑️  Удалить полностью"
+        echo -e "  ${BOLD}4)${RESET} 📦  Обновить Hysteria2"
+        echo -e "  ${BOLD}5)${RESET} 🗑️  Удалить полностью"
         echo -e "  ${BOLD}0)${RESET}  ◀️ Назад"
         echo ""
         local ch; read -rp "  Выбор: " ch < /dev/tty
@@ -441,7 +442,8 @@ hysteria_submenu_manage() {
             1) hysteria_status || true; read -rp "Enter..." < /dev/tty ;;
             2) hysteria_logs || true;   read -rp "Enter..." < /dev/tty ;;
             3) hysteria_restart || true; read -rp "Enter..." < /dev/tty ;;
-            4) hysteria_uninstall || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            4) hysteria_update || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+            5) hysteria_uninstall || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
