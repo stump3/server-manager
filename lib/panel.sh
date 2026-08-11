@@ -252,13 +252,12 @@ EOF
     mkdir -p /opt/remnawave && cd /opt/remnawave
 
     local SUPERADMIN_USER SUPERADMIN_PASS COOKIE_KEY COOKIE_VAL
-    local JWT_AUTH JWT_API METRICS_USER METRICS_PASS
+    local APP_SECRET METRICS_USER METRICS_PASS
     SUPERADMIN_USER=$(gen_user)
     SUPERADMIN_PASS=$(gen_password)
     COOKIE_KEY=$(gen_user)
     COOKIE_VAL=$(gen_user)
-    JWT_AUTH=$(gen_hex64)
-    JWT_API=$(gen_hex64)
+    APP_SECRET=$(gen_hex64)
     METRICS_USER=$(gen_user)
     METRICS_PASS=$(gen_user)
 
@@ -268,14 +267,10 @@ METRICS_PORT=3001
 API_INSTANCES=1
 DATABASE_URL="postgresql://postgres:postgres@remnawave-db:5432/postgres"
 REDIS_SOCKET=/var/run/valkey/valkey.sock
-JWT_AUTH_SECRET=$JWT_AUTH
-JWT_API_TOKENS_SECRET=$JWT_API
+APP_SECRET=$APP_SECRET
 JWT_AUTH_LIFETIME=168
 FRONT_END_DOMAIN=$PANEL_DOMAIN
 SUB_PUBLIC_DOMAIN=$SUB_DOMAIN
-SWAGGER_PATH=/docs
-SCALAR_PATH=/scalar
-IS_DOCS_ENABLED=false
 METRICS_USER=$METRICS_USER
 METRICS_PASS=$METRICS_PASS
 WEBHOOK_ENABLED=false
@@ -1311,6 +1306,27 @@ _spinner() {
     done; printf "\r\033[K">/dev/tty
 }
 _detect_ws() { grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml 2>/dev/null && echo "caddy" || echo "nginx"; }
+_migrate_env_for_remnawave_v2() {
+    local env_file="$DIR/.env"
+    [ -f "$env_file" ] || { _warn ".env не найден: $env_file"; return 1; }
+
+    if grep -q '^JWT_AUTH_SECRET=' "$env_file" && ! grep -q '^APP_SECRET=' "$env_file"; then
+        sed -i 's/^JWT_AUTH_SECRET=/APP_SECRET=/' "$env_file"
+        _ok ".env: JWT_AUTH_SECRET переименован в APP_SECRET"
+    elif grep -q '^JWT_AUTH_SECRET=' "$env_file" && grep -q '^APP_SECRET=' "$env_file"; then
+        sed -i '/^JWT_AUTH_SECRET=/d' "$env_file"
+        _ok ".env: удалён дублирующий JWT_AUTH_SECRET"
+    fi
+
+    local removed=0
+    for key in JWT_API_TOKENS_SECRET SWAGGER_PATH SCALAR_PATH IS_DOCS_ENABLED; do
+        if grep -q "^${key}=" "$env_file"; then
+            sed -i "/^${key}=/d" "$env_file"
+            removed=1
+        fi
+    done
+    [ "$removed" = "1" ] && _ok ".env: удалены устаревшие переменные Remnawave"
+}
 do_status() {
     local ws; ws=$(_detect_ws)
     local ws_svc; [ "$ws" = "caddy" ] && ws_svc="remnawave-caddy" || ws_svc="remnawave-nginx"
@@ -1354,6 +1370,9 @@ do_restart() {
 }
 do_update() {
     cd "$DIR"
+    _warn "Перед обновлением будет создан бэкап БД и конфигов."
+    do_backup
+    _migrate_env_for_remnawave_v2 || return 1
     docker compose pull>/dev/null 2>&1 & _spinner $! "Загрузка..."
     docker compose down>/dev/null 2>&1 & _spinner $! "Остановка..."
     docker compose up -d>/dev/null 2>&1 & _spinner $! "Запуск..."
@@ -2321,6 +2340,38 @@ panel_submenu_install() {
     esac
 }
 
+panel_migrate_env_for_remnawave_v2() {
+    local env_file="/opt/remnawave/.env"
+    [ -f "$env_file" ] || { warn ".env не найден: $env_file"; return 1; }
+
+    if grep -q '^JWT_AUTH_SECRET=' "$env_file" && ! grep -q '^APP_SECRET=' "$env_file"; then
+        sed -i 's/^JWT_AUTH_SECRET=/APP_SECRET=/' "$env_file"
+        ok ".env: JWT_AUTH_SECRET переименован в APP_SECRET"
+    elif grep -q '^JWT_AUTH_SECRET=' "$env_file" && grep -q '^APP_SECRET=' "$env_file"; then
+        sed -i '/^JWT_AUTH_SECRET=/d' "$env_file"
+        ok ".env: удалён дублирующий JWT_AUTH_SECRET"
+    fi
+
+    local removed=0
+    for key in JWT_API_TOKENS_SECRET SWAGGER_PATH SCALAR_PATH IS_DOCS_ENABLED; do
+        if grep -q "^${key}=" "$env_file"; then
+            sed -i "/^${key}=/d" "$env_file"
+            removed=1
+        fi
+    done
+    [ "$removed" = "1" ] && ok ".env: удалены устаревшие переменные Remnawave"
+}
+
+panel_update_installed() {
+    header "Remnawave Panel — Обновить"
+    [ -x "$PANEL_MGMT_SCRIPT" ] || { warn "Панель не установлена."; return 1; }
+
+    warn "Если панель уже стоит на 2.8.1 или ниже, перед обновлением нужен бэкап и миграция .env."
+    "$PANEL_MGMT_SCRIPT" backup || warn "Бэкап через rp завершился с предупреждениями — проверьте вывод выше"
+    panel_migrate_env_for_remnawave_v2 || return 1
+    "$PANEL_MGMT_SCRIPT" update
+}
+
 panel_submenu_manage() {
     while true; do
         clear
@@ -2346,7 +2397,7 @@ panel_submenu_manage() {
         2)  "$PANEL_MGMT_SCRIPT" status; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
         3)  "$PANEL_MGMT_SCRIPT" restart; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
         4)  "$PANEL_MGMT_SCRIPT" start; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
-        5)  "$PANEL_MGMT_SCRIPT" update; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+        5)  panel_update_installed || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
         6)  "$PANEL_MGMT_SCRIPT" ssl; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
         7)  "$PANEL_MGMT_SCRIPT" backup; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
         8)  "$PANEL_MGMT_SCRIPT" health; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
