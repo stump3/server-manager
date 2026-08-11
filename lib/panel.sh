@@ -241,8 +241,9 @@ EOF
         done
         ok "Сертификаты и автообновление настроены"
     else
-        # Caddy: порт 80 нужен для ACME в MODE=2
-        [ "$MODE" = "2" ] && ufw allow 80/tcp comment 'HTTP (Caddy ACME)' >/dev/null 2>&1
+        # Caddy: порт 80 нужен для HTTP-01 ACME и редиректов в обоих режимах.
+        # В selfsteal MODE=1 порт 443 остаётся за Xray, Caddy принимает HTTPS через unix-сокет.
+        ufw allow 80/tcp comment 'HTTP (Caddy ACME)' >/dev/null 2>&1
         ok "SSL — Caddy получит сертификаты автоматически при первом запуске"
     fi
 
@@ -970,6 +971,11 @@ NGINX_CONF_EOF
     auto_https disable_redirects
 }
 
+http://{\$PANEL_DOMAIN} {
+    bind 0.0.0.0
+    redir https://{\$PANEL_DOMAIN}{uri} permanent
+}
+
 https://{\$PANEL_DOMAIN} {
     bind unix//dev/shm/nginx.sock
 
@@ -1015,12 +1021,22 @@ https://{\$PANEL_DOMAIN} {
     }
 }
 
+http://{\$SUB_DOMAIN} {
+    bind 0.0.0.0
+    redir https://{\$SUB_DOMAIN}{uri} permanent
+}
+
 https://{\$SUB_DOMAIN} {
     bind unix//dev/shm/nginx.sock
     reverse_proxy {\$SUB_BACKEND_URL} {
         header_up X-Real-IP {http.request.header.X-Forwarded-For}
         header_up Host {host}
     }
+}
+
+http://{\$SELF_STEAL_DOMAIN} {
+    bind 0.0.0.0
+    redir https://{\$SELF_STEAL_DOMAIN}{uri} permanent
 }
 
 https://{\$SELF_STEAL_DOMAIN} {
@@ -1479,7 +1495,7 @@ do_migrate() {
     fi
 
     # ── Установка зависимостей на новом сервере ────────────────────
-    remote_install_deps panel
+    remote_install_deps panel "$(_detect_ws)"
 
     # ── Дамп БД ────────────────────────────────────────────────────
     _info "Создаём дамп базы данных..."
