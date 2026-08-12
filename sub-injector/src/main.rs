@@ -164,6 +164,27 @@ pub async fn proxy(
         req = req.header(name.as_str(), value.to_str().unwrap_or(""));
     }
 
+    // Remnawave Subscription Page requires a reverse-proxy context.
+    // Preserve existing X-Forwarded-* headers from nginx.
+    // When the injector is accessed directly, provide a safe fallback.
+    if !headers.contains_key("x-forwarded-proto") {
+        req = req.header("x-forwarded-proto", "https");
+    }
+
+    if !headers.contains_key("x-forwarded-host") {
+        if let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) {
+            req = req.header("x-forwarded-host", host);
+        }
+    }
+
+    if !headers.contains_key("x-forwarded-port") {
+        req = req.header("x-forwarded-port", "443");
+    }
+
+    if !headers.contains_key("x-forwarded-for") {
+        req = req.header("x-forwarded-for", "127.0.0.1");
+    }
+
     let resp = req.send().await.map_err(|e| {
         eprintln!("[sub-injector] send error for {path}: {e}");
         StatusCode::BAD_GATEWAY
