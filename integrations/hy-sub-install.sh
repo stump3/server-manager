@@ -523,12 +523,21 @@ INJECTOR_URL="https://github.com/stump3/server-manager/releases/latest/download/
 
 mkdir -p "$INJECTOR_DIR"
 
+# ── Системный пользователь sub-injector ──────────────────────────
+if ! id sub-injector >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin sub-injector
+    ok "Создан системный пользователь sub-injector"
+else
+    info "Системный пользователь sub-injector уже существует"
+fi
+
 # ── Скачиваем бинарник из releases stump3/server-manager ─────────
 info "Скачиваем sub-injector..."
 if curl -fsSL "$INJECTOR_URL" -o "${INJECTOR_BIN}.new" 2>/dev/null; then
     systemctl stop remna-sub-injector 2>/dev/null || true
     mv "${INJECTOR_BIN}.new" "$INJECTOR_BIN"
     chmod +x "$INJECTOR_BIN"
+    chown sub-injector:sub-injector "$INJECTOR_BIN"
     ok "sub-injector установлен: $INJECTOR_BIN"
 else
     warn "Бинарник недоступен — собираем из sub-injector/ репозитория"
@@ -579,6 +588,7 @@ else
     systemctl stop remna-sub-injector 2>/dev/null || true
     cp target/release/sub-injector "$INJECTOR_BIN"
     chmod +x "$INJECTOR_BIN"
+    chown sub-injector:sub-injector "$INJECTOR_BIN"
     ok "sub-injector собран из исходников"
 fi
 
@@ -598,6 +608,8 @@ TOMLEOF
     ok "Конфиг создан: $INJECTOR_CFG"
 fi
 
+chown sub-injector:sub-injector "$INJECTOR_CFG"
+
 # ── Systemd ───────────────────────────────────────────────────────
 cat > /etc/systemd/system/remna-sub-injector.service << 'SVCEOF'
 [Unit]
@@ -606,6 +618,8 @@ After=network.target hy-webhook.service
 
 [Service]
 Type=simple
+User=sub-injector
+Group=sub-injector
 WorkingDirectory=/opt/remna-sub-injector
 ExecStart=/opt/remna-sub-injector/sub-injector /opt/remna-sub-injector/config.toml
 Restart=always
@@ -616,6 +630,36 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 SVCEOF
+
+# ── Systemd hardening ────────────────────────────────────────────
+mkdir -p /etc/systemd/system/remna-sub-injector.service.d
+
+cat > /etc/systemd/system/remna-sub-injector.service.d/hardening.conf << 'HARDEOF'
+[Service]
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+CapabilityBoundingSet=
+HARDEOF
+
+systemd-analyze verify /etc/systemd/system/remna-sub-injector.service     || err "Systemd-конфигурация sub-injector не прошла проверку"
 
 systemctl daemon-reload
 systemctl enable --now remna-sub-injector
