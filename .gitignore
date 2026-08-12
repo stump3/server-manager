@@ -13,3 +13,9 @@
 
 # Логи
 *.log
+
+# Rust build artifacts
+**/target/
+
+# Local source backups
+*.before-stage2
