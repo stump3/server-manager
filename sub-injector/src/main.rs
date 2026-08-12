@@ -186,7 +186,7 @@ pub async fn proxy(
     }
 
     let resp = req.send().await.map_err(|e| {
-        eprintln!("[sub-injector] send error for {path}: {e}");
+        eprintln!("[sub-injector] send error for {path}: {e:?}");
         StatusCode::BAD_GATEWAY
     })?;
     let status = resp.status();
