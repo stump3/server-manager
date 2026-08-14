@@ -83,6 +83,7 @@ declare -A _MODULE_SHA256=(
     ["telemt"]=""
     ["hysteria"]=""
     ["migrate"]=""
+    ["cli/router"]=""
 )
 
 _load_module() {
@@ -129,6 +130,7 @@ _load_module panel
 _load_module telemt
 _load_module hysteria
 _load_module migrate
+_load_module cli/router
 
 check_root
-main_menu
+cli_run
