@@ -1,9 +1,6 @@
 # ███████████████████  PANEL SECTION  ██████████████████████████████
 # ═══════════════════════════════════════════════════════════════════
 
-PANEL_DIR="/opt/remnawave"
-PANEL_NGINX_DIR="/opt/nginx"           # используется только если nginx отдельно
-# PANEL_MGMT_SCRIPT объявлен глобально
 
 panel_get_base_domain() {
     echo "$1" | awk -F'.' '{if (NF>2) print $(NF-1)"."$NF; else print $0}'
@@ -1721,8 +1718,6 @@ get_hysteria_version() {
 # ████████████████████  PANEL EXTENSIONS  ██████████████████████████
 # ═══════════════════════════════════════════════════════════════════
 
-PANEL_TOKEN_FILE="/opt/remnawave/.panel_token"
-PANEL_API="http://127.0.0.1:3000"
 
 # ── API утилиты ───────────────────────────────────────────────────
 panel_api_request() {

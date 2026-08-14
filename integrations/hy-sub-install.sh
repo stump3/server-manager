@@ -51,7 +51,7 @@ trap 'cleanup $LINENO "$BASH_COMMAND"' ERR
 # ── Проверки ──────────────────────────────────────────────────────
 [ "$(id -u)" -ne 0 ] && err "Запустите от root"
 [ -d /opt/remnawave ]            || err "Remnawave не установлена"
-[ -f /etc/hysteria/config.yaml ] || err "Hysteria2 не установлена"
+[ -f "${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}" ] || err "Hysteria2 не установлена"
 
 # ── Идемпотентность ───────────────────────────────────────────────
 DO_WEBHOOK=true
@@ -84,8 +84,8 @@ fi
 # ── Параметры ─────────────────────────────────────────────────────
 step "Конфигурация"
 
-HY_DOMAIN=$(grep -A2 'domains:' /etc/hysteria/config.yaml | grep -- '- ' | head -1 | tr -d ' -')
-LISTEN_LINE=$(grep '^listen:' /etc/hysteria/config.yaml | head -1)
+HY_DOMAIN=$(grep -A2 'domains:' "${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}" | grep -- '- ' | head -1 | tr -d ' -')
+LISTEN_LINE=$(grep '^listen:' "${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}" | head -1)
 SUB_DOMAIN=$(grep "^SUB_PUBLIC_DOMAIN=" /opt/remnawave/.env | cut -d= -f2 | tr -d '"' | cut -d'/' -f1)
 
 # Парсим порт — поддерживаем форматы:
@@ -266,10 +266,10 @@ _HY_NAME_ESC=$(printf '%s' "${HY_NAME}" | sed "s/'/'\\''/g")
 
 cat > "$SECRETS_FILE" << SECRETEOF
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
-HYSTERIA_CONFIG=/etc/hysteria/config.yaml
+HYSTERIA_CONFIG=${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}
 USERS_DB=/var/lib/hy-webhook/users.json
 LISTEN_PORT=8766
-HYSTERIA_SVC=hysteria-server
+HYSTERIA_SVC=${HYSTERIA_SVC:-hysteria-server}
 REMNAWAVE_URL=http://127.0.0.1:3000
 REMNAWAVE_TOKEN=${REMNAWAVE_API_TOKEN:-}
 HY_DOMAIN=${HY_DOMAIN}

@@ -78,6 +78,7 @@ fi
 # SHA256 контрольные суммы модулей — обновляйте при каждом релизе.
 # Оставьте "" чтобы отключить проверку для конкретного модуля.
 declare -A _MODULE_SHA256=(
+    ["core/config"]=""
     ["common"]=""
     ["panel"]=""
     ["telemt"]=""
@@ -125,6 +126,7 @@ _sm_source_file() {
     rm -f "$tmp"
 }
 
+_load_module core/config
 _load_module common
 _load_module panel
 _load_module telemt

@@ -27,26 +27,8 @@ PURPLE='\033[0;35m'; GRAY='\033[0;90m'; BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'; RESET="$NC"
 
-# ── Глобальные пути и переменные ────────────────────────────────
-PANEL_MGMT_SCRIPT="/usr/local/bin/remnawave_panel"
-
-# Hysteria2
-HYSTERIA_CONFIG="/etc/hysteria/config.yaml"
-HYSTERIA_DIR="/etc/hysteria"
-HYSTERIA_SVC="hysteria-server"
-
-# Telemt (полные объявления — используются в get_telemt_version и migrate)
-TELEMT_BIN="/usr/local/bin/telemt"
-TELEMT_CONFIG_DIR="/etc/telemt"
-TELEMT_CONFIG_SYSTEMD="/etc/telemt/telemt.toml"
-TELEMT_WORK_DIR_SYSTEMD="/opt/telemt"
-TELEMT_TLSFRONT_DIR="/opt/telemt/tlsfront"
-TELEMT_SERVICE_FILE="/etc/systemd/system/telemt.service"
-TELEMT_WORK_DIR_DOCKER="${HOME}/mtproxy"
-TELEMT_CONFIG_DOCKER="${HOME}/mtproxy/telemt.toml"
-TELEMT_COMPOSE_FILE="${HOME}/mtproxy/docker-compose.yml"
-TELEMT_GITHUB_REPO="telemt/telemt"
-TELEMT_API_URL="http://127.0.0.1:9091/v1/users"
+# ── Runtime-selected Telemt state ───────────────────────────────
+# Shared immutable paths/API are loaded from lib/core/config.sh before this module.
 TELEMT_MODE=""
 TELEMT_CONFIG_FILE=""
 TELEMT_WORK_DIR=""
