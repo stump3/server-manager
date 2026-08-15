@@ -52,6 +52,20 @@ migrate_prepare_target() {
 
 # ═══════════════════════════════════════════════════════════════════
 
+migrate_transfer_panel_ssl() {
+    # SSL
+    if [ -d /etc/letsencrypt/live ]; then
+        RUN "mkdir -p /etc/letsencrypt" 2>/dev/null || true
+        local ssl_ok=true
+        sshpass -p "$_SSH_PASS" scp -r -P "$rport" -o StrictHostKeyChecking=no \
+            /etc/letsencrypt/live \
+            /etc/letsencrypt/archive \
+            /etc/letsencrypt/renewal \
+            "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null || ssl_ok=false
+        $ssl_ok && ok "SSL сертификаты переданы" || warn "Ошибка передачи SSL"
+    fi
+}
+
 migrate_transfer_panel() {
     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
         info "Переносим Panel..."
@@ -83,17 +97,7 @@ migrate_transfer_panel() {
             warn "Ошибка передачи файлов панели"; rm -f "$dump"; return 1
         fi
 
-        # SSL
-        if [ -d /etc/letsencrypt/live ]; then
-            RUN "mkdir -p /etc/letsencrypt" 2>/dev/null || true
-            local ssl_ok=true
-            sshpass -p "$_SSH_PASS" scp -r -P "$rport" -o StrictHostKeyChecking=no \
-                /etc/letsencrypt/live \
-                /etc/letsencrypt/archive \
-                /etc/letsencrypt/renewal \
-                "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null || ssl_ok=false
-            $ssl_ok && ok "SSL сертификаты переданы" || warn "Ошибка передачи SSL"
-        fi
+        migrate_transfer_panel_ssl
 
         # Caddyfile (если Caddy)
         [ -f /opt/remnawave/Caddyfile ] &&             PUT /opt/remnawave/Caddyfile "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null && ok "Caddyfile передан" || true
