@@ -79,6 +79,7 @@ fi
 # Оставьте "" чтобы отключить проверку для конкретного модуля.
 declare -A _MODULE_SHA256=(
     ["core/config"]=""
+    ["ui/output"]=""
     ["common"]=""
     ["panel"]=""
     ["telemt"]=""
@@ -127,6 +128,7 @@ _sm_source_file() {
 }
 
 _load_module core/config
+_load_module ui/output
 _load_module common
 _load_module panel
 _load_module telemt
