@@ -50,13 +50,9 @@ migrate_prepare_target() {
     return 0
 }
 
-migrate_all() {
-    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
-    echo ""
-    migrate_prepare_target || return 1
-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+# ═══════════════════════════════════════════════════════════════════
 
-    # ── Panel ──────────────────────────────────────────────────────
+migrate_transfer_panel() {
     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
         info "Переносим Panel..."
 
@@ -133,6 +129,16 @@ RPANEL
     else
         warn "Panel не найдена, пропускаю"
     fi
+    return 0
+}
+
+migrate_all() {
+    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
+    echo ""
+    migrate_prepare_target || return 1
+    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+
+    migrate_transfer_panel || return 1
 
     # ── MTProxy ────────────────────────────────────────────────────
     if [ -f "$TELEMT_CONFIG_SYSTEMD" ]; then
