@@ -1,0 +1,43 @@
+diff --git a/lib/migrate.sh b/lib/migrate.sh
+index 4441e45..56edd56 100644
+--- a/lib/migrate.sh
++++ b/lib/migrate.sh
+@@ -229,16 +229,7 @@ RTELEMT
+     return 0
+ }
+ 
+-migrate_all() {
+-    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
+-    echo ""
+-    migrate_prepare_target || return 1
+-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+-
+-    migrate_transfer_panel || return 1
+-
+-    migrate_transfer_mtproxy
+-
++migrate_transfer_hysteria() {
+     # ── Hysteria2 ──────────────────────────────────────────────────
+     if hy_is_installed 2>/dev/null && [ -f "$HYSTERIA_CONFIG" ]; then
+         info "Переносим Hysteria2..."
+@@ -257,6 +248,20 @@ migrate_all() {
+     else
+         warn "Hysteria2 не найдена, пропускаю"
+     fi
++    return 0
++}
++
++migrate_all() {
++    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
++    echo ""
++    migrate_prepare_target || return 1
++    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
++
++    migrate_transfer_panel || return 1
++
++    migrate_transfer_mtproxy
++
++    migrate_transfer_hysteria
+ 
+     # ── Копируем скрипт ────────────────────────────────────────────
+     local sm_src="${SCRIPT_DIR:-/root/server-manager}"
