@@ -268,20 +268,7 @@ migrate_copy_script() {
     return 0
 }
 
-migrate_all() {
-    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
-    echo ""
-    migrate_prepare_target || return 1
-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
-
-    migrate_transfer_panel || return 1
-
-    migrate_transfer_mtproxy
-
-    migrate_transfer_hysteria
-
-    migrate_copy_script
-
+migrate_summary() {
     # ── Итог ───────────────────────────────────────────────────────
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
@@ -302,6 +289,23 @@ migrate_all() {
         systemctl stop telemt 2>/dev/null && ok "MTProxy остановлен" || true
         systemctl stop hysteria-server 2>/dev/null && ok "Hysteria2 остановлена" || true
     fi
+}
+
+migrate_all() {
+    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
+    echo ""
+    migrate_prepare_target || return 1
+    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+
+    migrate_transfer_panel || return 1
+
+    migrate_transfer_mtproxy
+
+    migrate_transfer_hysteria
+
+    migrate_copy_script
+
+    migrate_summary
 }
 
 migrate_menu() {
