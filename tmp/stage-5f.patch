@@ -1,0 +1,50 @@
+diff --git a/lib/migrate.sh b/lib/migrate.sh
+index 15f7669..30d49e0 100644
+--- a/lib/migrate.sh
++++ b/lib/migrate.sh
+@@ -268,20 +268,7 @@ migrate_copy_script() {
+     return 0
+ }
+ 
+-migrate_all() {
+-    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
+-    echo ""
+-    migrate_prepare_target || return 1
+-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+-
+-    migrate_transfer_panel || return 1
+-
+-    migrate_transfer_mtproxy
+-
+-    migrate_transfer_hysteria
+-
+-    migrate_copy_script
+-
++migrate_summary() {
+     # ── Итог ───────────────────────────────────────────────────────
+     echo ""
+     echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+@@ -304,6 +291,23 @@ migrate_all() {
+     fi
+ }
+ 
++migrate_all() {
++    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
++    echo ""
++    migrate_prepare_target || return 1
++    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
++
++    migrate_transfer_panel || return 1
++
++    migrate_transfer_mtproxy
++
++    migrate_transfer_hysteria
++
++    migrate_copy_script
++
++    migrate_summary
++}
++
+ migrate_menu() {
+     while true; do
+         clear
