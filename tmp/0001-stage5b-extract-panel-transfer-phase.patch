@@ -1,0 +1,77 @@
+From 4db74f0c018b42938157842238815a2c4e756b57 Mon Sep 17 00:00:00 2001
+From: server-manager-bot <noreply@server-manager.local>
+Date: Sat, 15 Aug 2026 15:42:29 +0000
+Subject: [PATCH] refactor: extract panel transfer phase from migrate_all
+
+Extract the Panel migration phase (dump, transfer, remote restore,
+management script install) into migrate_transfer_panel(), called
+directly from migrate_all() as its first phase after
+migrate_prepare_target().
+
+Body is byte-identical to the original inline block. The call site
+uses 'migrate_transfer_panel || return 1' to preserve the exact
+early-return semantics of the two fatal-failure branches inside the
+extracted function (undersized DB dump, failed file transfer) -
+either one still aborts the entire migrate_all() sequence before
+reaching the MTProxy phase, exactly as before extraction.
+
+rip/rport/ruser (local to migrate_all) remain visible inside the new
+function via bash dynamic scoping, since it is only ever called
+directly from migrate_all(). The cd /opt/remnawave side effect
+inside the function persists after return, unchanged from current
+behavior, since no subshell wrapping is introduced.
+
+Verified: bash -n, shellcheck (no new warnings vs baseline), function
+resolution through the full module load chain, byte-identical body
+diff against the original block, byte-identical reconciliation of the
+remaining migrate_all() body (MTProxy/Hysteria2/script-copy/summary)
+and of migrate_menu()/panel_backup_restore() against cf89fe0, and
+functional verification of both the skip-path (Panel absent, returns
+0, next phase reached) and fatal-path (undersized dump, returns 1,
+next phase NOT reached) return semantics.
+
+Stage 5b of the gradual migrate.sh refactor, following Stage 5a
+(migrate_prepare_target extraction, e514c39).
+---
+ lib/migrate.sh | 18 ++++++++++++------
+ 1 file changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/lib/migrate.sh b/lib/migrate.sh
+index bd486fa..927031a 100644
+--- a/lib/migrate.sh
++++ b/lib/migrate.sh
+@@ -50,13 +50,9 @@ migrate_prepare_target() {
+     return 0
+ }
+ 
+-migrate_all() {
+-    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
+-    echo ""
+-    migrate_prepare_target || return 1
+-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
++# ═══════════════════════════════════════════════════════════════════
+ 
+-    # ── Panel ──────────────────────────────────────────────────────
++migrate_transfer_panel() {
+     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
+         info "Переносим Panel..."
+ 
+@@ -133,6 +129,16 @@ RPANEL
+     else
+         warn "Panel не найдена, пропускаю"
+     fi
++    return 0
++}
++
++migrate_all() {
++    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
++    echo ""
++    migrate_prepare_target || return 1
++    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
++
++    migrate_transfer_panel || return 1
+ 
+     # ── MTProxy ────────────────────────────────────────────────────
+     if [ -f "$TELEMT_CONFIG_SYSTEMD" ]; then
+-- 
+2.43.0
