@@ -132,14 +132,7 @@ RPANEL
     return 0
 }
 
-migrate_all() {
-    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
-    echo ""
-    migrate_prepare_target || return 1
-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
-
-    migrate_transfer_panel || return 1
-
+migrate_transfer_mtproxy() {
     # ── MTProxy ────────────────────────────────────────────────────
     if [ -f "$TELEMT_CONFIG_SYSTEMD" ]; then
         info "Переносим MTProxy..."
@@ -233,6 +226,18 @@ RTELEMT
     else
         warn "MTProxy (systemd) не найден, пропускаю"
     fi
+    return 0
+}
+
+migrate_all() {
+    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
+    echo ""
+    migrate_prepare_target || return 1
+    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+
+    migrate_transfer_panel || return 1
+
+    migrate_transfer_mtproxy
 
     # ── Hysteria2 ──────────────────────────────────────────────────
     if hy_is_installed 2>/dev/null && [ -f "$HYSTERIA_CONFIG" ]; then
