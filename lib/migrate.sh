@@ -35,21 +35,26 @@ panel_migrate() {
 
 # ═══════════════════════════════════════════════════════════════════
 
-migrate_all() {
-    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
-    echo ""
+migrate_prepare_target() {
     ensure_sshpass
 
     # ── Данные нового сервера ──────────────────────────────────────
     ask_ssh_target || { warn "Ошибка ввода данных SSH"; return 1; }
     init_ssh_helpers full
     check_ssh_connection || return 1
-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
 
     # ── Зависимости ────────────────────────────────────────────────
     local _remote_ws="nginx"
     [ -f /opt/remnawave/docker-compose.yml ] && grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml && _remote_ws="caddy"
     remote_install_deps full "$_remote_ws"
+    return 0
+}
+
+migrate_all() {
+    header "Перенос всего стека (Panel + MTProxy + Hysteria2)"
+    echo ""
+    migrate_prepare_target || return 1
+    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
 
     # ── Panel ──────────────────────────────────────────────────────
     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
