@@ -1,0 +1,66 @@
+diff --git a/lib/panel/install.sh b/lib/panel/install.sh
+index 11c4e10..3c4e9c4 100644
+--- a/lib/panel/install.sh
++++ b/lib/panel/install.sh
+@@ -825,6 +825,32 @@ EOFYML
+     fi
+ }
+ 
++panel_pause_before_launch() {
++    local WEB_SERVER="$1"
++
++    # ── Пауза — просмотр конфигурации ───────────────────────────
++    echo ""
++    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
++    echo -e "${WHITE}  📝 Конфигурационные файлы сгенерированы${NC}"
++    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
++    echo ""
++    echo -e "${WHITE}  Перед запуском можно открыть новый SSH-сеанс и проверить${NC}"
++    echo -e "${WHITE}  или изменить любой из файлов через nano:${NC}"
++    echo ""
++    echo -e "  ${CYAN}nano /opt/remnawave/.env${NC}             ${GRAY}# секреты, JWT, домены${NC}"
++    echo -e "  ${CYAN}nano /opt/remnawave/docker-compose.yml${NC}  ${GRAY}# образы, порты${NC}"
++    if [ "$WEB_SERVER" = "1" ]; then
++        echo -e "  ${CYAN}nano /opt/remnawave/nginx.conf${NC}       ${GRAY}# SSL, cookie-защита${NC}"
++    else
++        echo -e "  ${CYAN}nano /opt/remnawave/Caddyfile${NC}        ${GRAY}# маршруты, cookie-защита${NC}"
++    fi
++    echo ""
++    echo -e "  ${GRAY}Ctrl+O → Enter — сохранить | Ctrl+X — выйти из nano${NC}"
++    echo ""
++    read -p "  Нажмите Enter когда готовы к запуску..." < /dev/tty
++    ok "Продолжаем установку"
++}
++
+ panel_install() {
+     STEP_NUM=0; TOTAL_STEPS=5
+     step "Установка Remnawave Panel"
+@@ -1230,27 +1256,7 @@ CADDYEOF
+     # Маскировочный сайт
+     panel_generate_selfsteal_site
+ 
+-    # ── Пауза — просмотр конфигурации ───────────────────────────
+-    echo ""
+-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+-    echo -e "${WHITE}  📝 Конфигурационные файлы сгенерированы${NC}"
+-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+-    echo ""
+-    echo -e "${WHITE}  Перед запуском можно открыть новый SSH-сеанс и проверить${NC}"
+-    echo -e "${WHITE}  или изменить любой из файлов через nano:${NC}"
+-    echo ""
+-    echo -e "  ${CYAN}nano /opt/remnawave/.env${NC}             ${GRAY}# секреты, JWT, домены${NC}"
+-    echo -e "  ${CYAN}nano /opt/remnawave/docker-compose.yml${NC}  ${GRAY}# образы, порты${NC}"
+-    if [ "$WEB_SERVER" = "1" ]; then
+-        echo -e "  ${CYAN}nano /opt/remnawave/nginx.conf${NC}       ${GRAY}# SSL, cookie-защита${NC}"
+-    else
+-        echo -e "  ${CYAN}nano /opt/remnawave/Caddyfile${NC}        ${GRAY}# маршруты, cookie-защита${NC}"
+-    fi
+-    echo ""
+-    echo -e "  ${GRAY}Ctrl+O → Enter — сохранить | Ctrl+X — выйти из nano${NC}"
+-    echo ""
+-    read -p "  Нажмите Enter когда готовы к запуску..." < /dev/tty
+-    ok "Продолжаем установку"
++    panel_pause_before_launch "$WEB_SERVER"
+ 
+     # ── Запуск и автоконфигурация ────────────────────────────────
+     STEP_NUM=$(( STEP_NUM + 1 ))
