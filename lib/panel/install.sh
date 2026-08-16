@@ -1,5 +1,47 @@
 # shellcheck shell=bash
 
+panel_install_prerequisites() {
+    local web_server="$1"
+    local cert_method="$2"
+
+    [ ! -f /swapfile ] && {
+        fallocate -l 2G /swapfile && chmod 600 /swapfile
+        mkswap /swapfile && swapon /swapfile
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        ok "Swap 2G"
+    }
+    grep -q "net.ipv4.tcp_congestion_control = bbr" /etc/sysctl.conf || {
+        echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+    }
+    apt-get update -y -q
+    PKGS=(curl wget git nano htop socat jq openssl ca-certificates gnupg \
+          lsb-release dnsutils unzip cron)
+    if [ "$web_server" = "1" ]; then
+        PKGS+=(certbot python3-certbot-dns-cloudflare)
+        [ "$cert_method" = "3" ] && PKGS+=(python3-pip)
+    fi
+    MISSING=(); for p in "${PKGS[@]}"; do dpkg -l "$p" &>/dev/null || MISSING+=("$p"); done
+    [ ${#MISSING[@]} -gt 0 ] && apt-get install -y -q "${MISSING[@]}"
+    if [ "$web_server" = "1" ] && [ "$cert_method" = "3" ]; then
+        certbot plugins 2>/dev/null | grep -q "dns-gcore" || \
+            python3 -m pip install --break-system-packages certbot-dns-gcore >/dev/null 2>&1 || true
+    fi
+    systemctl is-active --quiet cron || systemctl start cron
+    systemctl is-enabled --quiet cron || systemctl enable cron
+    ok "Системные пакеты"
+    ! command -v docker &>/dev/null && {
+        curl -fsSL https://get.docker.com | sh >/dev/null 2>&1 # intentional: official Docker installer
+        systemctl enable docker >/dev/null 2>&1
+        ok "Docker установлен"
+    } || ok "Docker: $(docker --version | cut -d' ' -f3 | tr -d ',')"
+    ufw allow 22/tcp  comment 'SSH'   >/dev/null 2>&1
+    ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1
+    ufw --force enable >/dev/null 2>&1
+    ok "UFW настроен"
+}
+
 panel_install() {
     STEP_NUM=0; TOTAL_STEPS=5
     step "Установка Remnawave Panel"
@@ -70,42 +112,7 @@ panel_install() {
     # ── Зависимости ──────────────────────────────────────────────
     STEP_NUM=$(( STEP_NUM + 1 ))
     step "Зависимости"
-    [ ! -f /swapfile ] && {
-        fallocate -l 2G /swapfile && chmod 600 /swapfile
-        mkswap /swapfile && swapon /swapfile
-        echo '/swapfile none swap sw 0 0' >> /etc/fstab
-        ok "Swap 2G"
-    }
-    grep -q "net.ipv4.tcp_congestion_control = bbr" /etc/sysctl.conf || {
-        echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
-        sysctl -p >/dev/null 2>&1
-    }
-    apt-get update -y -q
-    PKGS=(curl wget git nano htop socat jq openssl ca-certificates gnupg \
-          lsb-release dnsutils unzip cron)
-    if [ "$WEB_SERVER" = "1" ]; then
-        PKGS+=(certbot python3-certbot-dns-cloudflare)
-        [ "$CERT_METHOD" = "3" ] && PKGS+=(python3-pip)
-    fi
-    MISSING=(); for p in "${PKGS[@]}"; do dpkg -l "$p" &>/dev/null || MISSING+=("$p"); done
-    [ ${#MISSING[@]} -gt 0 ] && apt-get install -y -q "${MISSING[@]}"
-    if [ "$WEB_SERVER" = "1" ] && [ "$CERT_METHOD" = "3" ]; then
-        certbot plugins 2>/dev/null | grep -q "dns-gcore" || \
-            python3 -m pip install --break-system-packages certbot-dns-gcore >/dev/null 2>&1 || true
-    fi
-    systemctl is-active --quiet cron || systemctl start cron
-    systemctl is-enabled --quiet cron || systemctl enable cron
-    ok "Системные пакеты"
-    ! command -v docker &>/dev/null && {
-        curl -fsSL https://get.docker.com | sh >/dev/null 2>&1 # intentional: official Docker installer
-        systemctl enable docker >/dev/null 2>&1
-        ok "Docker установлен"
-    } || ok "Docker: $(docker --version | cut -d' ' -f3 | tr -d ',')"
-    ufw allow 22/tcp  comment 'SSH'   >/dev/null 2>&1
-    ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1
-    ufw --force enable >/dev/null 2>&1
-    ok "UFW настроен"
+    panel_install_prerequisites "$WEB_SERVER" "$CERT_METHOD"
 
     local PC="" SC="" STC=""
     if [ "$WEB_SERVER" = "1" ]; then
