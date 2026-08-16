@@ -1,0 +1,168 @@
+diff --git a/lib/panel/install.sh b/lib/panel/install.sh
+index 18ea856..016fedb 100644
+--- a/lib/panel/install.sh
++++ b/lib/panel/install.sh
+@@ -120,6 +120,82 @@ EOF
+     fi
+ }
+ 
++panel_generate_selfsteal_site() {
++    # Маскировочный сайт
++    mkdir -p /var/www/html
++    if curl -s --max-time 10 -L \
++            "https://github.com/eGamesAPI/simple-web-templates/archive/refs/heads/main.zip" \
++            -o /tmp/tmpl.zip 2>/dev/null && \
++       unzip -q /tmp/tmpl.zip -d /tmp/tmpl 2>/dev/null; then
++        TDIRS=(/tmp/tmpl/simple-web-templates-main/*/)
++        if [ ${#TDIRS[@]} -gt 0 ]; then
++            local _ridx; _ridx=$(python3 -c "import random,sys; print(random.randrange(int(sys.argv[1])))" "${#TDIRS[@]}" 2>/dev/null || echo "0")
++            cp -a "${TDIRS[$_ridx]}/." /var/www/html/ 2>/dev/null || true
++        fi
++        rm -rf /tmp/tmpl /tmp/tmpl.zip
++        ok "Маскировочный сайт установлен"
++    else
++        cat > /var/www/html/index.html <<'HTMLEOF'
++<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Welcome</title>
++<style>body{font-family:sans-serif;text-align:center;padding:100px;background:#f5f5f5}h1{color:#333}</style>
++</head><body><h1>Welcome</h1><p>Service is running.</p></body></html>
++HTMLEOF
++        ok "Базовая страница /var/www/html"
++    fi
++}
++
++panel_generate_env() {
++    local PANEL_DOMAIN="$1"
++    local SUB_DOMAIN="$2"
++    local WEB_SERVER="$3"
++
++    SUPERADMIN_USER=$(gen_user)
++    SUPERADMIN_PASS=$(gen_password)
++    COOKIE_KEY=$(gen_user)
++    COOKIE_VAL=$(gen_user)
++    APP_SECRET=$(gen_hex64)
++    METRICS_USER=$(gen_user)
++    METRICS_PASS=$(gen_user)
++
++    cat > /opt/remnawave/.env << EOF
++APP_PORT=3000
++METRICS_PORT=3001
++API_INSTANCES=1
++DATABASE_URL="postgresql://postgres:postgres@remnawave-db:5432/postgres"
++REDIS_SOCKET=/var/run/valkey/valkey.sock
++APP_SECRET=$APP_SECRET
++JWT_AUTH_LIFETIME=168
++FRONT_END_DOMAIN=$PANEL_DOMAIN
++SUB_PUBLIC_DOMAIN=$SUB_DOMAIN
++METRICS_USER=$METRICS_USER
++METRICS_PASS=$METRICS_PASS
++WEBHOOK_ENABLED=false
++WEBHOOK_URL=https://your-webhook-url.com/endpoint
++WEBHOOK_SECRET_HEADER=$(gen_hex64)
++IS_TELEGRAM_NOTIFICATIONS_ENABLED=false
++TELEGRAM_BOT_TOKEN=change_me
++# TELEGRAM_BOT_PROXY=socks5://user:password@host:port
++TELEGRAM_NOTIFY_SERVICE=change_me
++# Thread ID указывается через двоеточие в chat_id: "-100123:80"
++TELEGRAM_NOTIFY_USERS_CHAT_ID=change_me
++TELEGRAM_NOTIFY_NODES_CHAT_ID=change_me
++TELEGRAM_NOTIFY_CRM_CHAT_ID=change_me
++NOT_CONNECTED_USERS_NOTIFICATIONS_ENABLED=false
++NOT_CONNECTED_USERS_NOTIFICATIONS_AFTER_HOURS=[6, 24, 48]
++BANDWIDTH_USAGE_NOTIFICATIONS_ENABLED=false
++BANDWIDTH_USAGE_NOTIFICATIONS_THRESHOLD=[60, 80]
++POSTGRES_USER=postgres
++POSTGRES_PASSWORD=postgres
++POSTGRES_DB=postgres
++EOF
++
++    # Монтирование сертификатов — только для Nginx
++    # Монтируем весь /etc/letsencrypt чтобы симлинки из live/ → archive/ работали внутри контейнера
++    CERT_VOLUMES=""
++    [ "$WEB_SERVER" = "1" ] && CERT_VOLUMES="      - /etc/letsencrypt:/etc/letsencrypt:ro
++"
++}
++
+ panel_install() {
+     STEP_NUM=0; TOTAL_STEPS=5
+     step "Установка Remnawave Panel"
+@@ -205,51 +281,8 @@ panel_install() {
+ 
+     local SUPERADMIN_USER SUPERADMIN_PASS COOKIE_KEY COOKIE_VAL
+     local APP_SECRET METRICS_USER METRICS_PASS
+-    SUPERADMIN_USER=$(gen_user)
+-    SUPERADMIN_PASS=$(gen_password)
+-    COOKIE_KEY=$(gen_user)
+-    COOKIE_VAL=$(gen_user)
+-    APP_SECRET=$(gen_hex64)
+-    METRICS_USER=$(gen_user)
+-    METRICS_PASS=$(gen_user)
+-
+-    cat > /opt/remnawave/.env << EOF
+-APP_PORT=3000
+-METRICS_PORT=3001
+-API_INSTANCES=1
+-DATABASE_URL="postgresql://postgres:postgres@remnawave-db:5432/postgres"
+-REDIS_SOCKET=/var/run/valkey/valkey.sock
+-APP_SECRET=$APP_SECRET
+-JWT_AUTH_LIFETIME=168
+-FRONT_END_DOMAIN=$PANEL_DOMAIN
+-SUB_PUBLIC_DOMAIN=$SUB_DOMAIN
+-METRICS_USER=$METRICS_USER
+-METRICS_PASS=$METRICS_PASS
+-WEBHOOK_ENABLED=false
+-WEBHOOK_URL=https://your-webhook-url.com/endpoint
+-WEBHOOK_SECRET_HEADER=$(gen_hex64)
+-IS_TELEGRAM_NOTIFICATIONS_ENABLED=false
+-TELEGRAM_BOT_TOKEN=change_me
+-# TELEGRAM_BOT_PROXY=socks5://user:password@host:port
+-TELEGRAM_NOTIFY_SERVICE=change_me
+-# Thread ID указывается через двоеточие в chat_id: "-100123:80"
+-TELEGRAM_NOTIFY_USERS_CHAT_ID=change_me
+-TELEGRAM_NOTIFY_NODES_CHAT_ID=change_me
+-TELEGRAM_NOTIFY_CRM_CHAT_ID=change_me
+-NOT_CONNECTED_USERS_NOTIFICATIONS_ENABLED=false
+-NOT_CONNECTED_USERS_NOTIFICATIONS_AFTER_HOURS=[6, 24, 48]
+-BANDWIDTH_USAGE_NOTIFICATIONS_ENABLED=false
+-BANDWIDTH_USAGE_NOTIFICATIONS_THRESHOLD=[60, 80]
+-POSTGRES_USER=postgres
+-POSTGRES_PASSWORD=postgres
+-POSTGRES_DB=postgres
+-EOF
+-
+-    # Монтирование сертификатов — только для Nginx
+-    # Монтируем весь /etc/letsencrypt чтобы симлинки из live/ → archive/ работали внутри контейнера
+     local CERT_VOLUMES=""
+-    [ "$WEB_SERVER" = "1" ] && CERT_VOLUMES="      - /etc/letsencrypt:/etc/letsencrypt:ro
+-"
++    panel_generate_env "$PANEL_DOMAIN" "$SUB_DOMAIN" "$WEB_SERVER"
+ 
+     # docker-compose
+     if [ "$WEB_SERVER" = "1" ] && [ "$MODE" = "1" ]; then
+@@ -1080,26 +1113,7 @@ CADDYEOF
+     ok "Конфигурация сгенерирована"
+ 
+     # Маскировочный сайт
+-    mkdir -p /var/www/html
+-    if curl -s --max-time 10 -L \
+-            "https://github.com/eGamesAPI/simple-web-templates/archive/refs/heads/main.zip" \
+-            -o /tmp/tmpl.zip 2>/dev/null && \
+-       unzip -q /tmp/tmpl.zip -d /tmp/tmpl 2>/dev/null; then
+-        TDIRS=(/tmp/tmpl/simple-web-templates-main/*/)
+-        if [ ${#TDIRS[@]} -gt 0 ]; then
+-            local _ridx; _ridx=$(python3 -c "import random,sys; print(random.randrange(int(sys.argv[1])))" "${#TDIRS[@]}" 2>/dev/null || echo "0")
+-            cp -a "${TDIRS[$_ridx]}/." /var/www/html/ 2>/dev/null || true
+-        fi
+-        rm -rf /tmp/tmpl /tmp/tmpl.zip
+-        ok "Маскировочный сайт установлен"
+-    else
+-        cat > /var/www/html/index.html <<'HTMLEOF'
+-<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Welcome</title>
+-<style>body{font-family:sans-serif;text-align:center;padding:100px;background:#f5f5f5}h1{color:#333}</style>
+-</head><body><h1>Welcome</h1><p>Service is running.</p></body></html>
+-HTMLEOF
+-        ok "Базовая страница /var/www/html"
+-    fi
++    panel_generate_selfsteal_site
+ 
+     # ── Пауза — просмотр конфигурации ───────────────────────────
+     echo ""
