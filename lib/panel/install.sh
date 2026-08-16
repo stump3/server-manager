@@ -300,93 +300,13 @@ panel_setup_api() {
     ok "Стек перезапущен"
 }
 
-panel_install() {
-    STEP_NUM=0; TOTAL_STEPS=5
-    step "Установка Remnawave Panel"
-    STEP_NUM=1
-    check_root
-
-    # ── Сбор данных ──────────────────────────────────────────────
-    section "Режим"
-    echo "  1) Панель + Нода (Reality selfsteal, всё на одном сервере)"
-    echo "  2) Только панель (нода на отдельном сервере)"
-    echo ""
-    local MODE=""
-    while [[ ! "$MODE" =~ ^[12]$ ]]; do
-        read -p "  Выбор (1/2): " MODE < /dev/tty
-    done
-
-    echo ""
-    section "Домены"
-    local PANEL_DOMAIN SUB_DOMAIN SELFSTEAL_DOMAIN
-    while true; do ask PANEL_DOMAIN "Домен панели (panel.example.com)"; validate_domain "$PANEL_DOMAIN" && break || warn "Неверный формат"; done
-    while true; do ask SUB_DOMAIN   "Домен подписок (sub.example.com)";  validate_domain "$SUB_DOMAIN"   && break || warn "Неверный формат"; done
-    while true; do ask SELFSTEAL_DOMAIN "Домен selfsteal (node.example.com)"; validate_domain "$SELFSTEAL_DOMAIN" && break || warn "Неверный формат"; done
-
-    if [ "$PANEL_DOMAIN" = "$SUB_DOMAIN" ] || \
-       [ "$PANEL_DOMAIN" = "$SELFSTEAL_DOMAIN" ] || \
-       [ "$SUB_DOMAIN" = "$SELFSTEAL_DOMAIN" ]; then
-        err "Все три домена должны быть уникальными"
-    fi
-
-    echo ""
-    section "Веб-сервер"
-    echo "  1) Nginx   (SSL через certbot — Cloudflare / Let's Encrypt / Gcore)"
-    echo "  2) Caddy   (SSL автоматически — встроенный ACME, certbot не нужен)"
-    echo ""
-    local WEB_SERVER=""
-    while [[ ! "$WEB_SERVER" =~ ^[12]$ ]]; do
-        read -p "  Выбор (1/2): " WEB_SERVER < /dev/tty
-    done
-
-    local CERT_METHOD="" PANEL_CF_EMAIL="" PANEL_CF_KEY="" PANEL_LE_EMAIL="" GCORE_TOKEN=""
-    if [ "$WEB_SERVER" = "1" ]; then
-        echo ""
-        section "SSL сертификаты"
-        echo "  1) Cloudflare DNS-01 (wildcard, рекомендуется)"
-        echo "  2) ACME HTTP-01 (Let's Encrypt)"
-        echo "  3) Gcore DNS-01 (wildcard)"
-        while [[ ! "$CERT_METHOD" =~ ^[123]$ ]]; do
-            read -p "  Метод (1/2/3): " CERT_METHOD < /dev/tty
-        done
-        case $CERT_METHOD in
-            1) ask PANEL_CF_KEY   "  Cloudflare API Token"
-               ask PANEL_CF_EMAIL "  Email Cloudflare" ;;
-            2) ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
-            3) ask GCORE_TOKEN    "  Gcore API Token"
-               ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
-        esac
-    else
-        info "Caddy: SSL будет получен автоматически через ACME при первом запуске"
-        [ "$MODE" = "2" ] && info "Для ACME нужны порты 80 и 443 — откроются автоматически"
-    fi
-
-    echo ""
-    info "Проверка DNS..."
-    check_dns "$PANEL_DOMAIN"     || warn "Проверьте DNS для $PANEL_DOMAIN"
-    check_dns "$SUB_DOMAIN"       || warn "Проверьте DNS для $SUB_DOMAIN"
-    check_dns "$SELFSTEAL_DOMAIN" || warn "Проверьте DNS для $SELFSTEAL_DOMAIN"
-
-    # ── Зависимости ──────────────────────────────────────────────
-    STEP_NUM=$(( STEP_NUM + 1 ))
-    step "Зависимости"
-    panel_install_prerequisites "$WEB_SERVER" "$CERT_METHOD"
-
-    local PC="" SC="" STC=""
-    panel_install_ssl "$WEB_SERVER" "$CERT_METHOD" \
-                       "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                       "$PANEL_CF_KEY" "$PANEL_CF_EMAIL" "$GCORE_TOKEN" \
-                       "$PANEL_LE_EMAIL"
-
-    # ── Генерация конфигурации ───────────────────────────────────
-    STEP_NUM=$(( STEP_NUM + 1 ))
-    step "Генерация конфигурации"
-    mkdir -p /opt/remnawave && cd /opt/remnawave
-
-    local SUPERADMIN_USER SUPERADMIN_PASS COOKIE_KEY COOKIE_VAL
-    local APP_SECRET METRICS_USER METRICS_PASS
-    local CERT_VOLUMES=""
-    panel_generate_env "$PANEL_DOMAIN" "$SUB_DOMAIN" "$WEB_SERVER"
+panel_generate_compose() {
+    local WEB_SERVER="$1"
+    local MODE="$2"
+    local CERT_VOLUMES="$3"
+    local PANEL_DOMAIN="$4"
+    local SUB_DOMAIN="$5"
+    local SELFSTEAL_DOMAIN="$6"
 
     # docker-compose
     if [ "$WEB_SERVER" = "1" ] && [ "$MODE" = "1" ]; then
@@ -903,6 +823,97 @@ volumes:
     name: caddy_data
 EOFYML
     fi
+}
+
+panel_install() {
+    STEP_NUM=0; TOTAL_STEPS=5
+    step "Установка Remnawave Panel"
+    STEP_NUM=1
+    check_root
+
+    # ── Сбор данных ──────────────────────────────────────────────
+    section "Режим"
+    echo "  1) Панель + Нода (Reality selfsteal, всё на одном сервере)"
+    echo "  2) Только панель (нода на отдельном сервере)"
+    echo ""
+    local MODE=""
+    while [[ ! "$MODE" =~ ^[12]$ ]]; do
+        read -p "  Выбор (1/2): " MODE < /dev/tty
+    done
+
+    echo ""
+    section "Домены"
+    local PANEL_DOMAIN SUB_DOMAIN SELFSTEAL_DOMAIN
+    while true; do ask PANEL_DOMAIN "Домен панели (panel.example.com)"; validate_domain "$PANEL_DOMAIN" && break || warn "Неверный формат"; done
+    while true; do ask SUB_DOMAIN   "Домен подписок (sub.example.com)";  validate_domain "$SUB_DOMAIN"   && break || warn "Неверный формат"; done
+    while true; do ask SELFSTEAL_DOMAIN "Домен selfsteal (node.example.com)"; validate_domain "$SELFSTEAL_DOMAIN" && break || warn "Неверный формат"; done
+
+    if [ "$PANEL_DOMAIN" = "$SUB_DOMAIN" ] || \
+       [ "$PANEL_DOMAIN" = "$SELFSTEAL_DOMAIN" ] || \
+       [ "$SUB_DOMAIN" = "$SELFSTEAL_DOMAIN" ]; then
+        err "Все три домена должны быть уникальными"
+    fi
+
+    echo ""
+    section "Веб-сервер"
+    echo "  1) Nginx   (SSL через certbot — Cloudflare / Let's Encrypt / Gcore)"
+    echo "  2) Caddy   (SSL автоматически — встроенный ACME, certbot не нужен)"
+    echo ""
+    local WEB_SERVER=""
+    while [[ ! "$WEB_SERVER" =~ ^[12]$ ]]; do
+        read -p "  Выбор (1/2): " WEB_SERVER < /dev/tty
+    done
+
+    local CERT_METHOD="" PANEL_CF_EMAIL="" PANEL_CF_KEY="" PANEL_LE_EMAIL="" GCORE_TOKEN=""
+    if [ "$WEB_SERVER" = "1" ]; then
+        echo ""
+        section "SSL сертификаты"
+        echo "  1) Cloudflare DNS-01 (wildcard, рекомендуется)"
+        echo "  2) ACME HTTP-01 (Let's Encrypt)"
+        echo "  3) Gcore DNS-01 (wildcard)"
+        while [[ ! "$CERT_METHOD" =~ ^[123]$ ]]; do
+            read -p "  Метод (1/2/3): " CERT_METHOD < /dev/tty
+        done
+        case $CERT_METHOD in
+            1) ask PANEL_CF_KEY   "  Cloudflare API Token"
+               ask PANEL_CF_EMAIL "  Email Cloudflare" ;;
+            2) ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
+            3) ask GCORE_TOKEN    "  Gcore API Token"
+               ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
+        esac
+    else
+        info "Caddy: SSL будет получен автоматически через ACME при первом запуске"
+        [ "$MODE" = "2" ] && info "Для ACME нужны порты 80 и 443 — откроются автоматически"
+    fi
+
+    echo ""
+    info "Проверка DNS..."
+    check_dns "$PANEL_DOMAIN"     || warn "Проверьте DNS для $PANEL_DOMAIN"
+    check_dns "$SUB_DOMAIN"       || warn "Проверьте DNS для $SUB_DOMAIN"
+    check_dns "$SELFSTEAL_DOMAIN" || warn "Проверьте DNS для $SELFSTEAL_DOMAIN"
+
+    # ── Зависимости ──────────────────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
+    step "Зависимости"
+    panel_install_prerequisites "$WEB_SERVER" "$CERT_METHOD"
+
+    local PC="" SC="" STC=""
+    panel_install_ssl "$WEB_SERVER" "$CERT_METHOD" \
+                       "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+                       "$PANEL_CF_KEY" "$PANEL_CF_EMAIL" "$GCORE_TOKEN" \
+                       "$PANEL_LE_EMAIL"
+
+    # ── Генерация конфигурации ───────────────────────────────────
+    STEP_NUM=$(( STEP_NUM + 1 ))
+    step "Генерация конфигурации"
+    mkdir -p /opt/remnawave && cd /opt/remnawave
+
+    local SUPERADMIN_USER SUPERADMIN_PASS COOKIE_KEY COOKIE_VAL
+    local APP_SECRET METRICS_USER METRICS_PASS
+    local CERT_VOLUMES=""
+    panel_generate_env "$PANEL_DOMAIN" "$SUB_DOMAIN" "$WEB_SERVER"
+
+    panel_generate_compose "$WEB_SERVER" "$MODE" "$CERT_VOLUMES" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN"
 
     # Конфиг веб-сервера
     if [ "$WEB_SERVER" = "1" ]; then
