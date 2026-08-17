@@ -1,0 +1,80 @@
+diff --git a/lib/panel/install.sh b/lib/panel/install.sh
+index 1b41df1..5e7f74d 100644
+--- a/lib/panel/install.sh
++++ b/lib/panel/install.sh
+@@ -851,6 +851,42 @@ panel_pause_before_launch() {
+     ok "Продолжаем установку"
+ }
+ 
++panel_install_summary() {
++    local PANEL_DOMAIN="$1"
++    local SUB_DOMAIN="$2"
++    local SELFSTEAL_DOMAIN="$3"
++    local SUPERADMIN_USER="$4"
++    local SUPERADMIN_PASS="$5"
++    local COOKIE_KEY="$6"
++    local COOKIE_VAL="$7"
++
++    # ── Итог ─────────────────────────────────────────────────────
++    echo ""
++    echo -e "${BOLD}${GREEN}  ✓ Remnawave Panel установлена${NC}"
++    echo ""
++    echo -e "${BOLD}${WHITE}  Доступ${NC}"
++    echo -e "${GRAY}  ──────────────────────────────${NC}"
++    echo -e "  ${GRAY}Панель    ${NC}https://${PANEL_DOMAIN}"
++    echo -e "  ${GRAY}Подписки  ${NC}https://${SUB_DOMAIN}"
++    echo -e "  ${GRAY}Selfsteal ${NC}https://${SELFSTEAL_DOMAIN}"
++    echo ""
++    echo -e "${BOLD}${WHITE}  Учётные данные${NC}"
++    echo -e "${GRAY}  ──────────────────────────────${NC}"
++    echo -e "  ${GRAY}Логин   ${NC}${SUPERADMIN_USER}"
++    echo -e "  ${GRAY}Пароль  ${NC}${SUPERADMIN_PASS}"
++    echo ""
++    echo -e "${BOLD}${YELLOW}  ⚠  Сохраните — показывается один раз${NC}"
++    echo -e "${GRAY}  ──────────────────────────────${NC}"
++    echo -e "  ${CYAN}https://${PANEL_DOMAIN}/auth/login?${COOKIE_KEY}=${COOKIE_VAL}${NC}"
++    echo ""
++    echo -e "${BOLD}${WHITE}  Управление${NC}"
++    echo -e "${GRAY}  ──────────────────────────────${NC}"
++    echo -e "  ${GRAY}Команда   ${NC}remnawave_panel  ${GRAY}или${NC}  rp"
++    echo ""
++    read -rp "  Нажмите Enter чтобы продолжить (данные выше сохраните сейчас)..." < /dev/tty
++    echo ""
++}
++
+ panel_install() {
+     STEP_NUM=0; TOTAL_STEPS=5
+     step "Установка Remnawave Panel"
+@@ -968,31 +1004,7 @@ panel_install() {
+     # ── Команда управления ───────────────────────────────────────
+     panel_install_mgmt_script "$PANEL_DOMAIN" "$COOKIE_KEY" "$COOKIE_VAL" "$MODE" "$WEB_SERVER"
+ 
+-    # ── Итог ─────────────────────────────────────────────────────
+-    echo ""
+-    echo -e "${BOLD}${GREEN}  ✓ Remnawave Panel установлена${NC}"
+-    echo ""
+-    echo -e "${BOLD}${WHITE}  Доступ${NC}"
+-    echo -e "${GRAY}  ──────────────────────────────${NC}"
+-    echo -e "  ${GRAY}Панель    ${NC}https://${PANEL_DOMAIN}"
+-    echo -e "  ${GRAY}Подписки  ${NC}https://${SUB_DOMAIN}"
+-    echo -e "  ${GRAY}Selfsteal ${NC}https://${SELFSTEAL_DOMAIN}"
+-    echo ""
+-    echo -e "${BOLD}${WHITE}  Учётные данные${NC}"
+-    echo -e "${GRAY}  ──────────────────────────────${NC}"
+-    echo -e "  ${GRAY}Логин   ${NC}${SUPERADMIN_USER}"
+-    echo -e "  ${GRAY}Пароль  ${NC}${SUPERADMIN_PASS}"
+-    echo ""
+-    echo -e "${BOLD}${YELLOW}  ⚠  Сохраните — показывается один раз${NC}"
+-    echo -e "${GRAY}  ──────────────────────────────${NC}"
+-    echo -e "  ${CYAN}https://${PANEL_DOMAIN}/auth/login?${COOKIE_KEY}=${COOKIE_VAL}${NC}"
+-    echo ""
+-    echo -e "${BOLD}${WHITE}  Управление${NC}"
+-    echo -e "${GRAY}  ──────────────────────────────${NC}"
+-    echo -e "  ${GRAY}Команда   ${NC}remnawave_panel  ${GRAY}или${NC}  rp"
+-    echo ""
+-    read -rp "  Нажмите Enter чтобы продолжить (данные выше сохраните сейчас)..." < /dev/tty
+-    echo ""
++    panel_install_summary "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" "$SUPERADMIN_USER" "$SUPERADMIN_PASS" "$COOKIE_KEY" "$COOKIE_VAL"
+ }
+ 
+ panel_install_mgmt_script() {
