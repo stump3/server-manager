@@ -1,123 +1,177 @@
 # shellcheck shell=bash
-# common/ssh.sh — SSH migration helpers (sshpass, target input, RUN/PUT, remote deps)
 
+panel_generate_nginx_config() {
+    local MODE="$1"
+    local PANEL_DOMAIN="$2"
+    local SUB_DOMAIN="$3"
+    local SELFSTEAL_DOMAIN="$4"
+    local PC="$5"
+    local SC="$6"
+    local STC="$7"
+    local COOKIE_KEY="$8"
+    local COOKIE_VAL="$9"
+    local OUT_DIR="${10:-/opt/remnawave}"
 
-# Установка sshpass (нужна для migrate в обоих разделах)
-ensure_sshpass() {
-    command -v sshpass &>/dev/null && return 0
-    info "Установка sshpass..."
-    apt-get install -y -q sshpass 2>/dev/null || \
-        yum install -y sshpass 2>/dev/null || \
-        die "Не удалось установить sshpass. Установи вручную: apt install sshpass"
-    ok "sshpass установлен"
+        # ── nginx.conf ────────────────────────────────────────────
+        local LISTEN_DIR REAL_IP_P REAL_IP_S
+        if [ "$MODE" = "1" ]; then
+            LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;"
+            REAL_IP_P="\$proxy_protocol_addr"
+            REAL_IP_S="\$proxy_protocol_addr"
+        else
+            LISTEN_DIR="listen 443 ssl;"
+            REAL_IP_P="\$remote_addr"
+            REAL_IP_S="\$remote_addr"
+        fi
+
+    cat > "${OUT_DIR}/nginx.conf" << NGINX_CONF_EOF
+server_names_hash_bucket_size 64;
+
+upstream remnawave { server 127.0.0.1:3000; }
+upstream remnawave-sub { server 127.0.0.1:3010; }
+
+map \$http_upgrade \$connection_upgrade {
+    default upgrade; "" close;
 }
 
-
-# ── SSH-миграция: ввод данных ─────────────────────────────────────
-# Результат записывается в переменные: _SSH_IP _SSH_PORT _SSH_USER _SSH_PASS
-ask_ssh_target() {
-    # Восстанавливаем эхо терминала при выходе (на случай прерывания после read -rsp)
-    trap 'stty echo 2>/dev/null || true' RETURN
-    while true; do
-        read -rp "  IP нового сервера: " _SSH_IP < /dev/tty
-        [[ "$_SSH_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && break
-        warn "Неверный формат IP"
-    done
-    read -rp "  SSH-порт [22]: "         _SSH_PORT < /dev/tty; _SSH_PORT="${_SSH_PORT:-22}"
-    read -rp "  Пользователь [root]: "   _SSH_USER < /dev/tty; _SSH_USER="${_SSH_USER:-root}"
-    while true; do
-        stty -echo 2>/dev/null || true
-        read -rp "  Пароль SSH: " _SSH_PASS < /dev/tty
-        stty echo 2>/dev/null || true
-        echo ""
-        [ -n "$_SSH_PASS" ] && break
-        warn "Пароль не может быть пустым"
-    done
-    export _SSH_IP _SSH_PORT _SSH_USER _SSH_PASS
+# Cookie-защита панели: доступ только с ?${COOKIE_KEY}=${COOKIE_VAL}
+map \$http_cookie \$auth_cookie {
+    default 0; "~*${COOKIE_KEY}=${COOKIE_VAL}" 1;
+}
+map \$arg_${COOKIE_KEY} \$auth_query {
+    default 0; "${COOKIE_VAL}" 1;
+}
+map "\$auth_cookie\$auth_query" \$authorized {
+    "~1" 1; default 0;
+}
+map \$arg_${COOKIE_KEY} \$set_cookie_header {
+    "${COOKIE_VAL}" "${COOKIE_KEY}=${COOKIE_VAL}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000";
+    default "";
 }
 
-# ── SSH-миграция: инициализация хелперов RUN/PUT ──────────────────
-# init_ssh_helpers [panel|telemt|hysteria|full]
-#   panel/full  — StrictHostKeyChecking=no, BatchMode=no  (RUN + PUT)
-#   telemt      — StrictHostKeyChecking=accept-new        (RUN + PUT, те же RUN/PUT)
-#   hysteria    — StrictHostKeyChecking=no, порт явно     (RUN + PUT)
-# После вызова доступны: RUN "cmd", PUT src dst
-init_ssh_helpers() {
-    local mode="${1:-panel}"
-    local strict_opt
-    case "$mode" in
-        telemt) strict_opt="StrictHostKeyChecking=accept-new" ;;
-        *)      strict_opt="StrictHostKeyChecking=no" ;;
-    esac
-    _SSH_OPTS="-p $_SSH_PORT -o $strict_opt -o ConnectTimeout=10"
-    [ "$mode" != "telemt" ] && _SSH_OPTS="$_SSH_OPTS -o BatchMode=no"
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ecdh_curve X25519:prime256v1:secp384r1;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+ssl_prefer_server_ciphers on;
+ssl_session_timeout 1d;
+ssl_session_cache shared:MozSSL:10m;
+ssl_session_tickets off;
 
-    # shellcheck disable=SC2139
-    RUN() { sshpass -p "$_SSH_PASS" ssh  $_SSH_OPTS "${_SSH_USER}@${_SSH_IP}" "$@"; }
-    PUT() { sshpass -p "$_SSH_PASS" scp -rp $_SSH_OPTS "$@"; }
-    export -f RUN PUT 2>/dev/null || true
+server {
+    server_name ${PANEL_DOMAIN};
+    ${LISTEN_DIR}
+    http2 on;
+    ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
+    ssl_trusted_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
+    add_header Set-Cookie \$set_cookie_header;
+
+    location ^~ /oauth2/ {
+        if (\$http_referer !~ "^https://oauth\\.telegram\\.org/") {
+            return 444;
+        }
+        proxy_http_version 1.1;
+        proxy_pass http://remnawave;
+        proxy_set_header Host \$host;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header X-Real-IP ${REAL_IP_P};
+        proxy_set_header X-Forwarded-For ${REAL_IP_P};
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_send_timeout 60s; proxy_read_timeout 60s;
+    }
+    location / {
+        error_page 418 = @unauthorized;
+        recursive_error_pages on;
+        if (\$authorized = 0) { return 418; }
+        proxy_http_version 1.1;
+        proxy_pass http://remnawave;
+        proxy_set_header Host \$host;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header X-Real-IP ${REAL_IP_P};
+        proxy_set_header X-Forwarded-For ${REAL_IP_P};
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_send_timeout 60s; proxy_read_timeout 60s;
+    }
+    location @unauthorized {
+        root /var/www/html; index index.html; try_files /index.html =444;
+    }
 }
 
-# ── SSH-миграция: проверка подключения ────────────────────────────
-check_ssh_connection() {
-    RUN "echo ok" >/dev/null 2>&1         || { warn "Не удалось подключиться к ${_SSH_IP}:${_SSH_PORT}"; return 1; }
-    ok "SSH соединение установлено"
+server {
+    server_name ${SUB_DOMAIN};
+    ${LISTEN_DIR}
+    http2 on;
+    ssl_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${SC}/privkey.pem";
+    ssl_trusted_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
+
+    location / {
+        proxy_http_version 1.1;
+        proxy_pass http://remnawave-sub;
+        proxy_set_header Host \$host;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header X-Real-IP ${REAL_IP_S};
+        proxy_set_header X-Forwarded-For ${REAL_IP_S};
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        proxy_send_timeout 60s; proxy_read_timeout 60s;
+        proxy_intercept_errors on;
+        error_page 400 404 500 502 @sub_error;
+    }
+    location @sub_error { return 444; }
 }
 
-# ── Remote: установка зависимостей ───────────────────────────────
-# remote_install_deps [panel|full] [nginx|caddy]
-#   panel — base (без qrencode/unzip/cron, без /etc/hysteria)
-#   full  — base + unzip cron qrencode + /etc/hysteria
-#   nginx — ставит certbot-пакеты для nginx SSL
-#   caddy — пропускает certbot, сертификатами управляет Caddy
-remote_install_deps() {
-    local variant="${1:-panel}" web_server="${2:-nginx}"
-    local extra_pkgs="" extra_dirs="" ssl_pkgs=""
-    local base_dir="/opt/remnawave"
-    [ "$variant" = "node" ] && base_dir="/opt/remnanode"
-    [ "$web_server" != "caddy" ] && ssl_pkgs=" certbot python3-certbot-dns-cloudflare"
-    if [ "$variant" = "full" ]; then
-        extra_pkgs=" unzip cron qrencode"
-        extra_dirs=" /etc/hysteria"
-    fi
-    local extra_ufw=""
-    [ "$variant" = "node" ] && extra_ufw="ufw allow 80/tcp >/dev/null 2>&1; "
+server {
+    server_name ${SELFSTEAL_DOMAIN};
+    ${LISTEN_DIR}
+    http2 on;
+    ssl_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${STC}/privkey.pem";
+    ssl_trusted_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
+    root /var/www/html; index index.html;
+    add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
+}
 
-    # ── Показываем что будет выполнено и просим подтверждение ─────
-    echo ""
-    warn "На сервере ${_SSH_IP} будут выполнены следующие действия:"
-    echo ""
-    echo "  · apt-get update && apt-get install (curl, docker-deps${ssl_pkgs:+, certbot}...)"
-    echo "  · Установка Docker (если не установлен)"
-    echo "  · Создание swap-файла 2 GB (если нет)"
-    echo "  · Включение BBR (sysctl)"
-    if [ "$variant" = "node" ]; then
-        echo "  · Открытие портов 22/tcp, 80/tcp и 443/tcp в UFW"
+server {
+    ${LISTEN_DIR}
+    server_name _;
+    ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
+    ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
+    ssl_reject_handshake on;
+    return 444;
+}
+NGINX_CONF_EOF
+}
+
+# panel_generate_webserver_config — dispatcher, выбирает nginx/caddy backend
+# по значению WEB_SERVER. Orchestration-level функция; отдельный третий
+# файл для одного диспетчера не создаём (см. решение Stage 6h).
+panel_generate_webserver_config() {
+    local WEB_SERVER="$1"
+    local MODE="$2"
+    local PANEL_DOMAIN="$3"
+    local SUB_DOMAIN="$4"
+    local SELFSTEAL_DOMAIN="$5"
+    local PC="$6"
+    local SC="$7"
+    local STC="$8"
+    local COOKIE_KEY="$9"
+    local COOKIE_VAL="${10}"
+
+    if [ "$WEB_SERVER" = "1" ]; then
+        panel_generate_nginx_config \
+            "$MODE" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+            "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL"
     else
-        echo "  · Открытие портов 22/tcp и 443/tcp в UFW"
+        panel_generate_caddy_config \
+            "$MODE" "$COOKIE_KEY" "$COOKIE_VAL"
     fi
-    [ "$variant" = "full" ] && echo "  · Установка qrencode, unzip, cron"
-    echo ""
-    if ! confirm "Продолжить установку зависимостей на ${_SSH_IP}?" y; then
-        warn "Отменено пользователем"
-        return 1
-    fi
-
-    info "Устанавливаем зависимости на новом сервере..."
-    RUN bash -s << RDEPS
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y -q 2>/dev/null
-apt-get install -y -q curl wget git jq openssl ca-certificates gnupg dnsutils \
-    sshpass${ssl_pkgs}${extra_pkgs} 2>/dev/null${extra_pkgs} 2>/dev/null
-command -v docker &>/dev/null || { curl -fsSL https://get.docker.com | sh >/dev/null 2>&1; systemctl enable docker >/dev/null 2>&1; } # intentional: official Docker installer
-[ ! -f /swapfile ] && { fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab; }
-grep -q "bbr" /etc/sysctl.conf 2>/dev/null || {
-    echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
-    sysctl -p >/dev/null 2>&1
-}
-ufw allow 22/tcp >/dev/null 2>&1; ${extra_ufw}ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
-mkdir -p ${base_dir} /var/www/html /etc/letsencrypt /etc/ssl/certs/hysteria${extra_dirs}
-RDEPS
-    ok "Зависимости установлены"
 }
