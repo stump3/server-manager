@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #
 # Этот файл — loader. Реализация панели разбита на подмодули в
-# lib/panel/{core,cert,install,nginx/config,caddy/config,management,warp,subpage,template,migrate,menu}.sh
+# lib/panel/{core,cert,install,nginx/config,caddy/config,node/compose,management,warp,subpage,template,migrate,menu}.sh
 #
 # Поддерживаются оба способа загрузки:
 #   1. _sm_source_file / _load_module panel  (обычный путь из server-manager.sh,
@@ -16,7 +16,7 @@
 
 _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
 
-for _panel_module in core cert install nginx/config caddy/config management warp subpage template migrate menu; do
+for _panel_module in core cert install nginx/config caddy/config node/compose management warp subpage template migrate menu; do
     # shellcheck source=/dev/null
     source "${_PANEL_MODULE_DIR}/${_panel_module}.sh"
 done
