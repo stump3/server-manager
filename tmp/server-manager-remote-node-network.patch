@@ -1,0 +1,393 @@
+diff --git a/lib/common/ssh.sh b/lib/common/ssh.sh
+index 211f6e9..9600f09 100644
+--- a/lib/common/ssh.sh
++++ b/lib/common/ssh.sh
+@@ -72,12 +72,16 @@ check_ssh_connection() {
+ #   caddy — пропускает certbot, сертификатами управляет Caddy
+ remote_install_deps() {
+     local variant="${1:-panel}" web_server="${2:-nginx}"
+-    local extra_pkgs="" extra_dirs="" ssl_pkgs=""
++    local extra_pkgs="" extra_dirs="" ssl_pkgs="" base_dir="/opt/remnawave" extra_ufw=""
+     [ "$web_server" != "caddy" ] && ssl_pkgs=" certbot python3-certbot-dns-cloudflare"
+     if [ "$variant" = "full" ]; then
+         extra_pkgs=" unzip cron qrencode"
+         extra_dirs=" /etc/hysteria"
+     fi
++    if [ "$variant" = "node" ]; then
++        base_dir="/opt/remnanode"
++        extra_ufw="ufw allow 80/tcp >/dev/null 2>&1; "
++    fi
+ 
+     # ── Показываем что будет выполнено и просим подтверждение ─────
+     echo ""
+@@ -87,7 +91,11 @@ remote_install_deps() {
+     echo "  · Установка Docker (если не установлен)"
+     echo "  · Создание swap-файла 2 GB (если нет)"
+     echo "  · Включение BBR (sysctl)"
+-    echo "  · Открытие портов 22/tcp и 443/tcp в UFW"
++    if [ "$variant" = "node" ]; then
++        echo "  · Открытие портов 22/tcp, 80/tcp и 443/tcp в UFW"
++    else
++        echo "  · Открытие портов 22/tcp и 443/tcp в UFW"
++    fi
+     [ "$variant" = "full" ] && echo "  · Установка qrencode, unzip, cron"
+     echo ""
+     if ! confirm "Продолжить установку зависимостей на ${_SSH_IP}?" y; then
+@@ -108,8 +116,8 @@ grep -q "bbr" /etc/sysctl.conf 2>/dev/null || {
+     echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
+     sysctl -p >/dev/null 2>&1
+ }
+-ufw allow 22/tcp >/dev/null 2>&1; ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
+-mkdir -p /opt/remnawave /var/www/html /etc/letsencrypt /etc/ssl/certs/hysteria${extra_dirs}
++ufw allow 22/tcp >/dev/null 2>&1; ${extra_ufw}ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
++mkdir -p ${base_dir} /var/www/html /etc/letsencrypt /etc/ssl/certs/hysteria${extra_dirs}
+ RDEPS
+     ok "Зависимости установлены"
+ }
+diff --git a/lib/panel.sh b/lib/panel.sh
+index e10301a..4bde737 100644
+--- a/lib/panel.sh
++++ b/lib/panel.sh
+@@ -3,7 +3,7 @@
+ # ═══════════════════════════════════════════════════════════════════
+ #
+ # Этот файл — loader. Реализация панели разбита на подмодули в
+-# lib/panel/{core,cert,install,nginx/config,caddy/config,node/compose,management,warp,subpage,template,migrate,menu}.sh
++# lib/panel/{core,cert,install,nginx/config,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
+ #
+ # Поддерживаются оба способа загрузки:
+ #   1. _sm_source_file / _load_module panel  (обычный путь из server-manager.sh,
+@@ -16,7 +16,7 @@
+ 
+ _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
+ 
+-for _panel_module in core cert install nginx/config caddy/config node/compose management warp subpage template migrate menu; do
++for _panel_module in core cert install nginx/config caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+     # shellcheck source=/dev/null
+     source "${_PANEL_MODULE_DIR}/${_panel_module}.sh"
+ done
+diff --git a/lib/panel/install.sh b/lib/panel/install.sh
+index 5e7f74d..b488039 100644
+--- a/lib/panel/install.sh
++++ b/lib/panel/install.sh
+@@ -121,8 +121,9 @@ EOF
+ }
+ 
+ panel_generate_selfsteal_site() {
++    local TARGET_DIR="${1:-/var/www/html}"
+     # Маскировочный сайт
+-    mkdir -p /var/www/html
++    mkdir -p "$TARGET_DIR"
+     if curl -s --max-time 10 -L \
+             "https://github.com/eGamesAPI/simple-web-templates/archive/refs/heads/main.zip" \
+             -o /tmp/tmpl.zip 2>/dev/null && \
+@@ -130,12 +131,12 @@ panel_generate_selfsteal_site() {
+         TDIRS=(/tmp/tmpl/simple-web-templates-main/*/)
+         if [ ${#TDIRS[@]} -gt 0 ]; then
+             local _ridx; _ridx=$(python3 -c "import random,sys; print(random.randrange(int(sys.argv[1])))" "${#TDIRS[@]}" 2>/dev/null || echo "0")
+-            cp -a "${TDIRS[$_ridx]}/." /var/www/html/ 2>/dev/null || true
++            cp -a "${TDIRS[$_ridx]}/." "$TARGET_DIR/" 2>/dev/null || true
+         fi
+         rm -rf /tmp/tmpl /tmp/tmpl.zip
+         ok "Маскировочный сайт установлен"
+     else
+-        cat > /var/www/html/index.html <<'HTMLEOF'
++        cat > "$TARGET_DIR/index.html" <<'HTMLEOF'
+ <!DOCTYPE html><html><head><meta charset="UTF-8"><title>Welcome</title>
+ <style>body{font-family:sans-serif;text-align:center;padding:100px;background:#f5f5f5}h1{color:#333}</style>
+ </head><body><h1>Welcome</h1><p>Service is running.</p></body></html>
+diff --git a/lib/panel/menu.sh b/lib/panel/menu.sh
+index fec8085..ddc656c 100644
+--- a/lib/panel/menu.sh
++++ b/lib/panel/menu.sh
+@@ -30,6 +30,7 @@ panel_menu() {
+         echo -e "  ${BOLD}5)${RESET}  🖼️  Selfsteal шаблон"
+         echo -e "  ${BOLD}6)${RESET}  📦  Миграция на другой сервер"
+         echo -e "  ${BOLD}7)${RESET}  🗑️  Удалить панель"
++        echo -e "  ${BOLD}8)${RESET}  🖧  Добавить Remote Node"
+         echo ""
+         echo -e "  ${BOLD}0)${RESET}  ◀️  Назад"
+         echo ""
+@@ -43,6 +44,7 @@ panel_menu() {
+             6) { [ -x "$PANEL_MGMT_SCRIPT" ] && "$PANEL_MGMT_SCRIPT" migrate || warn "Панель не установлена."; } || true
+                read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
+             7) panel_remove || true ;;
++            8) panel_install_remote_node || true ;;
+             0) return ;;
+             *) warn "Неверный выбор" ;;
+         esac
+diff --git a/lib/panel/node/api.sh b/lib/panel/node/api.sh
+new file mode 100644
+index 0000000..9d38e9e
+--- /dev/null
++++ b/lib/panel/node/api.sh
+@@ -0,0 +1,141 @@
++# shellcheck shell=bash
++#
++# lib/panel/node/api.sh — регистрация Remote Node в Panel API + health-check.
++#
++# Источник паттернов (endpoint'ы, jq-структуры) — panel_setup_api() в
++# lib/panel/install.sh, MODE=1-ветка. Ничего не придумано заново: та же
++# последовательность config-profile → node → host → squad, тот же формат
++# JSON, тот же способ вызова panel_api() (lib/common/network.sh).
++#
++# Отличия от panel_setup_api(), обоснованные тем, что этот код выполняется
++# ПОЗЖЕ, отдельной операцией, когда Panel уже установлена и суперадмин уже
++# существует:
++#   - НЕ вызывает /api/auth/register (создал бы дубликат суперадмина/ошибку)
++#   - вызывает /api/auth/login с уже существующими credentials
++#     ⚠ ПРЕДПОЛОЖЕНИЕ: этот endpoint не встречается больше нигде в текущем
++#       коде server-manager, поэтому его точная сигнатура НЕ подтверждена
++#       прямым чтением исходников Remnawave Panel в рамках этой сессии —
++#       строится по аналогии с /api/auth/register (тот же request/response
++#       shape: {username,password} → response.accessToken). Если endpoint
++#       окажется иным — это первое место для проверки при реальном тесте.
++#   - НЕ пересоздаёт /api/tokens (subscription-page) и НЕ трогает
++#     REMNAWAVE_API_TOKEN — это Panel-стек-специфичная операция, к Remote
++#     Node отношения не имеет
++#   - DEST_VAL всегда '/dev/shm/nginx.sock' (Remote Node всегда в
++#     unix-socket-топологии — см. предыдущие раунды исследования,
++#     self-reference ${SELFSTEAL_DOMAIN}:443 семантически некорректен)
++#   - NODE_ADDR передаётся явным параметром (IP ноды, не домен — см.
++#     инвариант "NODE_ADDR ≠ SELFSTEAL_DOMAIN" из задания)
++
++# panel_node_register SUPERADMIN_USER SUPERADMIN_PASS SELFSTEAL_DOMAIN NODE_ADDR
++# Печатает "TOKEN NODE_UUID" одной строкой в stdout при успехе, ничего — при ошибке.
++panel_node_register() {
++    local SUPERADMIN_USER="$1"
++    local SUPERADMIN_PASS="$2"
++    local SELFSTEAL_DOMAIN="$3"
++    local NODE_ADDR="$4"
++    local API="127.0.0.1:3000"
++
++    local LOGIN_R TOKEN
++    LOGIN_R=$(panel_api "POST" "http://$API/api/auth/login" "" \
++        "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}")
++    TOKEN=$(echo "$LOGIN_R" | jq -r '.response.accessToken // empty' 2>/dev/null)
++    if [ -z "$TOKEN" ]; then
++        warn "Не удалось авторизоваться в Panel API: $LOGIN_R"
++        return 1
++    fi
++
++    local KEYS_R PRIV_KEY
++    KEYS_R=$(panel_api "GET" "http://$API/api/system/tools/x25519/generate" "$TOKEN")
++    PRIV_KEY=$(echo "$KEYS_R" | jq -r '.response.keypairs[0].privateKey // empty' 2>/dev/null)
++    [ -z "$PRIV_KEY" ] && { warn "Ошибка генерации Reality-ключей"; return 1; }
++
++    local SHORT_ID DEST_VAL
++    SHORT_ID=$(openssl rand -hex 8)
++    DEST_VAL='/dev/shm/nginx.sock'
++
++    local PROFILE_R CFG_UUID IBD_UUID
++    PROFILE_R=$(panel_api "POST" "http://$API/api/config-profiles" "$TOKEN" "$(jq -n \
++        --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" --arg domain "$SELFSTEAL_DOMAIN" \
++        --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
++        '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:443,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
++    CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
++    IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
++    if [ -z "$CFG_UUID" ] || [ -z "$IBD_UUID" ]; then
++        warn "Ошибка создания конфиг-профиля: $PROFILE_R"
++        return 1
++    fi
++
++    local NODE_R NODE_UUID
++    NODE_R=$(panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
++        --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" --arg na "$NODE_ADDR" \
++        --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" \
++        '{name:$name,address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:[$iu]},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)")
++    NODE_UUID=$(echo "$NODE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
++    if [ -z "$NODE_UUID" ]; then
++        warn "Ошибка создания ноды: $NODE_R"
++        return 1
++    fi
++    ok "Нода зарегистрирована в Panel (uuid: $NODE_UUID)"
++
++    panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
++        --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" \
++        '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"RemoteNode",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
++        && ok "Хост создан" || warn "Ошибка создания хоста"
++
++    local SQUAD_UUIDS su
++    SQUAD_UUIDS=$(panel_api "GET" "http://$API/api/internal-squads" "$TOKEN" | \
++        jq -r '.response.internalSquads[].uuid' 2>/dev/null || echo "")
++    for su in $SQUAD_UUIDS; do
++        [[ "$su" =~ ^[0-9a-f-]{36}$ ]] || continue
++        panel_api "PATCH" "http://$API/api/internal-squads" "$TOKEN" \
++            "{\"uuid\":\"$su\",\"inbounds\":[\"$IBD_UUID\"]}" >/dev/null 2>&1 || true
++    done
++    ok "Squad обновлён"
++
++    echo "${TOKEN} ${NODE_UUID}"
++}
++
++# panel_node_wait_connected TOKEN NODE_UUID [max_attempts]
++# Опрашивает GET /api/nodes/{uuid} до isConnected=true либо истечения попыток.
++panel_node_wait_connected() {
++    local TOKEN="$1"
++    local NODE_UUID="$2"
++    local MAX_ATTEMPTS="${3:-10}"
++    local API="127.0.0.1:3000"
++    local attempt=0 connected="false" msg=""
++
++    info "Ожидание подключения ноды к панели..."
++    while [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
++        local R
++        R=$(panel_api "GET" "http://$API/api/nodes/$NODE_UUID" "$TOKEN" 2>/dev/null)
++        connected=$(echo "$R" | jq -r '.response.isConnected // false' 2>/dev/null)
++        msg=$(echo "$R" | jq -r '.response.lastStatusMessage // empty' 2>/dev/null)
++        [ "$connected" = "true" ] && { ok "Нода подключена (isConnected=true)"; return 0; }
++        attempt=$((attempt+1))
++        [ "$attempt" -lt "$MAX_ATTEMPTS" ] && sleep 6
++    done
++    warn "Нода не подтвердила подключение за отведённое время${msg:+ (последнее сообщение: $msg)}"
++    warn "Проверьте вручную: docker compose logs remnanode на удалённом сервере"
++    return 1
++}
++
++# panel_node_fetch_secret SUPERADMIN_USER SUPERADMIN_PASS
++# Логинится и возвращает Node authentication secret (GET /api/keygen,
++# response.secretKey — НЕ Reality X25519-ключ, см. заголовок файла) через
++# stdout. Пусто при ошибке.
++panel_node_fetch_secret() {
++    local SUPERADMIN_USER="$1"
++    local SUPERADMIN_PASS="$2"
++    local API="127.0.0.1:3000"
++
++    local LOGIN_R TOKEN
++    LOGIN_R=$(panel_api "POST" "http://$API/api/auth/login" "" \
++        "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}")
++    TOKEN=$(echo "$LOGIN_R" | jq -r '.response.accessToken // empty' 2>/dev/null)
++    [ -z "$TOKEN" ] && return 1
++
++    local PUB_R
++    PUB_R=$(panel_api "GET" "http://$API/api/keygen" "$TOKEN")
++    echo "$PUB_R" | jq -r '.response.secretKey // empty' 2>/dev/null
++}
+diff --git a/lib/panel/node/install.sh b/lib/panel/node/install.sh
+new file mode 100644
+index 0000000..2681ec2
+--- /dev/null
++++ b/lib/panel/node/install.sh
+@@ -0,0 +1,122 @@
++# shellcheck shell=bash
++#
++# lib/panel/node/install.sh — Remote Node: полный orchestration-flow
++# (Stage 7, STEP 2 деплой + STEP 3 регистрация/health-check).
++#
++# Запускается С Panel-хоста, отдельным пунктом меню, ПОСЛЕ того как Panel
++# уже установлена (нужны существующие SUPERADMIN_USER/PASS для входа в
++# Panel API — они не хранятся server-manager'ом между сессиями, поэтому
++# запрашиваются здесь заново).
++#
++# Переиспользует без изменений: ask_ssh_target, init_ssh_helpers,
++# check_ssh_connection, RUN, PUT (lib/common/ssh.sh); remote_install_deps
++# (вариант "node"); ask, validate_domain, confirm, get_public_ip
++# (lib/common/*); panel_generate_node_compose (lib/panel/node/compose.sh,
++# STEP 1, не изменялся); panel_generate_selfsteal_site (lib/panel/install.sh,
++# параметризован опциональным output-dir); panel_node_fetch_secret,
++# panel_node_register, panel_node_wait_connected (lib/panel/node/api.sh).
++#
++# Firewall-инвариант: 2222/tcp на ноде открыт ТОЛЬКО с адреса Panel
++# (PANEL_IP) — никогда 0.0.0.0/0. get_public_ip() предлагается как
++# редактируемый default, не как единственный источник (см. предыдущие
++# раунды исследования — автоопределение не считается надёжным сам по себе).
++
++panel_install_remote_node() {
++    header "Remote Node — установка"
++    echo ""
++    warn "Panel должна быть уже установлена — потребуются её admin-credentials."
++    echo ""
++
++    section "Вход в Panel API"
++    local SUPERADMIN_USER SUPERADMIN_PASS
++    ask SUPERADMIN_USER "Логин суперадмина Panel"
++    stty -echo 2>/dev/null || true
++    read -rp "  Пароль суперадмина Panel: " SUPERADMIN_PASS < /dev/tty
++    stty echo 2>/dev/null || true
++    echo ""
++
++    info "Получение Node authentication secret..."
++    local SECRET_KEY
++    SECRET_KEY=$(panel_node_fetch_secret "$SUPERADMIN_USER" "$SUPERADMIN_PASS")
++    if [ -z "$SECRET_KEY" ]; then
++        warn "Не удалось авторизоваться / получить secret из Panel API. Проверьте логин/пароль."
++        return 1
++    fi
++    ok "Secret получен"
++
++    section "Данные ноды"
++    ensure_sshpass
++    ask_ssh_target || { warn "Ошибка ввода данных SSH"; return 1; }
++    init_ssh_helpers full
++    check_ssh_connection || return 1
++
++    local SELFSTEAL_DOMAIN
++    while true; do
++        ask SELFSTEAL_DOMAIN "Selfsteal-домен этой ноды (node.example.com)"
++        validate_domain "$SELFSTEAL_DOMAIN" && break || warn "Неверный формат"
++    done
++
++    local PANEL_IP _default_ip
++    _default_ip="$(get_public_ip 2>/dev/null || echo "")"
++    ask PANEL_IP "IP этой панели (для firewall-разрешения :2222 на ноде)" "$_default_ip"
++    [ -z "$PANEL_IP" ] && { warn "PANEL_IP обязателен"; return 1; }
++
++    echo ""
++    remote_install_deps node || return 1
++
++    # ── Locking down control port: только с PANEL_IP ────────────────
++    RUN "ufw allow from ${PANEL_IP} to any port 2222 proto tcp" >/dev/null 2>&1
++    ok "2222/tcp разрешён только с ${PANEL_IP}"
++
++    # ── Локальная генерация (staging на Panel-хосте) ───────────────
++    info "Генерация docker-compose.yml и Caddyfile для ноды..."
++    rm -rf /opt/remnanode 2>/dev/null
++    panel_generate_node_compose "$SECRET_KEY" "$SELFSTEAL_DOMAIN"
++
++    local _selfsteal_staging
++    _selfsteal_staging="$(mktemp -d /tmp/sm_node_selfsteal_XXXXXX)"
++    panel_generate_selfsteal_site "$_selfsteal_staging"
++
++    # ── Перенос файлов на ноду ──────────────────────────────────────
++    info "Копирование файлов на ${_SSH_IP}..."
++    PUT /opt/remnanode/docker-compose.yml /opt/remnanode/Caddyfile \
++        "${_SSH_USER}@${_SSH_IP}:/opt/remnanode/" || { warn "Не удалось скопировать compose/Caddyfile"; return 1; }
++    RUN "mkdir -p /var/www/html" || true
++    PUT "${_selfsteal_staging}/." \
++        "${_SSH_USER}@${_SSH_IP}:/var/www/html/" || { warn "Не удалось скопировать selfsteal-контент"; return 1; }
++    rm -rf "$_selfsteal_staging"
++
++    # ── Запуск ───────────────────────────────────────────────────────
++    info "Запуск remnanode + Caddy на ${_SSH_IP}..."
++    RUN "cd /opt/remnanode && docker compose up -d" || { warn "Не удалось запустить контейнеры на ноде"; return 1; }
++
++    # ── Технические проверки ────────────────────────────────────────
++    info "Проверка доступности control-порта 2222..."
++    sleep 3
++    if RUN "ss -tln 2>/dev/null | grep -q ':2222 '"; then
++        ok "Нода слушает :2222"
++    else
++        warn "Не удалось подтвердить, что нода слушает :2222 — проверьте логи (docker compose logs) на ${_SSH_IP}"
++    fi
++
++    # ── Регистрация в Panel API ─────────────────────────────────────
++    section "Регистрация в Panel"
++    local _reg_out TOKEN NODE_UUID
++    _reg_out=$(panel_node_register "$SUPERADMIN_USER" "$SUPERADMIN_PASS" "$SELFSTEAL_DOMAIN" "$_SSH_IP")
++    if [ -z "$_reg_out" ]; then
++        warn "Регистрация в Panel API не удалась. Нода развёрнута, но не зарегистрирована."
++        warn "Повторите регистрацию вручную через Panel UI или запустите операцию снова."
++        return 1
++    fi
++    TOKEN="${_reg_out%% *}"
++    NODE_UUID="${_reg_out##* }"
++
++    # ── Health-check ─────────────────────────────────────────────────
++    panel_node_wait_connected "$TOKEN" "$NODE_UUID" || true
++
++    echo ""
++    ok "Remote Node развёрнута и зарегистрирована: ${_SSH_IP} (${SELFSTEAL_DOMAIN})"
++    echo -e "  ${GRAY}Node UUID: ${NODE_UUID}${NC}"
++    echo ""
++    read -rp "  Нажмите Enter чтобы продолжить..." < /dev/tty
++}
