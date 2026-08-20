@@ -1,5 +1,5 @@
 diff --git a/lib/common/ssh.sh b/lib/common/ssh.sh
-index 211f6e9..9600f09 100644
+index 211f6e9..d0e0f81 100644
 --- a/lib/common/ssh.sh
 +++ b/lib/common/ssh.sh
 @@ -72,12 +72,16 @@ check_ssh_connection() {
@@ -33,7 +33,16 @@ index 211f6e9..9600f09 100644
      [ "$variant" = "full" ] && echo "  · Установка qrencode, unzip, cron"
      echo ""
      if ! confirm "Продолжить установку зависимостей на ${_SSH_IP}?" y; then
-@@ -108,8 +116,8 @@ grep -q "bbr" /etc/sysctl.conf 2>/dev/null || {
+@@ -96,7 +104,7 @@ remote_install_deps() {
+     fi
+ 
+     info "Устанавливаем зависимости на новом сервере..."
+-    RUN bash -s << RDEPS
++    if ! RUN bash -s << RDEPS
+ export DEBIAN_FRONTEND=noninteractive
+ apt-get update -y -q 2>/dev/null
+ apt-get install -y -q curl wget git jq openssl ca-certificates gnupg dnsutils \
+@@ -108,8 +116,12 @@ grep -q "bbr" /etc/sysctl.conf 2>/dev/null || {
      echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
      sysctl -p >/dev/null 2>&1
  }
@@ -42,6 +51,10 @@ index 211f6e9..9600f09 100644
 +ufw allow 22/tcp >/dev/null 2>&1; ${extra_ufw}ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
 +mkdir -p ${base_dir} /var/www/html /etc/letsencrypt /etc/ssl/certs/hysteria${extra_dirs}
  RDEPS
++    then
++        warn "Установка зависимостей на ${_SSH_IP} завершилась с ошибкой"
++        return 1
++    fi
      ok "Зависимости установлены"
  }
 diff --git a/lib/panel.sh b/lib/panel.sh
@@ -118,7 +131,7 @@ index fec8085..ddc656c 100644
          esac
 diff --git a/lib/panel/node/api.sh b/lib/panel/node/api.sh
 new file mode 100644
-index 0000000..9d38e9e
+index 0000000..632a05c
 --- /dev/null
 +++ b/lib/panel/node/api.sh
 @@ -0,0 +1,141 @@
@@ -162,7 +175,7 @@ index 0000000..9d38e9e
 +
 +    local LOGIN_R TOKEN
 +    LOGIN_R=$(panel_api "POST" "http://$API/api/auth/login" "" \
-+        "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}")
++        "$(jq -n --arg u "$SUPERADMIN_USER" --arg p "$SUPERADMIN_PASS" '{username:$u,password:$p}' 2>/dev/null)")
 +    TOKEN=$(echo "$LOGIN_R" | jq -r '.response.accessToken // empty' 2>/dev/null)
 +    if [ -z "$TOKEN" ]; then
 +        warn "Не удалось авторизоваться в Panel API: $LOGIN_R"
@@ -255,7 +268,7 @@ index 0000000..9d38e9e
 +
 +    local LOGIN_R TOKEN
 +    LOGIN_R=$(panel_api "POST" "http://$API/api/auth/login" "" \
-+        "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}")
++        "$(jq -n --arg u "$SUPERADMIN_USER" --arg p "$SUPERADMIN_PASS" '{username:$u,password:$p}' 2>/dev/null)")
 +    TOKEN=$(echo "$LOGIN_R" | jq -r '.response.accessToken // empty' 2>/dev/null)
 +    [ -z "$TOKEN" ] && return 1
 +
