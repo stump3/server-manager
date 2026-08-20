@@ -20,7 +20,7 @@ panel_generate_node_compose() {
     mkdir -p /opt/remnanode
 
     # ── docker-compose.yml ────────────────────────────────────────────
-    # remnanode-блок — source of truth: lib/panel/install.sh, MODE=1 ветка
+    # remnanode-блок — source of truth: lib/panel/compose.sh, MODE=1 ветка
     # panel_generate_compose() (совпадает byte-for-byte по существу, кроме
     # SECRET_KEY, который здесь параметризован явным аргументом функции).
     cat > /opt/remnanode/docker-compose.yml << EOFYML
