@@ -30,6 +30,7 @@ panel_menu() {
         echo -e "  ${BOLD}5)${RESET}  🖼️  Selfsteal шаблон"
         echo -e "  ${BOLD}6)${RESET}  📦  Миграция на другой сервер"
         echo -e "  ${BOLD}7)${RESET}  🗑️  Удалить панель"
+        echo -e "  ${BOLD}8)${RESET}  🖧  Добавить Remote Node"
         echo ""
         echo -e "  ${BOLD}0)${RESET}  ◀️  Назад"
         echo ""
@@ -43,6 +44,7 @@ panel_menu() {
             6) { [ -x "$PANEL_MGMT_SCRIPT" ] && "$PANEL_MGMT_SCRIPT" migrate || warn "Панель не установлена."; } || true
                read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             7) panel_remove || true ;;
+            8) panel_install_remote_node || true ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac

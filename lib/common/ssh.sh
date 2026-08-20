@@ -72,11 +72,15 @@ check_ssh_connection() {
 #   caddy — пропускает certbot, сертификатами управляет Caddy
 remote_install_deps() {
     local variant="${1:-panel}" web_server="${2:-nginx}"
-    local extra_pkgs="" extra_dirs="" ssl_pkgs=""
+    local extra_pkgs="" extra_dirs="" ssl_pkgs="" base_dir="/opt/remnawave" extra_ufw=""
     [ "$web_server" != "caddy" ] && ssl_pkgs=" certbot python3-certbot-dns-cloudflare"
     if [ "$variant" = "full" ]; then
         extra_pkgs=" unzip cron qrencode"
         extra_dirs=" /etc/hysteria"
+    fi
+    if [ "$variant" = "node" ]; then
+        base_dir="/opt/remnanode"
+        extra_ufw="ufw allow 80/tcp >/dev/null 2>&1; "
     fi
 
     # ── Показываем что будет выполнено и просим подтверждение ─────
@@ -87,7 +91,11 @@ remote_install_deps() {
     echo "  · Установка Docker (если не установлен)"
     echo "  · Создание swap-файла 2 GB (если нет)"
     echo "  · Включение BBR (sysctl)"
-    echo "  · Открытие портов 22/tcp и 443/tcp в UFW"
+    if [ "$variant" = "node" ]; then
+        echo "  · Открытие портов 22/tcp, 80/tcp и 443/tcp в UFW"
+    else
+        echo "  · Открытие портов 22/tcp и 443/tcp в UFW"
+    fi
     [ "$variant" = "full" ] && echo "  · Установка qrencode, unzip, cron"
     echo ""
     if ! confirm "Продолжить установку зависимостей на ${_SSH_IP}?" y; then
@@ -96,7 +104,7 @@ remote_install_deps() {
     fi
 
     info "Устанавливаем зависимости на новом сервере..."
-    RUN bash -s << RDEPS
+    if ! RUN bash -s << RDEPS
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y -q 2>/dev/null
 apt-get install -y -q curl wget git jq openssl ca-certificates gnupg dnsutils \
@@ -108,8 +116,12 @@ grep -q "bbr" /etc/sysctl.conf 2>/dev/null || {
     echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
     sysctl -p >/dev/null 2>&1
 }
-ufw allow 22/tcp >/dev/null 2>&1; ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
-mkdir -p /opt/remnawave /var/www/html /etc/letsencrypt /etc/ssl/certs/hysteria${extra_dirs}
+ufw allow 22/tcp >/dev/null 2>&1; ${extra_ufw}ufw allow 443/tcp >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1
+mkdir -p ${base_dir} /var/www/html /etc/letsencrypt /etc/ssl/certs/hysteria${extra_dirs}
 RDEPS
+    then
+        warn "Установка зависимостей на ${_SSH_IP} завершилась с ошибкой"
+        return 1
+    fi
     ok "Зависимости установлены"
 }
