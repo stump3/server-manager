@@ -131,7 +131,7 @@ index fec8085..ddc656c 100644
          esac
 diff --git a/lib/panel/node/api.sh b/lib/panel/node/api.sh
 new file mode 100644
-index 0000000..632a05c
+index 0000000..d5bf87e
 --- /dev/null
 +++ b/lib/panel/node/api.sh
 @@ -0,0 +1,141 @@
@@ -226,7 +226,7 @@ index 0000000..632a05c
 +    for su in $SQUAD_UUIDS; do
 +        [[ "$su" =~ ^[0-9a-f-]{36}$ ]] || continue
 +        panel_api "PATCH" "http://$API/api/internal-squads" "$TOKEN" \
-+            "{\"uuid\":\"$su\",\"inbounds\":[\"$IBD_UUID\"]}" >/dev/null 2>&1 || true
++            "$(jq -n --arg su "$su" --arg iu "$IBD_UUID" '{uuid:$su,inbounds:[$iu]}' 2>/dev/null)" >/dev/null 2>&1 || true
 +    done
 +    ok "Squad обновлён"
 +
