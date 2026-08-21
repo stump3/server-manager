@@ -12,7 +12,7 @@
 # check_ssh_connection, RUN, PUT (lib/common/ssh.sh); remote_install_deps
 # (вариант "node"); ask, validate_domain, confirm, get_public_ip
 # (lib/common/*); panel_generate_node_compose (lib/panel/node/compose.sh,
-# STEP 1, не изменялся); panel_generate_selfsteal_site (lib/panel/install.sh,
+# STEP 1, не изменялся); panel_generate_selfsteal_site (lib/panel/selfsteal.sh,
 # параметризован опциональным output-dir); panel_node_fetch_secret,
 # panel_node_register, panel_node_wait_connected (lib/panel/node/api.sh).
 #
