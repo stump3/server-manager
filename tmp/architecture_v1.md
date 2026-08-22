@@ -1,7 +1,7 @@
 # Architecture
 
 > Финальная синхронизация архитектуры. Документ описывает целевое состояние системы.
-> Расхождения между этим документом и кодом считаются техническим долгом.
+> Расхождения между этим документом и кодом — технический долг, подлежащий устранению.
 
 ---
 
@@ -53,31 +53,18 @@ telemt API :9091
 collect_stats.py          ← единственный writer
     │  calc_delta()
     │  handle_reset()
-    │  BEGIN IMMEDIATE (WAL snapshot isolation)
+    │  BEGIN EXCLUSIVE
     ▼
 SQLite /var/lib/telemt/stats.db
     │
-    ├── user_snapshots  (profile snapshot per collection cycle)
-    ├── user_links      (ссылки пользователей, 1:N)
-    ├── snapshots       (delta counters per user)
-    ├── traffic_daily   (дельты per day)
-    ├── traffic_monthly (дельты per month)
-    ├── ip_history      (история IP-адресов)
-    └── settings        (retention config)
-
-    Не реализовано (future addition, §9 MP-2):
-    └── [meta]  (schema_version, last_collect_ts)
+    ├── snapshots    (последний known cumulative per user)
+    ├── daily        (дельты per day)
+    ├── monthly      (дельты per month)
+    └── meta         (schema_version, last_collect_ts)
     │
-    │  SQLite readers / settings access
+    │  read-only (mode=ro + WAL)
     ▼
-render_users.py / user_ips.py / stats_settings.py
-
-telemt API runtime status
-    │
-    ▼
-status_render.py
-
-SQLite readers / runtime status
+render_users.py / status_render.py / user_ips.py
     │
     ▼
 CLI (lib/tmt/menu.sh, lib/cli/telemt.sh)
@@ -85,8 +72,7 @@ CLI (lib/tmt/menu.sh, lib/cli/telemt.sh)
 
 **Правила:**
 - `collect_stats.py` — единственный процесс который пишет в `stats.db`
-- CLI не обращается к telemt API для ingestion или traffic counters
-  (`status_render.py` runtime-status exception)
+- CLI никогда не вызывает telemt API напрямую
 - `traffic.json` — **deprecated**, читается только при миграции через `migrate_json_to_sqlite.py`
 
 ---
@@ -120,7 +106,7 @@ user_enabled = true
 * collector будет записывать нулевой трафик
 * это состояние не детектируется через `/v1/users`
 
-➡️ Это обязательное условие для корректной работы ingestion.
+➡️ Это жёсткое требование для корректной работы системы.
 
 ---
 
@@ -170,23 +156,21 @@ if delta < 0:
 
 ---
 
-### Sweep semantics
+### Полнота ответа
 
-telemt API рассматривается как runtime source данных, не authoritative sync endpoint.
+* при `ok: true` telemt возвращает полный список пользователей
+* частичный список при успешном ответе невозможен
 
 Следствие:
 
-* отсутствие пользователя в одном poll cycle не считается достаточным сигналом удаления
-* sweep выполняется консервативно
-* incomplete response не должен приводить к удалению исторических данных
+* отсутствие пользователя в ответе = пользователь удалён
+* sweep может выполняться безопасно при:
 
-Текущая эвристика sweep:
-
-```text
+```
 api_count >= db_count
 ```
 
-Это снижает риск sweep после incomplete snapshot, но не доказывает полноту snapshot.
+---
 
 ### IP данные
 
@@ -251,10 +235,10 @@ hy_node_register.py       ← one-shot при установке
 Компонент                   Читает                      Пишет
 ─────────────────────────────────────────────────────────────────────
 collect_stats.py            telemt API                  stats.db
-render_users.py             stats.db (read-only semantics)   —
+render_users.py             stats.db (ro)               —
 status_render.py            telemt API                  —
-user_ips.py                 stats.db (read-only semantics)   —
-stats_settings.py           stats.db (settings only)    settings table only
+user_ips.py                 stats.db (ro)               —
+stats_settings.py           stats.db                    stats.db (meta)
 
 hy_config.py                config.yaml                 config.yaml (atomic)
 hy_users_db.py              users.json                  users.json (atomic)
@@ -272,8 +256,7 @@ Bash (menu / cli)           всё что выше               ничего н
 ```
 
 **Запрещённые прямые связи:**
-- CLI → telemt API для ingestion/counters
-  (`status_render.py` runtime-status exception)
+- CLI → telemt API (только через Python-скрипты)
 - CLI → PostgreSQL напрямую (только через Python-скрипты)
 - CLI → config.yaml через awk/sed (только через `hy_config.py`)
 - Любой `.sh` → SQL через `docker exec psql`
@@ -458,8 +441,7 @@ server-manager/
 
 ### Отсутствующие конфликты (не проблема)
 
-- collector vs render: WAL snapshot isolation позволяет readers работать
-  параллельно с ingestion writer
+- collector vs render: WAL + `mode=ro` делает параллельный доступ безопасным
 - `hy_config.py` vs `hy_users_db.py`: разные файлы, нет shared state
 - TUI меню vs CLI: оба вызывают одни и те же domain-функции через одно bash-пространство
 
@@ -511,11 +493,18 @@ Ingestion модель, Python-контракты, CLI-слой и storage-сх�
 ### Блокеры (устранить до начала реализации)
 
 - **MP-2: Отсутствует механизм миграции схемы** — `init_db.py` создаёт схему, но не умеет обновлять её при изменениях. Первое изменение схемы потребует ручного вмешательства на каждом сервере. Решение: добавить таблицу миграций и блок применения по `schema_version`.
+- **MP-1: Путь ingestion для IP-истории не определён** — `user_ips.py` присутствует в структуре и таблице §4, но в схеме SQLite нет таблицы `ip_history` и ни один компонент в неё не пишет. Необходимо либо добавить таблицу и источник данных, либо убрать `user_ips.py` из архитектуры.
+- **HC-1: `status_render.py` не задокументирован как исключение** — §4 запрещает CLI обращаться к telemt API напрямую, но `status_render.py` делает именно это (данные статуса эфемерны и не хранятся в SQLite). Противоречие должно быть явно оговорено в §4 как задокументированное исключение.
 
+### Обязательно (в рамках реализации)
+
+- **FS-1: `collect_stats.py` должен самостоятельно проверять схему** — вызов `_ensure_schema()` при каждом старте (через `CREATE TABLE IF NOT EXISTS`) защищает от race condition между install и первым срабатыванием timer.
+- **FS-2: systemd unit должен содержать `ConditionPathExists`** — при отсутствии `/etc/telemt/telemt.env` systemd завершает unit с кодом `203/EXEC` до запуска Python. Добавление `ConditionPathExists=/etc/telemt/telemt.env` делает поведение предсказуемым: unit просто пропускается с понятным статусом.
+- **MP-3: Очистка данных по retention должна быть реализована** — без периодического удаления старых строк таблицы `daily` и `monthly` растут бесконечно. Cleanup следует добавить в `collect_stats.py` после commit'а, используя значение из `meta`.
 
 ### Известные ограничения
 
-- Неполный или inconsistent API snapshot может вызвать временное искажение дельт на один цикл сбора.
+- Частичный ответ telemt API может вызвать временное искажение дельт на один цикл сбора.
 - Сброс счётчика в момент сбора может дать завышенную дельту для отдельных пользователей в одном цикле — неустранимо без timestamp от API.
 - Telemt API не предоставляет snapshot-консистентности; возможны временные рассинхроны между пользователями в одном ответе.
 
@@ -524,15 +513,3 @@ Ingestion модель, Python-контракты, CLI-слой и storage-сх�
 - Строгость границы CLI/TUI: domain-функции с интерактивными `read -rp` вызываются из CLI без гарантии наличия `CLI_YES` guard.
 - Observability: разделить `last_collect_ts` (попытка) и `last_success_ts` (успешная запись); `render_users.py` показывать предупреждение если данные старше 20 минут.
 - Рефакторинг `hy-sub-install.sh`: файл содержит deprecated паттерны (SQL через `docker exec`, `echo >> .env`), статус в §6 не определён.
-
-
-### Resolved during reconciliation
-
-- **HC-1 resolved:** `status_render.py` documented as explicit runtime-status exception
-  in SM_INTEGRATION.md §6.
-
-### Обязательно (в рамках реализации)
-
-- **FS-1: `collect_stats.py` должен самостоятельно проверять схему** — вызов `_ensure_schema()` при каждом старте (через `CREATE TABLE IF NOT EXISTS`) защищает от race condition между install и первым срабатыванием timer.
-- **FS-2: systemd unit должен содержать `ConditionPathExists`** — при отсутствии `/etc/telemt/telemt.env` systemd завершает unit с кодом `203/EXEC` до запуска Python. Добавление `ConditionPathExists=/etc/telemt/telemt.env` делает поведение предсказуемым: unit просто пропускается с понятным статусом.
-- **MP-3: Очистка данных по retention должна быть реализована** — без периодического удаления старых строк таблицы `traffic_daily` и `traffic_monthly` растут бесконечно. Cleanup следует добавить в `collect_stats.py` после commit'а, используя retention settings из `settings`.
