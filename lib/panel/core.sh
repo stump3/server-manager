@@ -55,7 +55,13 @@ panel_get_token() {
         err "Не удалось получить токен: $resp"
         return 1
     fi
-    echo "$token" > "$PANEL_TOKEN_FILE"
+    # Атомарная запись с owner-only правами (contract 7: secrets never left
+    # world-readable) — тот же temp-file+mv+chmod паттерн, что и для
+    # $HYSTERIA_CONFIG (lib/hy2/users.sh).
+    local _tok_tmp; _tok_tmp=$(mktemp)
+    echo "$token" > "$_tok_tmp" \
+        && mv "$_tok_tmp" "$PANEL_TOKEN_FILE" && chmod 600 "$PANEL_TOKEN_FILE" \
+        || rm -f "$_tok_tmp"
     ok "Авторизация успешна"
     echo "$token"
 }
