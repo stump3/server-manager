@@ -9,7 +9,7 @@
 > This is a **decisive** document: every structural question that could be
 > answered from the available sources has been answered below, with
 > DECISION / WHY / ALTERNATIVES CONSIDERED / CONSEQUENCES. Only genuinely
-> unanswerable questions are left as `DECISION REQUIRED` (§9.7) — kept
+> unanswerable questions are left as `DECISION REQUIRED` (§8) — kept
 > deliberately short.
 >
 > Tags: `CURRENT` (verified against `beta`), `TARGET` (decided, not yet
@@ -80,7 +80,7 @@ lib/
 │   ├── config.sh        # unchanged — shared constants
 │   ├── common.sh         # generic helpers (from lib/common/core.sh)
 │   ├── versions.sh        # get_*_version() consolidation
-│   ├── errors.sh           # die/err resolution (§9.2), cleanup-trap helpers
+│   ├── errors.sh           # die/err resolution (§8), cleanup-trap helpers
 │   └── utils.sh             # small generic helpers (from lib/common/generators.sh)
 │
 ├── cli/                      # NEW — non-interactive, scriptable layer only
@@ -223,7 +223,7 @@ migration PR rather than in this document.
 
 **DECISION**: not adopted. `lib/ui/output.sh` remains the single home for
 `ok/info/warn/err/die/step/detail`, once its stdout/stderr contract is
-fixed (§3, §9.1).
+fixed (§3; `docs/CONTRACTS.md` contract 1).
 
 **WHY**: no source — not `engineer_guidelines.md`, not either
 `architecture*.md`, not `sm_integration.md` — establishes a distinct
@@ -289,9 +289,11 @@ previously listed as open only because the normative source
 | 7 | Secrets | Never in argv (fixes `sshpass -p`, NODE-04); never in stdout/diagnostic output; generated files containing secrets get owner-only permissions (fixes NODE-03) |
 | 8 | `.env` / config atomicity | Python utility, `tempfile` + `os.replace()` only; `sed -i`/`echo >>` on `.env` forbidden (current confirmed violation: `lib/hy2/install.sh:451`) |
 | 9 | Bash/Python boundary | JSON/YAML/TOML/`.env`/SQL/hashing → Python only; a Bash function doing more than ~3 lines of data logic is mis-scoped and belongs in Python (current confirmed violations: 5 files with `python3 <<` heredocs) |
-| 10 | Single-writer ownership | Exactly one component writes any given piece of persistent state; `collect_stats.py` is the sole writer of `stats.db` (TeleMT, §5); each Hysteria2 ingestion script owns exactly one storage target (extends `sm_integration.md`'s rule, which only covers TeleMT, to Hysteria2 — see §5.3) |
-| 11 | Traps / cleanup | `RETURN` trap for local staging cleanup (existing correct example: `lib/panel/node/install.sh:32`); `INT`/`TERM` trap for remote-state-creating operations (currently absent everywhere — 0 such traps repo-wide) |
-| 12 | Idempotency / reconcile | Install-time operations that create durable remote resources (Remote Node, Panel API resources) must become lookup-before-create; `panel_setup_api()`'s existing `Default-Profile` lookup (`lib/panel/api.sh:50-53`) is the in-repo precedent to generalize from |
+| 10 | Python component contracts | Every script in `integrations/` or `lib/*/py/` must have a recorded contract (type, file path, ENV vars, stdin, stdout shape, stderr policy, exit codes, idempotency) before merge, not retroactively; none exist yet on `beta`, so this applies starting with the first script added |
+| 11 | Single-writer ownership | Exactly one component writes any given piece of persistent state; `collect_stats.py` is the sole writer of `stats.db` (TeleMT, §5); each Hysteria2 ingestion script owns exactly one storage target (extends `sm_integration.md`'s rule, which only covers TeleMT, to Hysteria2 — see §5.3) |
+| 12 | Traps / cleanup | `RETURN` trap for local staging cleanup (existing correct example: `lib/panel/node/install.sh:32`); `INT`/`TERM` trap for remote-state-creating operations (currently absent everywhere — 0 such traps repo-wide) |
+| 13 | Idempotency / reconcile | Install-time operations that create durable remote resources (Remote Node, Panel API resources) must become lookup-before-create; `panel_setup_api()`'s existing `Default-Profile` lookup (`lib/panel/api.sh:50-53`) is the in-repo precedent to generalize from |
+| 14 | Telemt ingestion boundary | `collect_stats.py` (target, not yet built) is the sole ingestion boundary between the telemt API and `stats.db`; `status_render.py` (target, not yet built) is a named, sanctioned exception for live runtime/status display only, never ingestion or `stats.db` writes; management-plane reads of `/v1/users` stay outside this boundary. Not yet applicable on `beta` — `collect_stats.py`/`stats.db` don't exist yet |
 
 Full per-contract `invariant / current violation / target behaviour /
 migration implication / test implication` tables are in the new
@@ -469,7 +471,8 @@ detail, adapted to the `lib/telemt/` name):
 - **Read-only rendering** (`render_users.py`, `user_ips.py`,
   `stats_settings.py`) reads `stats.db` read-only, never writes.
 - `status_render.py` is a **named, explicit exception** to the
-  single-writer/no-direct-API rule (§9.6 below) — it reads the telemt API
+  single-writer/no-direct-API rule (`docs/CONTRACTS.md` contracts 11 and
+  14) — it reads the telemt API
   directly because service status is inherently ephemeral, not
   historical data appropriate for `stats.db`.
 - `lib/telemt/api.sh` (current, 203 lines) is renamed to
