@@ -64,7 +64,13 @@ panel_node_register() {
     # content-diff/repair against a mismatched existing profile; that
     # reconciliation behaviour is RECONCILE's job (§4.3), not defined
     # here and not invented here.
-    local PROFILE_R CFG_UUID IBD_UUID
+    # CFG_UUID/IBD_UUID инициализированы пустой строкой явно: под
+    # server-manager.sh's `set -euo pipefail` (nounset) `local x` без `=`
+    # трактуется как unbound до первого присваивания — без explicit-init
+    # `[ -n "$CFG_UUID" ]` ниже крашит скрипт именно в самом обычном
+    # случае (профиль ещё не существует, EXISTING_PROFILE пуст, ветка
+    # присвоения не выполняется). Поймано mock-тестом (Case A).
+    local PROFILE_R CFG_UUID="" IBD_UUID=""
     local EXISTING_PROFILE
     EXISTING_PROFILE=$(panel_api "GET" "http://$API/api/config-profiles" "$TOKEN" | \
         jq -c --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" \
