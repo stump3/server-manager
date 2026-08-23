@@ -2,6 +2,32 @@
 
 > Для разработчиков и DevOps-инженеров, работающих с кодом скрипта.
 
+> **Этот документ — операционный справочник** (API-эндпоинты, схема
+> трафика selfsteal, troubleshooting, история инженерных решений). Он НЕ
+> описывает целевую архитектуру и НЕ фиксирует контракты (stdout/stderr,
+> error handling, traps и т.д.) — местами он устарел относительно
+> текущего состояния кода (например, раздел "Архитектура" ниже всё ещё
+> описывает `lib/panel.sh`/`lib/common.sh` как монолиты — это состояние
+> ДО многоэтапного panel-split, который уже произошёл).
+>
+> Канонические документы:
+> - `docs/ARCHITECTURE.md` — текущая и целевая архитектура (единое
+>   решение, не список альтернатив), domain boundaries, Remote Node
+>   lifecycle, TeleMT/Web-TLS ownership, migration strategy, ADR
+> - `docs/ENGINEER_GUIDELINES.md` — обязательные инженерные правила
+>   (Bash/Python boundary, stdout/stderr, atomicity, CLI execution model).
+>   Перенесён без изменений из ранее подготовленного документа; статус
+>   CURRENT/TARGET по каждому правилу указан явно
+> - `docs/CONTRACTS.md` — структурированные таблицы по каждому контракту
+>   (invariant / current violation / target / migration / test)
+>
+> Ключевые решения этого раунда синтеза (полная аргументация —
+> `docs/ARCHITECTURE.md`): `lib/panel/` сохраняет текущую гранулярность
+> (13 файлов, только `cert.sh`→`tls.sh` переименован); web-server/TLS
+> остаётся частью Panel-домена, отдельный `lib/web/` не создаётся;
+> telemt-домен называется `lib/telemt/`, не `lib/tmt/`; отдельного
+> `lib/ui/` не будет — интерактивные меню остаются доменными.
+
 ---
 
 ## hy-webhook.py — архитектура
@@ -655,6 +681,45 @@ git push
 
 ---
 
+## Известные архитектурные находки (аудит, не исправлено)
+
+> Подробный разбор и evidence — `docs/CONTRACTS.md` (полные таблицы) и
+> `docs/ARCHITECTURE.md` §3 (сводка). Здесь —
+> короткая сводка, не дублирующая аргументацию.
+
+- **stdout/stderr contamination в `panel_node_register()`**
+  (`lib/panel/node/api.sh`) — функция вызывается как
+  `_reg_out=$(panel_node_register ...)`, но на 4 из своих failure-путей
+  вызывает `warn(...)`, которая пишет в stdout. Caller
+  (`lib/panel/node/install.sh:114`) проверяет `[ -z "$_reg_out" ]`,
+  что не срабатывает — из текста warn-сообщения извлекаются мусорные
+  `TOKEN`/`NODE_UUID`, и выполнение уходит в health-check ветку вместо
+  явного отказа. Подтверждено прямым чтением кода, не только описанием
+  задачи.
+- **Та же паттерн-проблема в `panel_get_token()`** (`lib/panel/core.sh`)
+  — но не проявляется как баг сегодня, т.к. оба caller'а
+  (`lib/panel/warp.sh:40,61`) корректно проверяют exit code через
+  `local x; x=$(...) || return 1`, а не пустоту строки.
+- **`err()` вызывает `exit 1`, но пишет в stdout**; `die()` — то же самое
+  в stderr. Две разные fatal-функции с разным поведением по стримам —
+  не решено, какая из них канонична.
+- **`exit` внутри `$(...)` убивает только subshell**, не весь скрипт —
+  если `err()`/`die()` вызывается из функции, которая сама вызывается
+  через command substitution, ожидаемое "остановить скрипт" не
+  происходит.
+- **Remote Node install не идемпотентен** — `panel_node_register()`
+  безусловно делает `POST /api/config-profiles` и `POST /api/nodes` при
+  каждом запуске, без lookup существующей ноды.
+- **`sshpass -p "$_SSH_PASS"`** (`lib/common/ssh.sh:56-57`) — пароль
+  виден в `ps`/`/proc/<pid>/cmdline` на всё время процесса.
+- **Дубликат `${extra_pkgs}`** в `lib/common/ssh.sh:111`.
+- **Нет timeout** у `panel_api()` (`lib/common/network.sh`) и у SSH
+  `RUN()`/`PUT()`.
+- **Нет `INT`/`TERM` traps нигде в репозитории** — только два `RETURN`
+  trap'а всего (`lib/common/ssh.sh:20`, `lib/panel/node/install.sh:32`).
+
+---
+
 ## Потребление RAM — анализ
 
 ### Реальные данные (сервер 1.92 GB RAM, полный стек)
@@ -856,4 +921,3 @@ local current=$(grep "SERVER_MANAGER_CONFIG_VERSION" /opt/remnawave/.env | cut -
 
 #### 5. jq как единый инструмент для JSON
 Заменить все `python3 -c "import json..."` на `jq`. Это ускорит выполнение и упростит код.
-
