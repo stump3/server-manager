@@ -52,7 +52,7 @@ panel_get_token() {
         "$(printf '{"username":"%s","password":"%s"}' "$username" "$password")")
     local token; token=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('response',{}).get('accessToken',''))" 2>/dev/null)
     if [ -z "$token" ] || [ "$token" = "null" ]; then
-        err "Не удалось получить токен: $resp"
+        warn "Не удалось получить токен: $resp"
         return 1
     fi
     # Атомарная запись с owner-only правами (contract 7: secrets never left
