@@ -110,9 +110,16 @@ panel_install_remote_node() {
 
     # ── Регистрация в Panel API ─────────────────────────────────────
     section "Регистрация в Panel"
+    # Contract 2/3 (IO-02): проверяем propagated exit code panel_node_register(),
+    # не emptiness stdout. `_reg_out` объявлена через `local` отдельной строкой
+    # (не `local _reg_out=$(...)`), чтобы `!`/`if` видели реальный `$?` вызова,
+    # а не `local`'а — тот самый local-masks-$? паттерн, которого требует
+    # избегать contract 3. Работает корректно после fix'а contract 1
+    # (panel_node_register больше не льёт UI-текст в stdout ни на одном из
+    # своих explicit `return 1` путей — auth/keygen/config-profile/node
+    # creation), поэтому stdout теперь либо чист, либо содержит "TOKEN UUID".
     local _reg_out TOKEN NODE_UUID
-    _reg_out=$(panel_node_register "$SUPERADMIN_USER" "$SUPERADMIN_PASS" "$SELFSTEAL_DOMAIN" "$_SSH_IP")
-    if [ -z "$_reg_out" ]; then
+    if ! _reg_out=$(panel_node_register "$SUPERADMIN_USER" "$SUPERADMIN_PASS" "$SELFSTEAL_DOMAIN" "$_SSH_IP"); then
         warn "Регистрация в Panel API не удалась. Нода развёрнута, но не зарегистрирована."
         warn "Повторите регистрацию вручную через Panel UI или запустите операцию снова."
         return 1
