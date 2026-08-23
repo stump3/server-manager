@@ -52,6 +52,26 @@ init_ssh_helpers() {
     _SSH_OPTS="-p $_SSH_PORT -o $strict_opt -o ConnectTimeout=10"
     [ "$mode" != "telemt" ] && _SSH_OPTS="$_SSH_OPTS -o BatchMode=no"
 
+    # SSH-03 fix (docs/LEGACY_AUDIT.md §8): ssh's `-p PORT` and scp's
+    # `-p` are different flags — scp's `-p` is a no-argument
+    # preserve-attributes switch, not a port selector (that's scp's
+    # `-P PORT`). PUT() previously reused $_SSH_OPTS verbatim, so
+    # `$_SSH_PORT` landed as a bare positional argument to scp (a stray
+    # source-file operand) instead of being consumed as a port number.
+    # _SCP_OPTS mirrors _SSH_OPTS's StrictHostKeyChecking/ConnectTimeout/
+    # BatchMode construction but with `-P` in place of `-p`. The
+    # previously-hardcoded `-p` in `scp -rp` (preserve attributes) is
+    # dropped, not reassigned: no calling code relies on it — the call
+    # sites that copy executable scripts (mgmt_script.sh's
+    # remnawave_panel/server-manager copy) already `RUN "chmod +x ..."`
+    # immediately after PUT rather than depending on preserved mode
+    # bits, and no contract, architecture doc, or call site references
+    # preserved timestamps. If preservation is wanted later, add a bare
+    # `-p` back into _SCP_OPTS alongside `-P $_SSH_PORT` — that
+    # decision is not made here.
+    _SCP_OPTS="-P $_SSH_PORT -o $strict_opt -o ConnectTimeout=10"
+    [ "$mode" != "telemt" ] && _SCP_OPTS="$_SCP_OPTS -o BatchMode=no"
+
     # SSH-02 fix (docs/LEGACY_AUDIT.md §8) / contract 7 (docs/CONTRACTS.md):
     # secrets must never appear in argv. `sshpass -p "$_SSH_PASS"` put the
     # SSH migration password directly on the command line, visible via
@@ -67,7 +87,7 @@ init_ssh_helpers() {
     # the two already-named options.
     # shellcheck disable=SC2139
     RUN() { sshpass -f <(printf '%s\n' "$_SSH_PASS") ssh  $_SSH_OPTS "${_SSH_USER}@${_SSH_IP}" "$@"; }
-    PUT() { sshpass -f <(printf '%s\n' "$_SSH_PASS") scp -rp $_SSH_OPTS "$@"; }
+    PUT() { sshpass -f <(printf '%s\n' "$_SSH_PASS") scp -r $_SCP_OPTS "$@"; }
     export -f RUN PUT 2>/dev/null || true
 }
 
