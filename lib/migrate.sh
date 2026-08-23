@@ -57,7 +57,14 @@ migrate_transfer_panel_ssl() {
     if [ -d /etc/letsencrypt/live ]; then
         RUN "mkdir -p /etc/letsencrypt" 2>/dev/null || true
         local ssl_ok=true
-        sshpass -p "$_SSH_PASS" scp -r -P "$rport" -o StrictHostKeyChecking=no \
+        # SSH-02 same-class fix (docs/LEGACY_AUDIT.md §8 / contract 7):
+        # same $_SSH_PASS variable as lib/common/ssh.sh's RUN/PUT (already
+        # fixed), set up by the same ask_ssh_target/init_ssh_helpers full
+        # chain in migrate_prepare_target() earlier in migrate_all()'s
+        # flow — identical execution context, not a new decision. Only
+        # the argv-exposure mechanism changes; -r/-P/StrictHostKeyChecking
+        # and the multi-source scp invocation are otherwise unchanged.
+        sshpass -f <(printf '%s\n' "$_SSH_PASS") scp -r -P "$rport" -o StrictHostKeyChecking=no \
             /etc/letsencrypt/live \
             /etc/letsencrypt/archive \
             /etc/letsencrypt/renewal \
@@ -368,5 +375,3 @@ panel_backup_restore() {
         return 1
     fi
 }
-
-
