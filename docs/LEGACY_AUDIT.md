@@ -421,6 +421,56 @@ timeout, no signal traps**
   behaviour; note the corrected line numbers for whoever does the
   eventual fix.
 
+**SSH-03 — `PUT()` reused ssh-style `-p $_SSH_PORT` for `scp`, which
+takes a stray positional argument instead of a port**
+- Location: `lib/common/ssh.sh` (`init_ssh_helpers()`, `_SSH_OPTS`
+  construction and the `PUT()` definition)
+- Current behaviour: `_SSH_OPTS="-p $_SSH_PORT -o ..."` is correct for
+  `ssh` (`-p` takes the port as its argument) but `PUT()` passed the
+  same string to `scp -rp $_SSH_OPTS ...`. `scp`'s `-p` is a
+  no-argument preserve-attributes switch, not a port selector (`scp`
+  uses `-P PORT`) — so `$_SSH_PORT`'s value was left as a bare
+  positional token, which `scp` parses as an extra source-file
+  operand rather than a port number. Reproduced directly against the
+  actual sourced `PUT()` (stub `scp`/`sshpass` capturing argv, not a
+  rewritten copy): with `_SSH_PORT=22`, `PUT src dst` produced `scp
+  -rp -p 22 -o ... src dst` — three source operands (`22`, `src`) and
+  one destination (`dst`), instead of the intended one-source
+  transfer on port 22.
+- Evidence: `lib/common/ssh.sh` `_SSH_OPTS`/`PUT()` definitions;
+  argv reproduction as above. All ~24 call sites across
+  `lib/migrate.sh`, `lib/hy2/menu.sh`, `lib/panel/node/install.sh`,
+  `lib/panel/mgmt_script.sh`, and `lib/telemt/migrate.sh`'s
+  `RSCP()` wrapper (`telemt_menu_migrate`, systemd path) go through
+  this one shared `PUT()`, so all inherited the same bug. The two
+  independent direct `scp` invocations in the repo
+  (`lib/migrate.sh`'s `migrate_transfer_panel_ssl()` and
+  `lib/telemt/migrate.sh`'s `RSCP()` in `telemt_menu_migrate_docker()`,
+  the docker path) already use `-P` correctly and were unaffected.
+- Related contract: none of the 14 directly — this is CLI flag
+  syntax correctness, not a named contract invariant (confirmed: no
+  match for `scp`/`_SSH_OPTS`/`SSH_PORT` in `docs/CONTRACTS.md` or
+  `docs/ARCHITECTURE.md`). Adjacent to contract 5 (SSH execution
+  lifecycle) in subject matter only.
+- Risk: P1 — silently breaks every non-default-port `PUT()` transfer
+  (migration file copies, cert transfers, script deployment); on the
+  default port 22 the effect is more subtle (`22` as a spurious first
+  source operand) but still incorrect and error-prone depending on
+  `scp` version/behaviour.
+- Status: fixed locally (`lib/common/ssh.sh`) in the same session
+  this finding was recorded — mechanical CLI-syntax correction, no
+  architectural decision involved, public `PUT()` signature
+  unchanged. `_SCP_OPTS` (using `-P`) was added alongside the
+  existing `_SSH_OPTS` (using `-p`, unchanged, still used by `RUN()`);
+  the previously-hardcoded `-p` (preserve attributes) in `scp -rp` was
+  dropped rather than reassigned — no contract, architecture doc, or
+  call site was found to depend on attribute preservation (the call
+  sites that need an executable bit, e.g. `remnawave_panel` in
+  `lib/panel/mgmt_script.sh`, already `RUN "chmod +x ..."` immediately
+  after `PUT` rather than relying on it).
+- Target implication: none — already resolved at the code level; no
+  further migration-stage dependency.
+
 ## 9. Idempotency / reconcile
 
 **IDEM-01 — Remote Node registration: unconditional POST, no lookup**
