@@ -54,16 +54,39 @@ panel_node_register() {
     SHORT_ID=$(openssl rand -hex 8)
     DEST_VAL='/dev/shm/nginx.sock'
 
+    # Contract 13 (lookup-before-create): reuse an already-existing
+    # config-profile named "RemoteNode-${SELFSTEAL_DOMAIN}" (identity per
+    # ARCHITECTURE.md §4.2) instead of always POSTing a new one on every
+    # invocation. Same GET+jq-filter shape as the confirmed StealConfig
+    # precedent in lib/panel/api.sh (IDEM-02) — response.configProfiles[]
+    # is a confirmed response shape (used identically in 4 call sites
+    # across this codebase). Existence alone is the check — no
+    # content-diff/repair against a mismatched existing profile; that
+    # reconciliation behaviour is RECONCILE's job (§4.3), not defined
+    # here and not invented here.
     local PROFILE_R CFG_UUID IBD_UUID
-    PROFILE_R=$(panel_api "POST" "http://$API/api/config-profiles" "$TOKEN" "$(jq -n \
-        --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" --arg domain "$SELFSTEAL_DOMAIN" \
-        --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
-        '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:443,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
-    CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
-    IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
-    if [ -z "$CFG_UUID" ] || [ -z "$IBD_UUID" ]; then
-        warn "Ошибка создания конфиг-профиля: $PROFILE_R"
-        return 1
+    local EXISTING_PROFILE
+    EXISTING_PROFILE=$(panel_api "GET" "http://$API/api/config-profiles" "$TOKEN" | \
+        jq -c --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" \
+            '.response.configProfiles[]? | select(.name==$name)' 2>/dev/null | head -1)
+    if [ -n "$EXISTING_PROFILE" ]; then
+        CFG_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.uuid // empty' 2>/dev/null)
+        IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[0].uuid // empty' 2>/dev/null)
+    fi
+
+    if [ -n "$CFG_UUID" ] && [ -n "$IBD_UUID" ]; then
+        ok "Конфиг-профиль RemoteNode-${SELFSTEAL_DOMAIN} уже существует, используется существующий"
+    else
+        PROFILE_R=$(panel_api "POST" "http://$API/api/config-profiles" "$TOKEN" "$(jq -n \
+            --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" --arg domain "$SELFSTEAL_DOMAIN" \
+            --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
+            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:443,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
+        CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
+        IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
+        if [ -z "$CFG_UUID" ] || [ -z "$IBD_UUID" ]; then
+            warn "Ошибка создания конфиг-профиля: $PROFILE_R"
+            return 1
+        fi
     fi
 
     local NODE_R NODE_UUID
