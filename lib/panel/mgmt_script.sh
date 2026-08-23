@@ -23,25 +23,46 @@ _spinner() {
     done; printf "\r\033[K">/dev/tty
 }
 _detect_ws() { grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml 2>/dev/null && echo "caddy" || echo "nginx"; }
+# Keep in sync with panel_migrate_env_for_remnawave_v2 in
+# lib/panel/migrate.sh (same migration logic, same atomic-write
+# pattern) — this script is deployed standalone and can't source that
+# file at runtime, so the two copies have to be kept identical by hand.
 _migrate_env_for_remnawave_v2() {
     local env_file="$DIR/.env"
     [ -f "$env_file" ] || { _warn ".env не найден: $env_file"; return 1; }
 
+    local sed_args=()
+    local secret_action=""
     if grep -q '^JWT_AUTH_SECRET=' "$env_file" && ! grep -q '^APP_SECRET=' "$env_file"; then
-        sed -i 's/^JWT_AUTH_SECRET=/APP_SECRET=/' "$env_file"
-        _ok ".env: JWT_AUTH_SECRET переименован в APP_SECRET"
+        sed_args+=(-e 's/^JWT_AUTH_SECRET=/APP_SECRET=/')
+        secret_action="renamed"
     elif grep -q '^JWT_AUTH_SECRET=' "$env_file" && grep -q '^APP_SECRET=' "$env_file"; then
-        sed -i '/^JWT_AUTH_SECRET=/d' "$env_file"
-        _ok ".env: удалён дублирующий JWT_AUTH_SECRET"
+        sed_args+=(-e '/^JWT_AUTH_SECRET=/d')
+        secret_action="deduped"
     fi
 
     local removed=0
     for key in JWT_API_TOKENS_SECRET SWAGGER_PATH SCALAR_PATH IS_DOCS_ENABLED; do
         if grep -q "^${key}=" "$env_file"; then
-            sed -i "/^${key}=/d" "$env_file"
+            sed_args+=(-e "/^${key}=/d")
             removed=1
         fi
     done
+
+    if [ "${#sed_args[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    local _tmp; _tmp=$(mktemp)
+    if sed "${sed_args[@]}" "$env_file" > "$_tmp" \
+            && mv "$_tmp" "$env_file" && chmod 600 "$env_file"; then
+        [ "$secret_action" = "renamed" ] && _ok ".env: JWT_AUTH_SECRET переименован в APP_SECRET"
+        [ "$secret_action" = "deduped" ] && _ok ".env: удалён дублирующий JWT_AUTH_SECRET"
+    else
+        rm -f "$_tmp"
+        _warn ".env: не удалось применить миграцию атомарно"
+        return 1
+    fi
     [ "$removed" = "1" ] && _ok ".env: удалены устаревшие переменные Remnawave"
 }
 do_status() {
