@@ -71,13 +71,17 @@ RCONF
     limits_block=$(telemt_extract_limits_block "$TELEMT_CONFIG_FILE")
 
     info "Копирую скрипт на новый сервер..."
-    RSCP "$(realpath "$0")" &>/dev/null; ok "Скрипт скопирован в /tmp/"
+    RSCP "$(realpath "$0")" &>/dev/null \
+        && ok "Скрипт скопирован в /tmp/" \
+        || warn "Не удалось скопировать server-manager на новый сервер (не критично для миграции)"
     info "Копирую конфиг..."
-    echo "$remote_config" | RRUN "mkdir -p /etc/telemt && cat > /etc/telemt/telemt.toml"
-    [ -n "$limits_block" ] && { echo "$limits_block" | RRUN "echo '' >> /etc/telemt/telemt.toml && cat >> /etc/telemt/telemt.toml"; ok "Лимиты перенесены"; }
+    echo "$remote_config" | RRUN "mkdir -p /etc/telemt && cat > /etc/telemt/telemt.toml" \
+        || die "Не удалось скопировать конфиг на новый сервер — миграция прервана, старый сервер не тронут"
+    [ -n "$limits_block" ] && { echo "$limits_block" | RRUN "echo '' >> /etc/telemt/telemt.toml && cat >> /etc/telemt/telemt.toml" \
+        && ok "Лимиты перенесены" || warn "Не удалось перенести лимиты пользователей"; }
 
     header "Установка на $nh"
-    RRUN bash << REMOTE_INSTALL
+    if RRUN bash << REMOTE_INSTALL
 set -e
 ARCH=\$(uname -m); case "\$ARCH" in x86_64) ;; aarch64) ARCH="aarch64" ;; *) echo "Архитектура не поддерживается"; exit 1 ;; esac
 LIBC=\$(ldd --version 2>&1|grep -iq musl&&echo musl||echo gnu)
@@ -113,8 +117,11 @@ systemctl daemon-reload; systemctl enable telemt; systemctl restart telemt
 echo "[OK] Сервис запущен"
 command -v ufw &>/dev/null && ufw allow ${new_pp}/tcp &>/dev/null && echo "[OK] Порт $new_pp открыт"
 REMOTE_INSTALL
-
-    ok "Установка завершена!"
+    then
+        ok "Установка завершена!"
+    else
+        die "Установка на новом сервере не завершилась (см. вывод выше). Старый сервер НЕ тронут, telemt на новом сервере не гарантированно работает — не отключай старый сервер"
+    fi
     header "Новые ссылки"; echo -e "${BOLD}Новый IP:${RESET} $nh"; info "Жду запуска..."; sleep 5
     local nl; nl=$(RRUN "curl -s --max-time 10 http://127.0.0.1:9091/v1/users 2>/dev/null"||true)
     if echo "$nl" | grep -q "tg://proxy"; then
@@ -171,8 +178,12 @@ telemt_menu_migrate_docker() {
     ask_ssh_target
     init_ssh_helpers telemt
     RRUN() { RUN "$@"; }
-    RSCP() { sshpass -p "$_SSH_PASS" scp -P "$_SSH_PORT" \
-        -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$1" "${_SSH_USER}@${_SSH_IP}:$2"; }
+    # Contract 7: same fix as RUN/PUT in lib/common/ssh.sh — this
+    # docker-migration path had its own independent RSCP() that still
+    # passed the password via `sshpass -p`, exposed in argv/ps for the
+    # process lifetime. Route through PUT (already fixed) instead of
+    # re-implementing the scp call here.
+    RSCP() { PUT "$1" "${_SSH_USER}@${_SSH_IP}:$2"; }
     check_ssh_connection || return 1
     local nh="$_SSH_IP" np="$_SSH_PORT" nu="$_SSH_USER"
 
