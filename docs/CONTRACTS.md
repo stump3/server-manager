@@ -12,12 +12,15 @@
 > reading of the code at this commit, not asserted from a `tmp/`
 > document without checking.
 >
-> **Current status**: re-verified against `beta` HEAD `3162cb4` (five
-> docs-only commits on top of the baseline above — the prior four plus
-> this document's own previous revision; `git diff --stat` from baseline
-> to this HEAD touches only `docs/`, confirmed — the code itself has not
-> moved). Each contract below carries its own **Current
-> status** line, one of:
+> **Current status**: verified against the current `beta` HEAD, wherever
+> a row's own **Current status** line says so explicitly. Every commit
+> between the code baseline above and the current HEAD is docs-only —
+> no `*.sh`/`*.py`/template/code file has changed since `3313560` — so
+> **the code baseline for factual violations stays `3313560`**
+> regardless of how many further docs-only revisions land on top of it;
+> this document does not pin "current" to one HEAD hash, since that pin
+> goes stale on the very next docs commit. Each contract below carries
+> its own **Current status** line, one of:
 > - **Still present** — re-checked against current HEAD, violation
 >   confirmed unchanged.
 > - **Not re-verified this round** — the baseline finding is trusted,
