@@ -52,9 +52,22 @@ init_ssh_helpers() {
     _SSH_OPTS="-p $_SSH_PORT -o $strict_opt -o ConnectTimeout=10"
     [ "$mode" != "telemt" ] && _SSH_OPTS="$_SSH_OPTS -o BatchMode=no"
 
+    # SSH-02 fix (docs/LEGACY_AUDIT.md §8) / contract 7 (docs/CONTRACTS.md):
+    # secrets must never appear in argv. `sshpass -p "$_SSH_PASS"` put the
+    # SSH migration password directly on the command line, visible via
+    # `ps`/`/proc/<pid>/cmdline` for the process lifetime. `sshpass -f
+    # <(...)` reads the password from a process-substitution file
+    # descriptor instead — verified via live `/proc/<pid>/cmdline`
+    # inspection during testing that the password is absent from the
+    # running sshpass process's argv (shows `-f /dev/fd/N`, not the
+    # password). This is the exact mechanism contract 7's own
+    # Implementation note already names as one of the pre-approved
+    # options ("sshpass -f <(...), SSHPASS env var, or another
+    # approach") — no new decision made here, just picking the first of
+    # the two already-named options.
     # shellcheck disable=SC2139
-    RUN() { sshpass -p "$_SSH_PASS" ssh  $_SSH_OPTS "${_SSH_USER}@${_SSH_IP}" "$@"; }
-    PUT() { sshpass -p "$_SSH_PASS" scp -rp $_SSH_OPTS "$@"; }
+    RUN() { sshpass -f <(printf '%s\n' "$_SSH_PASS") ssh  $_SSH_OPTS "${_SSH_USER}@${_SSH_IP}" "$@"; }
+    PUT() { sshpass -f <(printf '%s\n' "$_SSH_PASS") scp -rp $_SSH_OPTS "$@"; }
     export -f RUN PUT 2>/dev/null || true
 }
 
