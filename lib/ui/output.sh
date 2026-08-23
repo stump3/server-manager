@@ -10,17 +10,24 @@ DIM='\033[2m'
 NC='\033[0m'; RESET="$NC"
 
 
-ok()      { echo -e "${GREEN}  ✓ $*${NC}"; }
-info()    { echo -e "${BLUE}  · $*${NC}"; }
-warn()    { echo -e "${YELLOW}  ⚠  $*${NC}"; }
-err()     { echo -e "\n${RED}  ✗  $*${NC}\n"; exit 1; }
+# Contract 1 (docs/CONTRACTS.md): stdout carries machine-readable return
+# data only; stderr carries all UI text, diagnostics, warnings, and
+# errors. All of ok/info/warn/err/step/detail write to stderr below.
+# err() and die() are kept as two separate fatal helpers (exit 1 each,
+# both now to stderr) — no consolidation/rename here; see
+# docs/ARCHITECTURE.md §8 (err() vs die() — which fatal helper
+# survives) for that still-open, separate question.
+ok()      { echo -e "${GREEN}  ✓ $*${NC}" >&2; }
+info()    { echo -e "${BLUE}  · $*${NC}" >&2; }
+warn()    { echo -e "${YELLOW}  ⚠  $*${NC}" >&2; }
+err()     { echo -e "\n${RED}  ✗  $*${NC}\n" >&2; exit 1; }
 die()     { echo -e "${RED}  ✗  $*${NC}" >&2; exit 1; }
-detail()  { echo -e "${GRAY}    $*${NC}"; }
+detail()  { echo -e "${GRAY}    $*${NC}" >&2; }
 
 # Шаг установки с прогресс-баром
 # Использует STEP_NUM и TOTAL_STEPS если заданы
 step() {
-    echo ""
+    echo "" >&2
     if [ -n "${TOTAL_STEPS:-}" ] && [ "${TOTAL_STEPS:-0}" -gt 0 ]; then
         local _done=$(( STEP_NUM ))
         local _left=$(( TOTAL_STEPS - STEP_NUM ))
@@ -28,9 +35,9 @@ step() {
         local i
         for (( i=0; i<_done; i++ )); do _bar+="●"; done
         for (( i=0; i<_left; i++ )); do _bar+="○"; done
-        echo -e "${GRAY}  ${_bar}  ${BOLD}${CYAN}$*${NC}"
+        echo -e "${GRAY}  ${_bar}  ${BOLD}${CYAN}$*${NC}" >&2
     else
-        echo -e "${BOLD}${CYAN}  ── $* ──${NC}"
+        echo -e "${BOLD}${CYAN}  ── $* ──${NC}" >&2
     fi
-    echo ""
+    echo "" >&2
 }
