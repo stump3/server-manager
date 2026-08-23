@@ -62,7 +62,13 @@ panel_setup_api() {
     # the check — no content-diff/repair against an existing profile
     # that might not match what we'd generate fresh; that reconciliation
     # behaviour isn't defined anywhere and isn't invented here.
-    local CFG_UUID IBD_UUID
+    # CFG_UUID/IBD_UUID инициализированы пустой строкой явно: под
+    # server-manager.sh's `set -euo pipefail` (nounset) `local x` без `=`
+    # трактуется как unbound до первого присваивания. Без explicit-init
+    # обычный первый запуск (StealConfig ещё не существует,
+    # EXISTING_PROFILE пуст, ветка присвоения ниже не выполняется)
+    # приводил к `CFG_UUID: unbound variable` на строке с `[ -n "$CFG_UUID" ]`.
+    local CFG_UUID="" IBD_UUID=""
     local EXISTING_PROFILE
     EXISTING_PROFILE=$(panel_api "GET" "http://$API/api/config-profiles" "$TOKEN" | \
         jq -c '.response.configProfiles[]? | select(.name=="StealConfig")' 2>/dev/null | head -1)
