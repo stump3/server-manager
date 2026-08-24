@@ -102,9 +102,34 @@
 _panel_node_rollback_node() {
     local _api="$1" _token="$2" _uuid="$3"
     warn "Откат: удаляется нода, созданная в этом запуске (uuid: $_uuid)"
-    panel_api "DELETE" "http://$_api/api/nodes/$_uuid" "$_token" >/dev/null 2>&1 \
-        && ok "Нода удалена (rollback)" \
-        || warn "Не удалось откатить создание ноды (uuid: $_uuid) — требуется ручная проверка"
+    # Contract 4: transport failure, HTTP status, and body are three
+    # independent checks — panel_api_status() lets rollback tell them
+    # apart, instead of panel_api()'s legacy "curl exit 0 for any HTTP
+    # response including 4xx/5xx" masking a real DELETE failure as
+    # success (the false-success this round closes). `|| _rc=$?` keeps
+    # this safe under set -e (bare `X=$(cmd)` on a failing cmd would
+    # otherwise abort the script here).
+    local _raw _rc=0
+    _raw=$(panel_api_status "DELETE" "http://$_api/api/nodes/$_uuid" "$_token" 2>/dev/null) || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        warn "Не удалось откатить создание ноды (uuid: $_uuid): сетевая ошибка (transport failure) — требуется ручная проверка"
+        return
+    fi
+    local _status="${_raw: -3}"
+    case "$_status" in
+        2??)
+            ok "Нода удалена (rollback)"
+            ;;
+        *)
+            # 404 намеренно НЕ трактуется как success здесь: DELETE
+            # /api/nodes/{uuid} не документирует 404 вообще (только 200
+            # и 500 — remnawave/backend OpenAPI spec v2.1.13), поэтому
+            # нет источника, подтверждающего "already gone" semantics
+            # для этого конкретного endpoint'а. Общее правило "4xx/5xx =
+            # HTTP failure" применяется без исключения.
+            warn "Не удалось откатить создание ноды (uuid: $_uuid): HTTP $_status — требуется ручная проверка"
+            ;;
+    esac
 }
 
 # _panel_node_rollback_profile API TOKEN CFG_UUID
@@ -114,9 +139,31 @@ _panel_node_rollback_node() {
 _panel_node_rollback_profile() {
     local _api="$1" _token="$2" _uuid="$3"
     warn "Откат: удаляется конфиг-профиль, созданный в этом запуске (uuid: $_uuid)"
-    panel_api "DELETE" "http://$_api/api/config-profiles/$_uuid" "$_token" >/dev/null 2>&1 \
-        && ok "Конфиг-профиль удалён (rollback)" \
-        || warn "Не удалось откатить создание конфиг-профиля (uuid: $_uuid) — требуется ручная проверка"
+    local _raw _rc=0
+    _raw=$(panel_api_status "DELETE" "http://$_api/api/config-profiles/$_uuid" "$_token" 2>/dev/null) || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        warn "Не удалось откатить создание конфиг-профиля (uuid: $_uuid): сетевая ошибка (transport failure) — требуется ручная проверка"
+        return
+    fi
+    local _status="${_raw: -3}"
+    case "$_status" in
+        2??)
+            ok "Конфиг-профиль удалён (rollback)"
+            ;;
+        *)
+            # DELETE /api/config-profiles/{uuid} ЗАДОКУМЕНТИРОВАН с 404
+            # ("Config profile not found" — remnawave/backend OpenAPI
+            # spec v2.1.13), в отличие от Node DELETE выше. Но сам факт
+            # существования 404-ответа не говорит, должна ли ЭТА
+            # rollback-логика трактовать его как "уже отсутствует,
+            # компенсация не нужна" (success) или как настоящий провал
+            # компенсации — источник подтверждает только форму API, не
+            # policy вызывающего кода. DECISION REQUIRED (см. отчёт) —
+            # общее правило "4xx/5xx = HTTP failure" применяется без
+            # исключения до отдельного решения.
+            warn "Не удалось откатить создание конфиг-профиля (uuid: $_uuid): HTTP $_status — требуется ручная проверка"
+            ;;
+    esac
 }
 
 # panel_node_register SUPERADMIN_USER SUPERADMIN_PASS SELFSTEAL_DOMAIN NODE_ADDR
