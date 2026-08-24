@@ -2,6 +2,39 @@
 # panel/api.sh — Panel API bootstrap (MODE=1): superadmin, Reality keys,
 # config-profile, node, host, sub-token
 
+# Variant F (docs/ARCHITECTURE.md §6.1): three MODE-aware decisions
+# shared by every co-located topology (MODE=1, MODE=F — both run Panel
+# and Node on the same host; MODE=2 does not). Kept as three small pure
+# functions rather than three more scattered `[ "$MODE" = ... ]`
+# ternaries, so each reads as one named decision instead of an inline
+# condition repeated at its call site, and each is unit-testable in
+# isolation. $F_XRAY_PORT is defined in lib/panel/nginx/config.sh —
+# both files are always sourced together via lib/panel.sh before either
+# is called, so the reference resolves at call time regardless of
+# source order.
+panel_reality_needs_2222_ufw_rule() {
+    local MODE="$1"
+    [ "$MODE" = "1" ] || [ "$MODE" = "F" ]
+}
+
+panel_reality_dest_val() {
+    local MODE="$1" SELFSTEAL_DOMAIN="$2"
+    if [ "$MODE" = "1" ] || [ "$MODE" = "F" ]; then
+        echo '/dev/shm/nginx.sock'
+    else
+        echo "${SELFSTEAL_DOMAIN}:443"
+    fi
+}
+
+panel_reality_inbound_port() {
+    local MODE="$1"
+    if [ "$MODE" = "F" ]; then
+        echo "${F_XRAY_PORT:-8443}"
+    else
+        echo 443
+    fi
+}
+
 panel_setup_api() {
     local SUPERADMIN_USER="$1"
     local SUPERADMIN_PASS="$2"
@@ -9,7 +42,8 @@ panel_setup_api() {
     local MODE="$4"
 
     cd /opt/remnawave
-    [ "$MODE" = "1" ] && ufw allow from 172.30.0.0/16 to any port 2222 proto tcp >/dev/null 2>&1
+    panel_reality_needs_2222_ufw_rule "$MODE" && \
+        ufw allow from 172.30.0.0/16 to any port 2222 proto tcp >/dev/null 2>&1
 
     docker compose up -d >/dev/null 2>&1 & spinner $! "Запуск контейнеров..."
     ok "Контейнеры запущены"
@@ -54,7 +88,7 @@ panel_setup_api() {
 
     local SHORT_ID DEST_VAL
     SHORT_ID=$(openssl rand -hex 8)
-    [ "$MODE" = "1" ] && DEST_VAL='/dev/shm/nginx.sock' || DEST_VAL="${SELFSTEAL_DOMAIN}:443"
+    DEST_VAL=$(panel_reality_dest_val "$MODE" "$SELFSTEAL_DOMAIN")
 
     # Contract 13 (lookup-before-create, not always-create): reuse an
     # already-existing "StealConfig" profile by name if one is already
@@ -84,7 +118,8 @@ panel_setup_api() {
         PROFILE_R=$(panel_api "POST" "http://$API/api/config-profiles" "$TOKEN" "$(jq -n \
             --arg name "StealConfig" --arg domain "$SELFSTEAL_DOMAIN" \
             --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
-            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:443,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
+            --argjson port "$(panel_reality_inbound_port "$MODE")" \
+            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
