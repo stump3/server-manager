@@ -76,6 +76,48 @@
 #     созданных именно этим запуском (EXISTING vs CREATED_BY_THIS_RUN,
 #     см. PROFILE_EXISTING/NODE_EXISTING/HOST_EXISTING ниже). Rollback
 #     config-profile — вне scope этого раунда (см. отчёт).
+#
+# Config Profile rollback (закрытие оставшегося §4.4 gap).
+# Precedent: DELETE /api/config-profiles/{uuid} уже реально используется
+# в этом репозитории — lib/panel/api.sh:53 (panel_setup_api(), удаление
+# чужого "Default-Profile" перед пересозданием). Тот же endpoint, тот же
+# способ вызова (panel_api DELETE, best-effort, >/dev/null). Ничего не
+# придумано — только применено к новому случаю (compensation, а не
+# "удалить чужой профиль перед созданием своего").
+# PROFILE_EXISTING отслеживается так же, как NODE_EXISTING/HOST_EXISTING:
+# true — профиль был найден lookup'ом ДО этого запуска → никогда не
+# удаляется; false — профиль создан именно в этом запуске → подлежит
+# компенсации при любом провале ПОСЛЕ его создания (node lookup
+# malformed, node create fails, host lookup malformed, host create
+# fails). Порядок компенсации — обратный порядку создания: Node
+# (если создан этим запуском) → затем Profile (если создан этим
+# запуском). Rollback — best-effort и никогда не маскирует исходную
+# ошибку: возвращаемое значение функции всегда 1 на этих путях
+# независимо от того, удалось ли откатить ресурсы.
+
+# _panel_node_rollback_node API TOKEN NODE_UUID
+# Best-effort DELETE /api/nodes/{uuid}. Вызывается только когда нода
+# была создана именно этим запуском (NODE_EXISTING=false на момент
+# вызова) — см. вызывающий код.
+_panel_node_rollback_node() {
+    local _api="$1" _token="$2" _uuid="$3"
+    warn "Откат: удаляется нода, созданная в этом запуске (uuid: $_uuid)"
+    panel_api "DELETE" "http://$_api/api/nodes/$_uuid" "$_token" >/dev/null 2>&1 \
+        && ok "Нода удалена (rollback)" \
+        || warn "Не удалось откатить создание ноды (uuid: $_uuid) — требуется ручная проверка"
+}
+
+# _panel_node_rollback_profile API TOKEN CFG_UUID
+# Best-effort DELETE /api/config-profiles/{uuid}. Вызывается только
+# когда конфиг-профиль был создан именно этим запуском
+# (PROFILE_EXISTING=false на момент вызова) — см. вызывающий код.
+_panel_node_rollback_profile() {
+    local _api="$1" _token="$2" _uuid="$3"
+    warn "Откат: удаляется конфиг-профиль, созданный в этом запуске (uuid: $_uuid)"
+    panel_api "DELETE" "http://$_api/api/config-profiles/$_uuid" "$_token" >/dev/null 2>&1 \
+        && ok "Конфиг-профиль удалён (rollback)" \
+        || warn "Не удалось откатить создание конфиг-профиля (uuid: $_uuid) — требуется ручная проверка"
+}
 
 # panel_node_register SUPERADMIN_USER SUPERADMIN_PASS SELFSTEAL_DOMAIN NODE_ADDR
 # Печатает "TOKEN NODE_UUID" одной строкой в stdout при успехе, ничего — при ошибке.
@@ -120,7 +162,7 @@ panel_node_register() {
     # `[ -n "$CFG_UUID" ]` ниже крашит скрипт именно в самом обычном
     # случае (профиль ещё не существует, EXISTING_PROFILE пуст, ветка
     # присвоения не выполняется). Поймано mock-тестом (Case A).
-    local PROFILE_R CFG_UUID="" IBD_UUID=""
+    local PROFILE_R CFG_UUID="" IBD_UUID="" PROFILE_EXISTING=false
     local EXISTING_PROFILE
     EXISTING_PROFILE=$(panel_api "GET" "http://$API/api/config-profiles" "$TOKEN" | \
         jq -c --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" \
@@ -128,6 +170,7 @@ panel_node_register() {
     if [ -n "$EXISTING_PROFILE" ]; then
         CFG_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[0].uuid // empty' 2>/dev/null)
+        [ -n "$CFG_UUID" ] && [ -n "$IBD_UUID" ] && PROFILE_EXISTING=true
     fi
 
     if [ -n "$CFG_UUID" ] && [ -n "$IBD_UUID" ]; then
@@ -158,6 +201,7 @@ panel_node_register() {
     NODES_LIST_R=$(panel_api "GET" "http://$API/api/nodes" "$TOKEN")
     if ! echo "$NODES_LIST_R" | jq -e '.response | type == "array"' >/dev/null 2>&1; then
         warn "Не удалось получить список нод (некорректный ответ API): $NODES_LIST_R"
+        [ "$PROFILE_EXISTING" = false ] && _panel_node_rollback_profile "$API" "$TOKEN" "$CFG_UUID"
         return 1
     fi
     local EXISTING_NODE
@@ -176,6 +220,7 @@ panel_node_register() {
         NODE_UUID=$(echo "$NODE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         if [ -z "$NODE_UUID" ]; then
             warn "Ошибка создания ноды: $NODE_R"
+            [ "$PROFILE_EXISTING" = false ] && _panel_node_rollback_profile "$API" "$TOKEN" "$CFG_UUID"
             return 1
         fi
         ok "Нода зарегистрирована в Panel (uuid: $NODE_UUID)"
@@ -194,12 +239,8 @@ panel_node_register() {
     HOSTS_LIST_R=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN")
     if ! echo "$HOSTS_LIST_R" | jq -e '.response | type == "array"' >/dev/null 2>&1; then
         warn "Не удалось получить список хостов (некорректный ответ API): $HOSTS_LIST_R"
-        if [ "$NODE_EXISTING" = false ]; then
-            warn "Откат: удаляется нода, созданная в этом запуске (uuid: $NODE_UUID)"
-            panel_api "DELETE" "http://$API/api/nodes/$NODE_UUID" "$TOKEN" >/dev/null 2>&1 \
-                && ok "Нода удалена (rollback)" \
-                || warn "Не удалось откатить создание ноды (uuid: $NODE_UUID) — требуется ручная проверка"
-        fi
+        [ "$NODE_EXISTING" = false ] && _panel_node_rollback_node "$API" "$TOKEN" "$NODE_UUID"
+        [ "$PROFILE_EXISTING" = false ] && _panel_node_rollback_profile "$API" "$TOKEN" "$CFG_UUID"
         return 1
     fi
     local EXISTING_HOST
@@ -225,12 +266,11 @@ panel_node_register() {
             # Node; HostsToNodes join rows would cascade-delete, but our
             # create call never populates that join, and no Host exists
             # here yet regardless).
-            if [ "$NODE_EXISTING" = false ]; then
-                warn "Откат: удаляется нода, созданная в этом запуске (uuid: $NODE_UUID)"
-                panel_api "DELETE" "http://$API/api/nodes/$NODE_UUID" "$TOKEN" >/dev/null 2>&1 \
-                    && ok "Нода удалена (rollback)" \
-                    || warn "Не удалось откатить создание ноды (uuid: $NODE_UUID) — требуется ручная проверка"
-            fi
+            # Rollback order is the reverse of creation: Node was created
+            # after Profile, so Node is compensated first, then Profile —
+            # each gated independently on having been created by THIS run.
+            [ "$NODE_EXISTING" = false ] && _panel_node_rollback_node "$API" "$TOKEN" "$NODE_UUID"
+            [ "$PROFILE_EXISTING" = false ] && _panel_node_rollback_profile "$API" "$TOKEN" "$CFG_UUID"
             return 1
         fi
     fi
