@@ -24,6 +24,12 @@ declare -A MOCK_EXIT   # optional: forced nonzero exit code per "METHOD URL" key
                        # the response body. Needed for Case L (rollback
                        # DELETE itself fails at the transport level, not
                        # just via an error body).
+declare -A MOCK_STATUS # HTTP status code per "METHOD URL" key, for the
+                       # panel_api_status() mock below. Defaults to "204"
+                       # (success, empty body) when unset, matching every
+                       # existing rollback-DELETE mock in this file that
+                       # was written as MOCK_RESP[...]='' before this
+                       # mock existed.
 CALL_LOG_FILE="$(mktemp)"
 
 panel_api() {
@@ -31,6 +37,29 @@ panel_api() {
     local key="${method} ${url}"
     echo "$key" >> "$CALL_LOG_FILE"
     echo "${MOCK_RESP[$key]:-}"
+    return "${MOCK_EXIT[$key]:-0}"
+}
+
+# Mock for lib/common/network.sh's panel_api_status() — the rollback
+# helpers (_panel_node_rollback_node/_panel_node_rollback_profile) call
+# THIS, not panel_api(). Without this mock, every rollback DELETE call
+# in this harness silently fell through to the real, unmocked
+# panel_api_status() (this file deliberately never sources
+# lib/common/network.sh) — meaning every rollback assertion below was
+# not actually exercising panel_node_register()'s rollback code path at
+# all. Confirmed via a real run: with jq installed and this mock
+# missing, "rollback DELETE called" assertions failed (count 0) while
+# "rollback failure is explicitly diagnosed" assertions passed — the
+# rollback helpers were hitting a real `command not found` (panel_api_status
+# undefined in this shell) and reporting that as a transport failure,
+# never reaching the mocked panel_api() at all. Contract: same
+# body+status-concatenated shape as the real function, so callers'
+# `${raw: -3}` / `${raw:0:${#raw}-3}` parsing is exercised for real.
+panel_api_status() {
+    local method="$1" url="$2" token="${3:-}" data="${4:-}"
+    local key="${method} ${url}"
+    echo "$key" >> "$CALL_LOG_FILE"
+    printf '%s%s' "${MOCK_RESP[$key]:-}" "${MOCK_STATUS[$key]:-204}"
     return "${MOCK_EXIT[$key]:-0}"
 }
 
@@ -50,12 +79,19 @@ call_order_index() {
 reset_mocks() {
     MOCK_RESP=()
     MOCK_EXIT=()
+    MOCK_STATUS=()
     : > "$CALL_LOG_FILE"
 }
 
-# Load the function under test from the real (patched) file, in a subshell-safe way:
+# Load the function under test from the real (patched) file, resolved
+# relative to this script's own location so it runs from any checkout
+# (was previously a hardcoded absolute path specific to one machine —
+# every test case failed silently with "command not found" / exit 127
+# under `set -uo pipefail` without `-e`, and every apparent PASS above
+# that point was a vacuous false negative, not a real check).
+_HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-source /home/claude/work/server-manager/lib/panel/node/api.sh
+source "$_HARNESS_DIR/../../panel/node/api.sh"
 
 API="127.0.0.1:3000"
 DOMAIN="example.com"
@@ -286,6 +322,64 @@ RC=$?
 check "under set -e: function still returns 1, not aborted early / not silently 0" "$RC" "1"
 check "under set -e: both rollback DELETEs still attempted" \
     "$(call_count "DELETE http://$API/api/config-profiles/CFG-NEW")" "1"
+
+echo "=== Case M: rollback DELETE returns HTTP 404 (Node) -> treated as failure, not silent success ==="
+echo "    (Closes a real coverage gap: this exact scenario was never exercised — every prior"
+echo "     rollback-DELETE mock used an empty MOCK_RESP body, which (before panel_api_status()"
+echo "     was mocked above) never distinguished HTTP status at all. Confirms the current,"
+echo "     documented policy — no 404-as-success special-casing until a decision is made,"
+echo "     see lib/panel/node/api.sh's own DECISION REQUIRED comment for Config Profile.)"
+reset_mocks; common_mocks
+MOCK_RESP["GET http://$API/api/config-profiles"]='{"response":{"configProfiles":[]}}'
+MOCK_RESP["POST http://$API/api/config-profiles"]='{"response":{"uuid":"CFG-NEW","inbounds":[{"uuid":"IBD-NEW"}]}}'
+MOCK_RESP["GET http://$API/api/nodes"]='{"response":[]}'
+MOCK_RESP["POST http://$API/api/nodes"]='{"response":{"uuid":"NODE-NEW"}}'
+MOCK_RESP["GET http://$API/api/hosts"]='{"response":[]}'
+MOCK_RESP["POST http://$API/api/hosts"]='{"message":"Internal error"}'  # host creation fails -> triggers rollback
+MOCK_STATUS["DELETE http://$API/api/nodes/NODE-NEW"]="404"
+MOCK_STATUS["DELETE http://$API/api/config-profiles/CFG-NEW"]="404"
+OUT=$(panel_node_register "admin" "pass" "$DOMAIN" "10.0.0.5" 2>&1)
+RC=$?
+check "original failure is STILL returned" "$RC" "1"
+check "Node rollback DELETE was actually attempted" "$(call_count "DELETE http://$API/api/nodes/NODE-NEW")" "1"
+check "404 on Node rollback DELETE is NOT reported as success" \
+    "$(echo "$OUT" | grep -Fc "Нода удалена (rollback)")" "0"
+check "404 on Node rollback DELETE is reported as a failure needing manual check" \
+    "$(echo "$OUT" | grep -Fc "Не удалось откатить создание ноды")" "1"
+
+echo "=== Case N: rollback DELETE returns HTTP 500 (Config Profile) -> treated as failure, not silent success ==="
+reset_mocks; common_mocks
+MOCK_RESP["GET http://$API/api/config-profiles"]='{"response":{"configProfiles":[]}}'
+MOCK_RESP["POST http://$API/api/config-profiles"]='{"response":{"uuid":"CFG-NEW","inbounds":[{"uuid":"IBD-NEW"}]}}'
+MOCK_RESP["GET http://$API/api/nodes"]='{"response":[]}'
+MOCK_RESP["POST http://$API/api/nodes"]='{"message":"Internal error"}'  # node creation fails -> triggers profile rollback only
+MOCK_STATUS["DELETE http://$API/api/config-profiles/CFG-NEW"]="500"
+OUT=$(panel_node_register "admin" "pass" "$DOMAIN" "10.0.0.5" 2>&1)
+RC=$?
+check "original failure is STILL returned" "$RC" "1"
+check "Profile rollback DELETE was actually attempted" "$(call_count "DELETE http://$API/api/config-profiles/CFG-NEW")" "1"
+check "500 on Profile rollback DELETE is NOT reported as success" \
+    "$(echo "$OUT" | grep -Fc "Конфиг-профиль удалён (rollback)")" "0"
+check "500 on Profile rollback DELETE is reported as a failure needing manual check" \
+    "$(echo "$OUT" | grep -Fc "Не удалось откатить создание конфиг-профиля")" "1"
+
+echo "=== Case O: rollback DELETE returns HTTP 204 (both) -> reported as success, not failure ==="
+reset_mocks; common_mocks
+MOCK_RESP["GET http://$API/api/config-profiles"]='{"response":{"configProfiles":[]}}'
+MOCK_RESP["POST http://$API/api/config-profiles"]='{"response":{"uuid":"CFG-NEW","inbounds":[{"uuid":"IBD-NEW"}]}}'
+MOCK_RESP["GET http://$API/api/nodes"]='{"response":[]}'
+MOCK_RESP["POST http://$API/api/nodes"]='{"response":{"uuid":"NODE-NEW"}}'
+MOCK_RESP["GET http://$API/api/hosts"]='{"response":[]}'
+MOCK_RESP["POST http://$API/api/hosts"]='{"message":"Internal error"}'
+MOCK_STATUS["DELETE http://$API/api/nodes/NODE-NEW"]="204"
+MOCK_STATUS["DELETE http://$API/api/config-profiles/CFG-NEW"]="204"
+OUT=$(panel_node_register "admin" "pass" "$DOMAIN" "10.0.0.5" 2>&1)
+RC=$?
+check "original failure is STILL returned (rollback success doesn't flip overall result)" "$RC" "1"
+check "204 on Node rollback IS reported as success" \
+    "$(echo "$OUT" | grep -Fc "Нода удалена (rollback)")" "1"
+check "204 on Profile rollback IS reported as success" \
+    "$(echo "$OUT" | grep -Fc "Конфиг-профиль удалён (rollback)")" "1"
 
 echo ""
 echo "=== SUMMARY: $pass passed, $fail failed ==="
