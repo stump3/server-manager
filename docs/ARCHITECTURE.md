@@ -554,6 +554,154 @@ need to share TLS/web-server logic with Panel, promoting to `lib/web/`
 at that point — with concrete evidence in hand — would be the correct
 call; that evidence does not exist today.
 
+### 6.1 — Variant F: nginx owns public :443, Xray/REALITY moves internal
+
+**PURPOSE**: MODE=1 and MODE=2 both let *something other than nginx* own
+public TCP 443 whenever a co-located Node exists (Xray/REALITY does, in
+MODE=1). Variant F is for operators who need nginx to be the sole public
+:443 owner even with a co-located Node — e.g. because their environment
+mandates a single well-understood public listener, or because they want
+Panel/sub/selfsteal and the proxy data-plane visibly multiplexed through
+one process for firewall/audit purposes. It does not replace MODE=1; it
+is a third value of the same `MODE` variable, alongside `1` and `2`.
+
+**DECISION**: expressed as a third `MODE` value (`"F"`), not a new
+`TOPOLOGY` variable or a parallel contract system. `MODE` already *is*
+the "who owns 443 / where does Xray live" lever throughout
+`lib/panel/{api.sh,compose.sh,install.sh,nginx/config.sh}` — adding a
+third value to an existing three-way lever is the minimal extension;
+inventing a second variable would mean every one of those call sites
+grows a second axis to check, for no behavioural gain.
+
+**Decision table** (`WEB_SERVER` × `MODE` → supported):
+
+| WEB_SERVER | MODE | Supported | Reason |
+|---|---|---|---|
+| 1 (nginx) | 1 | ✅ | existing — Xray owns public 443, nginx on unix socket |
+| 1 (nginx) | 2 | ✅ | existing — Panel-only, Node deployed separately later |
+| 1 (nginx) | F | ✅ | this section — nginx owns public 443, Xray moves internal |
+| 2 (Caddy) | 1 | ✅ | existing — Xray owns public 443, Caddy on unix socket |
+| 2 (Caddy) | 2 | ✅ | existing — Panel-only, Node deployed separately later |
+| 2 (Caddy) | F | ❌ | F's mechanism is nginx's `stream{}` + `ssl_preread` module ([VERIFIED](https://nginx.org/en/docs/stream/ngx_stream_ssl_preread_module.html), and confirmed present in the official `nginxinc/docker-nginx` build already used here — no custom image needed). Caddy's equivalent is the third-party `mholt/caddy-l4` plugin, which is **not** part of the stock `caddy:2.11` image this project already uses elsewhere — it requires a custom `xcaddy` build. Rejected for this pass on that basis, not because the underlying TCP/TLS-passthrough mechanism is impossible with Caddy — it's a scope decision, not an architecture one. Revisit if Caddy support is explicitly requested. |
+
+**Port ownership table**:
+
+| Mode | nginx public :443 | nginx internal HTTPS | Xray/REALITY listen | Selfsteal fallback |
+|---|---|---|---|---|
+| MODE=1 | not applicable — nginx has no public listener at all | n/a | `0.0.0.0:443` (public) | `unix:/dev/shm/nginx.sock` |
+| MODE=2 | `0.0.0.0:443` (public, Panel+sub only, no co-located Node) | n/a | not applicable | n/a |
+| MODE=F | `0.0.0.0:443` (public — `stream{}` block) | `127.0.0.1:7443` (Panel+sub, TLS terminated here) | `127.0.0.1:8443` (loopback only) | `unix:/dev/shm/nginx.sock` (unchanged from MODE=1) |
+
+**Topology**:
+
+```
+Internet
+   │ TCP :443
+   ▼
+nginx stream{} (ssl_preread — reads SNI, does NOT terminate TLS)
+   │
+   ├── SNI = PANEL_DOMAIN / SUB_DOMAIN ──▶ 127.0.0.1:7443 (nginx http{}, TLS terminated normally)
+   │                                            │
+   │                                            ├── Panel   → 127.0.0.1:3000
+   │                                            └── Sub     → 127.0.0.1:3010
+   │
+   └── default (SELFSTEAL_DOMAIN + any non-matching SNI,
+       i.e. exactly what REALITY itself already treats
+       as "not my client") ──▶ 127.0.0.1:8443 (Xray/REALITY, raw TCP, untouched)
+                                     │
+                                     ├── genuine REALITY client → proxy
+                                     └── everything else (Xray's own fallback,
+                                         UNCHANGED from MODE=1) → unix:/dev/shm/nginx.sock
+                                                                        │
+                                                                        └── nginx serves the
+                                                                            decoy site (same
+                                                                            http{} block MODE=1
+                                                                            already has)
+```
+
+**Why raw TCP passthrough, not HTTP reverse proxy, for the Xray leg**:
+REALITY inspects the genuine TLS ClientHello itself to decide "real
+client vs. everyone else." If nginx terminated TLS before handing
+traffic to Xray, Xray would never see a real handshake and REALITY's
+entire security model would have nothing to inspect. `ssl_preread`
+reads only the SNI from the ClientHello without terminating TLS/SSL
+([VERIFIED](https://nginx.org/en/docs/stream/ngx_stream_ssl_preread_module.html)),
+so `proxy_pass` in the `stream{}` block forwards the original,
+untouched bytes — Xray's REALITY inbound sees exactly what it would see
+if it still owned public 443 directly.
+
+**Selfsteal/fallback flow**: completely unchanged from MODE=1. Xray's
+own `realitySettings.dest` still points at `/dev/shm/nginx.sock`; that
+mechanism lives entirely inside Xray and fires only after Xray's own
+REALITY handshake inspection decides a connection isn't a genuine proxy
+client. Variant F only changes *how traffic reaches Xray's public-facing
+inbound*, not what Xray does once it has that traffic.
+
+**Docker networking**: no new requirement beyond what MODE=1 already
+has. `remnawave-nginx` and `remnanode` both already use `network_mode:
+host` in MODE=1's compose branch — this is what makes
+`proxy_pass 127.0.0.1:8443;` inside nginx's `stream{}` block correctly
+reach the host's loopback where Xray binds, rather than falling into
+the "nginx container's own loopback, not the host's" trap that would
+occur if either container used bridge networking instead. Panel/DB/
+Redis/sub-page stay on the bridge `remnawave-network`, reached via their
+published `127.0.0.1:PORT` mappings — exactly as MODE=1 already does.
+
+**Required mounts**: `nginx.conf` must be mounted at
+`/etc/nginx/nginx.conf` (replacing the base image's top-level config
+entirely), **not** `/etc/nginx/conf.d/default.conf` as MODE=1/2 do —
+`stream {}` is only valid at the top level of nginx's config, never
+nested inside `http {}}`; this is a hard nginx constraint, so
+`panel_generate_nginx_config_f()` emits a complete top-level config
+(events/http/stream) rather than an `http{}`-only fragment.
+`/dev/shm` and `/var/www/html` mounts are unchanged from MODE=1 (still
+needed for the selfsteal decoy).
+
+**Required firewall rule**: the same `ufw allow from 172.30.0.0/16 to
+any port 2222 proto tcp` rule MODE=1 applies — F is co-located, same
+Docker-bridge-to-host-networked-container topology, same reason the
+rule exists at all.
+
+**Generated config responsibilities**:
+- `lib/panel/nginx/config.sh`'s `panel_generate_nginx_config_f()` — the
+  full top-level `nginx.conf` (§ above).
+- `lib/panel/compose.sh` — a `WEB_SERVER=1 ∧ MODE=F` branch, structurally
+  identical to the existing MODE=1 branch except the nginx service's
+  volume mount target (`nginx.conf` → `/etc/nginx/nginx.conf`, not
+  `conf.d/default.conf`). This mirrors the file's own established
+  pattern of near-duplicate heredoc variants per `WEB_SERVER`×`MODE`
+  combination (see the file's own header comment) rather than
+  introducing a new abstraction layer for one differing line.
+- `lib/panel/api.sh` — three MODE-aware values needed: the REALITY
+  inbound's `port` (443 normally, the F-internal port for MODE=F), the
+  REALITY fallback `DEST_VAL` (must be `/dev/shm/nginx.sock` for F, same
+  as MODE=1 — not `${SELFSTEAL_DOMAIN}:443`, since nginx's own public
+  entrypoint now owns that address:port, and pointing REALITY's
+  fallback back through it would be a needless, fragile loop instead of
+  the direct local-socket handoff MODE=1 already uses), and ufw
+  eligibility (F needs the same rule MODE=1 does). Implemented as three
+  small named pure functions rather than three more scattered
+  `[ "$MODE" = ... ]` ternaries, so each is independently testable and
+  the decision reads as "what MODE=F needs" in one place instead of
+  three separate inline conditionals.
+
+**Compatibility invariants** (binding on any future change to this
+area):
+- MODE=1 output (nginx config, compose, API values) MUST NOT change.
+- MODE=2 output MUST NOT change.
+- WEB_SERVER=2 (Caddy) topology for MODE=1/2 MUST NOT change.
+- In MODE=F, only nginx may bind public TCP 443. Xray MUST NOT bind a
+  public interface — its REALITY inbound listens on `127.0.0.1` only.
+- `WEB_SERVER=2 ∧ MODE=F` MUST be rejected before any generation step
+  runs (already enforced in `lib/panel/install.sh`).
+
+**ALTERNATIVES CONSIDERED**: a `caddy-l4`-based Caddy equivalent (F2,
+per the original research pass) — rejected for now per the decision
+table above, not ruled out permanently. A generic layer-4 router
+independent of nginx/Caddy (e.g. HAProxy) — rejected as an unnecessary
+third dependency when nginx's own `stream` module already does this
+natively and is already the WEB_SERVER=1 provider in this project.
+
 ---
 
 ## 7. Migration strategy — dependency-ordered stages
@@ -587,6 +735,9 @@ stay backward-compatible during it, how to verify it, and its rollback.
 | Functions callable via `$(...)` never rely on exit-driven fatal helpers | `DECISION` (elevated from the prior round's `PROPOSED`) |
 | `lib/telemt/` (not `lib/tmt/`) | `DECISION` — §5.1 |
 | Web/TLS stays nested in `lib/panel/`, no `lib/web/` | `DECISION` — §6 |
+| Variant F expressed as third `MODE` value (`"F"`), not a new variable | `DECISION` — §6.1 |
+| Variant F mechanism: nginx `stream{}` + `ssl_preread`, raw TCP passthrough to Xray | `DECISION` — §6.1 |
+| Variant F + Caddy (`WEB_SERVER=2`) | `NOT SUPPORTED` — §6.1 (scope decision: `caddy-l4` needs a custom image; revisit on demand, not ruled out architecturally) |
 | `lib/panel/` keeps current fine-grained file shape | `DECISION` — §2.2 |
 | No separate `lib/ui/` tree | `DECISION` — §2.3 |
 | No `lib/core/logging.sh` | `DECISION` — §2.4 |
