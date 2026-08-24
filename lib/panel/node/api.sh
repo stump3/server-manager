@@ -26,6 +26,56 @@
 #     self-reference ${SELFSTEAL_DOMAIN}:443 семантически некорректен)
 #   - NODE_ADDR передаётся явным параметром (IP ноды, не домен — см.
 #     инвариант "NODE_ADDR ≠ SELFSTEAL_DOMAIN" из задания)
+#
+# Node/Host lookup-before-create + rollback (закрытие UNKNOWN этого раунда).
+# Источники (реальный код, не README):
+#   - github.com/eGamesAPI/remnawave-reverse-proxy,
+#     src/api/remnawave_api.sh: check_node_domain() читает
+#     `GET /api/nodes` → `.response[] | select(.address==...)` — response
+#     это ГОЛЫЙ массив, не {response:{nodes:[...]}}. add_node_to_panel()
+#     в src/modules/add_node.sh — CONFIRMED execution order:
+#     config-profile → node → host → squad (тот же порядок что и здесь).
+#     В этом репозитории НЕТ delete_node/delete_host — eGames тоже не
+#     делает rollback ноды/хоста, только delete_config_profile().
+#   - github.com/remnawave/backend (primary source, NestJS + Prisma):
+#     · libs/contract/api/controllers/nodes.ts — NODES_ROUTES: GET '',
+#       GET_BY_UUID(uuid), DELETE(uuid) — все три подтверждены.
+#     · libs/contract/models/nodes.schema.ts — Nodes: uuid, name, address,
+#       isConnected, isConnecting, lastStatusChange, lastStatusMessage.
+#     · prisma/schema.prisma, model Nodes — `name` и `address` оба
+#       @unique. Т.е. lookup по name — безопасная, DB-enforced identity.
+#     · src/modules/nodes/nodes.service.ts createNode(): P2002 на
+#       name/address → NODE_NAME_ALREADY_EXISTS / NODE_ADDRESS_ALREADY_EXISTS
+#       (HTTP 400, errorCode), НЕ silent success и НЕ 500-без-объяснения —
+#       значит unconditional POST retry уже был "безопасен" в смысле
+#       "не создаёт дубликат", просто возвращал явную ошибку вместо reuse.
+#     · nodes.service.ts deleteNode(): просто stopNode + emit event,
+#       НЕ удаляет связанные Hosts. prisma schema: HostsToNodes
+#       (join-таблица host_uuid/node_uuid) имеет onDelete:Cascade НА
+#       ОБЕИХ сторонах join-таблицы — но это удаляет только строки
+#       join-таблицы, не сам Host (Hosts.uuid — самостоятельный PK).
+#       Итог: DELETE Node НЕ каскадирует на Host.
+#     · libs/contract/api/controllers/hosts.ts — HOSTS_ROUTES: GET '',
+#       GET_BY_UUID(uuid), DELETE(uuid) — все три подтверждены.
+#     · libs/contract/models/hosts.schema.ts — Hosts: uuid, remark,
+#       address, inbound:{configProfileUuid,configProfileInboundUuid},
+#       nodes:[uuid] (опциональное поле в CreateHostCommand — наш POST
+#       его не передаёт, поэтому HostsToNodes join у нас пустой; связь
+#       Host↔Node проходит только через shared inbound).
+#       ⚠ prisma schema.prisma, model Hosts: НИ `remark`, НИ `address`
+#       НЕ @unique. В отличие от Node, у Host нет DB-enforced identity.
+#       Поэтому lookup по remark ("RemoteNode" — статичная строка, даже
+#       не включает домен) был бы ненадёжен. Используем
+#       inbound.configProfileInboundUuid==IBD_UUID: IBD_UUID уже
+#       установлен как identity выше (per-domain config-profile), так
+#       что совпадение по нему настолько же надёжно, насколько надёжен
+#       сам профиль — но это convention-level, не DB constraint.
+#     · hosts.service.ts deleteHost(): простой delete-by-uuid, 404 если
+#       не найден, не трогает Node/Profile. Безопасен для compensation.
+#   - Rollback реализован ТОЛЬКО для Node/Host, ТОЛЬКО для ресурсов,
+#     созданных именно этим запуском (EXISTING vs CREATED_BY_THIS_RUN,
+#     см. PROFILE_EXISTING/NODE_EXISTING/HOST_EXISTING ниже). Rollback
+#     config-profile — вне scope этого раунда (см. отчёт).
 
 # panel_node_register SUPERADMIN_USER SUPERADMIN_PASS SELFSTEAL_DOMAIN NODE_ADDR
 # Печатает "TOKEN NODE_UUID" одной строкой в stdout при успехе, ничего — при ошибке.
@@ -95,22 +145,95 @@ panel_node_register() {
         fi
     fi
 
-    local NODE_R NODE_UUID
-    NODE_R=$(panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
-        --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" --arg na "$NODE_ADDR" \
-        --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" \
-        '{name:$name,address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:[$iu]},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)")
-    NODE_UUID=$(echo "$NODE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
-    if [ -z "$NODE_UUID" ]; then
-        warn "Ошибка создания ноды: $NODE_R"
+    # Node lookup-before-create (Contract 13). Identity = Nodes.name,
+    # confirmed @unique in remnawave/backend prisma/schema.prisma.
+    # GET /api/nodes → {"response":[...]} — bare array (confirmed by both
+    # remnawave/backend get-nodes.command.ts ResponseSchema and eGames'
+    # check_node_domain() usage of `.response[]`). A response that isn't
+    # an array is a lookup FAILURE, not an empty list — must not be
+    # silently treated as "node absent" (that would mask an auth/network
+    # error as a false ABSENT and lead to an unwanted duplicate-create
+    # attempt right after).
+    local NODES_LIST_R NODE_UUID="" NODE_EXISTING=false
+    NODES_LIST_R=$(panel_api "GET" "http://$API/api/nodes" "$TOKEN")
+    if ! echo "$NODES_LIST_R" | jq -e '.response | type == "array"' >/dev/null 2>&1; then
+        warn "Не удалось получить список нод (некорректный ответ API): $NODES_LIST_R"
         return 1
     fi
-    ok "Нода зарегистрирована в Panel (uuid: $NODE_UUID)"
+    local EXISTING_NODE
+    EXISTING_NODE=$(echo "$NODES_LIST_R" | jq -c --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" \
+        '.response[] | select(.name==$name)' 2>/dev/null | head -1)
+    if [ -n "$EXISTING_NODE" ]; then
+        NODE_UUID=$(echo "$EXISTING_NODE" | jq -r '.uuid // empty' 2>/dev/null)
+        NODE_EXISTING=true
+        ok "Нода RemoteNode-${SELFSTEAL_DOMAIN} уже существует, используется существующая (uuid: $NODE_UUID)"
+    else
+        local NODE_R
+        NODE_R=$(panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
+            --arg name "RemoteNode-${SELFSTEAL_DOMAIN}" --arg na "$NODE_ADDR" \
+            --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" \
+            '{name:$name,address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:[$iu]},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)")
+        NODE_UUID=$(echo "$NODE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
+        if [ -z "$NODE_UUID" ]; then
+            warn "Ошибка создания ноды: $NODE_R"
+            return 1
+        fi
+        ok "Нода зарегистрирована в Panel (uuid: $NODE_UUID)"
+    fi
 
-    panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
-        --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" \
-        '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"RemoteNode",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
-        && ok "Хост создан" || warn "Ошибка создания хоста"
+    # Host lookup-before-create.
+    # ⚠ Identity caveat: unlike Nodes.name, Hosts has NO unique constraint
+    # on any field (prisma/schema.prisma, model Hosts — neither `remark`
+    # nor `address` is @unique). We match on
+    # inbound.configProfileInboundUuid==IBD_UUID instead — IBD_UUID is
+    # already our per-domain identity from the config-profile step above.
+    # This is convention-level (nothing in the DB stops two Hosts
+    # pointing at the same inbound), weaker than the Node lookup — stated
+    # explicitly, not silently assumed safe.
+    local HOSTS_LIST_R HOST_EXISTING=false
+    HOSTS_LIST_R=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN")
+    if ! echo "$HOSTS_LIST_R" | jq -e '.response | type == "array"' >/dev/null 2>&1; then
+        warn "Не удалось получить список хостов (некорректный ответ API): $HOSTS_LIST_R"
+        if [ "$NODE_EXISTING" = false ]; then
+            warn "Откат: удаляется нода, созданная в этом запуске (uuid: $NODE_UUID)"
+            panel_api "DELETE" "http://$API/api/nodes/$NODE_UUID" "$TOKEN" >/dev/null 2>&1 \
+                && ok "Нода удалена (rollback)" \
+                || warn "Не удалось откатить создание ноды (uuid: $NODE_UUID) — требуется ручная проверка"
+        fi
+        return 1
+    fi
+    local EXISTING_HOST
+    EXISTING_HOST=$(echo "$HOSTS_LIST_R" | jq -c --arg iu "$IBD_UUID" \
+        '.response[] | select(.inbound.configProfileInboundUuid==$iu)' 2>/dev/null | head -1)
+    if [ -n "$EXISTING_HOST" ]; then
+        HOST_EXISTING=true
+        ok "Хост для этого inbound уже существует, используется существующий"
+    else
+        local HOST_R
+        HOST_R=$(panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
+            --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" \
+            '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"RemoteNode",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)")
+        if echo "$HOST_R" | jq -e '.response.uuid' >/dev/null 2>&1; then
+            ok "Хост создан"
+        else
+            warn "Ошибка создания хоста: $HOST_R"
+            # Contract 13 / ARCHITECTURE.md §4: compensate only what THIS
+            # run created. A pre-existing node (NODE_EXISTING=true) must
+            # survive a host-creation failure — it predates this run and
+            # is not ours to remove. Confirmed safe: deleteNode() does not
+            # cascade to Hosts (prisma schema — Host has no required FK to
+            # Node; HostsToNodes join rows would cascade-delete, but our
+            # create call never populates that join, and no Host exists
+            # here yet regardless).
+            if [ "$NODE_EXISTING" = false ]; then
+                warn "Откат: удаляется нода, созданная в этом запуске (uuid: $NODE_UUID)"
+                panel_api "DELETE" "http://$API/api/nodes/$NODE_UUID" "$TOKEN" >/dev/null 2>&1 \
+                    && ok "Нода удалена (rollback)" \
+                    || warn "Не удалось откатить создание ноды (uuid: $NODE_UUID) — требуется ручная проверка"
+            fi
+            return 1
+        fi
+    fi
 
     local SQUAD_UUIDS su
     SQUAD_UUIDS=$(panel_api "GET" "http://$API/api/internal-squads" "$TOKEN" | \
