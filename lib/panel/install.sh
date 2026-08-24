@@ -166,11 +166,13 @@ panel_install() {
     section "Режим"
     echo "  1) Панель + Нода (Reality selfsteal, всё на одном сервере)"
     echo "  2) Только панель (нода на отдельном сервере)"
+    echo "  F) Панель + Нода, :443 у nginx (TCP passthrough к Xray/REALITY)"
     echo ""
     local MODE=""
-    while [[ ! "$MODE" =~ ^[12]$ ]]; do
-        read -p "  Выбор (1/2): " MODE < /dev/tty
+    while [[ ! "$MODE" =~ ^([12]|[Ff])$ ]]; do
+        read -p "  Выбор (1/2/F): " MODE < /dev/tty
     done
+    [[ "$MODE" =~ ^[Ff]$ ]] && MODE="F"
 
     echo ""
     section "Домены"
@@ -194,6 +196,18 @@ panel_install() {
     while [[ ! "$WEB_SERVER" =~ ^[12]$ ]]; do
         read -p "  Выбор (1/2): " WEB_SERVER < /dev/tty
     done
+
+    # Режим F (TCP passthrough к Xray через nginx stream) реализован пока
+    # только для nginx. Для Caddy эквивалентный механизм — сторонний
+    # плагин caddy-l4 (mholt/caddy-l4), который требует собственной сборки
+    # бинарника (xcaddy build --with github.com/mholt/caddy-l4) — НЕ входит
+    # в официальный образ caddy:2.11, уже используемый ниже для MODE=1/2.
+    # Это не архитектурное решение "Caddy не поддерживается вообще" — это
+    # явное ограничение объёма текущего изменения; см. docs/ARCHITECTURE.md
+    # §4b (Variant F).
+    if [ "$MODE" = "F" ] && [ "$WEB_SERVER" = "2" ]; then
+        err "Режим F сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy для F требует отдельной сборки (caddy-l4, не входит в official caddy:2.11 image) — не реализовано в этом проходе."
+    fi
 
     local CERT_METHOD="" PANEL_CF_EMAIL="" PANEL_CF_KEY="" PANEL_LE_EMAIL="" GCORE_TOKEN=""
     if [ "$WEB_SERVER" = "1" ]; then
