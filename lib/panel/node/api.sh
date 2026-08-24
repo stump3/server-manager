@@ -121,12 +121,34 @@ _panel_node_rollback_node() {
             ok "Нода удалена (rollback)"
             ;;
         *)
-            # 404 намеренно НЕ трактуется как success здесь: DELETE
-            # /api/nodes/{uuid} не документирует 404 вообще (только 200
-            # и 500 — remnawave/backend OpenAPI spec v2.1.13), поэтому
-            # нет источника, подтверждающего "already gone" semantics
-            # для этого конкретного endpoint'а. Общее правило "4xx/5xx =
-            # HTTP failure" применяется без исключения.
+            # Node and Config Profile DELETE are symmetric, not
+            # asymmetric as previously stated here: the current
+            # official contract (npm `@remnawave/backend-contract`
+            # v3.4.5, `build/backend/constants/errors/errors.js`)
+            # defines both `NODE_NOT_FOUND` (code A011, httpCode 404)
+            # and `CONFIG_PROFILE_NOT_FOUND` (code A111, httpCode 404)
+            # as generic "resource genuinely doesn't exist" errors,
+            # each distinct from its own httpCode-500 delete-operation
+            # error (`DELETE_NODE_ERROR` A043 / `DELETE_CONFIG_PROFILE_
+            # BY_UUID_ERROR` A143). The previous claim that Node DELETE
+            # "does not document 404 at all" was checked against this
+            # package directly and is incorrect — retracted.
+            # Caveat: this npm package is the contract/DTO layer only;
+            # the actual NestJS service methods that throw these codes
+            # (nodes.service.ts / config-profiles.service.ts) are not
+            # published in it, so this confirms the error code exists
+            # and its meaning ("uuid genuinely absent"), not that this
+            # specific DELETE call is definitely the one that throws it
+            # — inferred from the standard NestJS find-or-404 pattern
+            # and from both resources having an identically-shaped
+            # NOT_FOUND code, not independently verified line-by-line.
+            # This settles what 404 MEANS, not what rollback SHOULD DO
+            # about it — DECISION REQUIRED (see report) on whether an
+            # unambiguous "already absent" 404 counts as rollback
+            # success or still needs a human to check why a UUID this
+            # run itself just created is already gone. Until decided,
+            # the general "4xx/5xx = HTTP failure" rule applies without
+            # exception here, same as for Config Profile below.
             warn "Не удалось откатить создание ноды (uuid: $_uuid): HTTP $_status — требуется ручная проверка"
             ;;
     esac
@@ -151,16 +173,14 @@ _panel_node_rollback_profile() {
             ok "Конфиг-профиль удалён (rollback)"
             ;;
         *)
-            # DELETE /api/config-profiles/{uuid} ЗАДОКУМЕНТИРОВАН с 404
-            # ("Config profile not found" — remnawave/backend OpenAPI
-            # spec v2.1.13), в отличие от Node DELETE выше. Но сам факт
-            # существования 404-ответа не говорит, должна ли ЭТА
-            # rollback-логика трактовать его как "уже отсутствует,
-            # компенсация не нужна" (success) или как настоящий провал
-            # компенсации — источник подтверждает только форму API, не
-            # policy вызывающего кода. DECISION REQUIRED (см. отчёт) —
-            # общее правило "4xx/5xx = HTTP failure" применяется без
-            # исключения до отдельного решения.
+            # See the equivalent comment in _panel_node_rollback_node
+            # above — `CONFIG_PROFILE_NOT_FOUND` (A111, httpCode 404) is
+            # confirmed in @remnawave/backend-contract v3.4.5, identical
+            # in shape to Node's `NODE_NOT_FOUND` (A011). Confirms what
+            # 404 means (resource genuinely absent), not what rollback
+            # should do about it. DECISION REQUIRED (see report) — the
+            # general "4xx/5xx = HTTP failure" rule applies without
+            # exception until that's decided.
             warn "Не удалось откатить создание конфиг-профиля (uuid: $_uuid): HTTP $_status — требуется ручная проверка"
             ;;
     esac
