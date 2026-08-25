@@ -357,17 +357,25 @@ stream {
         listen 443;
         ssl_preread on;
         proxy_pass \$f_backend;
-        # proxy_protocol is enabled toward panel_and_sub (matches the
-        # proxy_protocol listener above) so Panel/sub keep real client
-        # IPs. It is intentionally NOT enabled toward xray_reality: this
-        # repo's REALITY inbound JSON (lib/panel/api.sh) has not been
-        # verified to accept PROXY protocol on a REALITY-security
-        # inbound (rawSettings.acceptProxyProtocol is documented for
-        # security:"tls" inbounds, not confirmed for security:"reality"
-        # ones) — enabling it without that confirmation risks silently
-        # breaking every REALITY handshake. Real client IPs at the Xray
-        # leg will show as 127.0.0.1 until this is verified. Documented
-        # as a known limitation, not silently assumed away.
+        # proxy_protocol is a stream/server-scoped directive, not a
+        # per-upstream one — nginx does not support conditioning it on
+        # $f_backend, so it applies identically to both branches reached
+        # through this single server{} block: panel_and_sub AND
+        # xray_reality both receive a PROXY v1 preamble ahead of the raw
+        # TLS bytes (confirmed by local byte-level reproduction, see
+        # docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md Correction C2 — do not
+        # re-introduce the earlier assumption that this was scoped to
+        # panel_and_sub only). To make the xray_reality leg actually
+        # consume that preamble instead of choking on it, the REALITY
+        # inbound JSON generated for MODE=F sets
+        # streamSettings.sockopt.acceptProxyProtocol=true
+        # (lib/panel/api.sh: panel_reality_sockopt_val). That field wraps
+        # Xray's raw TCP listener before TLS/REALITY dispatch and is not
+        # security-layer-specific (confirmed against Xray-core v26.3.27
+        # source: transport/internet/tcp/hub.go,
+        # transport/internet/system_listener.go), so it works the same
+        # for a REALITY inbound as for a plain TLS one. Real client IPs
+        # now propagate correctly on both legs.
         proxy_protocol on;
     }
 }
