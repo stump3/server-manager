@@ -359,7 +359,7 @@ stream {
         proxy_pass \$f_backend;
         # proxy_protocol is a stream/server-scoped directive, not a
         # per-upstream one — nginx does not support conditioning it on
-        # $f_backend, so it applies identically to both branches reached
+        # \$f_backend, so it applies identically to both branches reached
         # through this single server{} block: panel_and_sub AND
         # xray_reality both receive a PROXY v1 preamble ahead of the raw
         # TLS bytes (confirmed by local byte-level reproduction, see
