@@ -35,27 +35,26 @@ panel_reality_inbound_port() {
     fi
 }
 
-# panel_reality_accept_proxy_protocol — MODE=F only. In MODE=F the
-# REALITY inbound is reached exclusively via nginx's stream{} server
-# (lib/panel/nginx/config.sh), whose single `proxy_protocol on;`
-# directive is scoped to that server block as a whole, not to whichever
-# upstream $f_backend resolves to — so PROXY v1 bytes precede the raw
-# ClientHello on the xray_reality leg exactly as they do on the
-# panel_and_sub leg. Runtime-confirmed this session with an isolated
-# nginx stream{} reproduction (map + two raw-TCP capture backends): both
-# branches received the "PROXY TCP4 ...\r\n" preamble ahead of a
-# hand-built TLS ClientHello. Without sockopt.acceptProxyProtocol, Xray
-# would have to parse a byte stream starting with ASCII "PROXY " as a
-# TLS record (which must start with 0x16) — this breaks unconditionally,
-# not just theoretically. MODE=1's REALITY inbound sits directly on
-# public :443 with no nginx stream leg in front of it, so it must never
-# receive this field; MODE=2 has no co-located REALITY inbound at all.
-# Structural compatibility of sockopt.acceptProxyProtocol alongside
-# streamSettings.security:"reality" confirmed against a real-world
-# config in https://github.com/XTLS/Xray-core/discussions/5545.
+# panel_reality_accept_proxy_protocol — MODE=F's nginx stream block
+# applies `proxy_protocol on;` to its single server{} regardless of which
+# map branch a connection resolves to (confirmed by runtime byte capture,
+# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification), so
+# the REALITY inbound behind it always receives a PROXY v1 preamble
+# ahead of the ClientHello and must set sockopt.acceptProxyProtocol to
+# parse it. MODE=1's REALITY inbound listens directly on public 443 with
+# no nginx in front of it — no client sends it a PROXY header, so adding
+# this there would break real handshakes rather than fix anything.
+# MODE=2's REALITY inbound is a remote node reachable over the internet
+# on its own dest, also with no local nginx stream in front — same
+# reasoning as MODE=1. Echoes "true"/"false" (not a shell boolean) so
+# the caller can pass it straight through jq's --argjson.
 panel_reality_accept_proxy_protocol() {
     local MODE="$1"
-    [ "$MODE" = "F" ] && echo true || echo false
+    if [ "$MODE" = "F" ]; then
+        echo "true"
+    else
+        echo "false"
+    fi
 }
 
 panel_setup_api() {
@@ -142,8 +141,8 @@ panel_setup_api() {
             --arg name "StealConfig" --arg domain "$SELFSTEAL_DOMAIN" \
             --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
             --argjson port "$(panel_reality_inbound_port "$MODE")" \
-            --argjson acceptpp "$(panel_reality_accept_proxy_protocol "$MODE")" \
-            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $acceptpp then {sockopt:{acceptProxyProtocol:true}} else {} end))}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
+            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
+            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
