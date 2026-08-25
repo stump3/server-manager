@@ -369,7 +369,7 @@ stream {
         # consume that preamble instead of choking on it, the REALITY
         # inbound JSON generated for MODE=F sets
         # streamSettings.sockopt.acceptProxyProtocol=true
-        # (lib/panel/api.sh: panel_reality_sockopt_val). That field wraps
+        # (lib/panel/api.sh: panel_reality_accept_proxy_protocol). That field wraps
         # Xray's raw TCP listener before TLS/REALITY dispatch and is not
         # security-layer-specific (confirmed against Xray-core v26.3.27
         # source: transport/internet/tcp/hub.go,
