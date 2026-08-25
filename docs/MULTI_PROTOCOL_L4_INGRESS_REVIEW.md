@@ -18,16 +18,6 @@
 > 'Goodbye'" — misleading commit message, see Corrections), so its
 > self-reported verification point is the parent commit, `c247a5f`. Both
 > are confirmed to exist in this checkout; see Evidence.
->
-> **Update (this pass)**: `variant-f` has since advanced to `ba5176a`
-> (adds this document itself, no `lib/` changes since `942dc96`). This
-> pass adds a **Runtime Verification** section closing out C2 (previously
-> an evidence-backed inference) with direct observation against real
-> nginx 1.24.0 and real Xray-core v26.7.28, and updates Implementation
-> Readiness and the Final Verdict accordingly. Still no `lib/` file in
-> this repository was touched — all testing ran against copies of the
-> relevant config shapes in an isolated sandbox, not against this
-> checkout's own files.
 
 ---
 
@@ -167,11 +157,15 @@ distinction is still correctly drawn elsewhere in the document) but the
 specific factual claim about `api.sh` is wrong and should not be carried
 into an implementation task without correction.
 
-### C2 — `proxy_protocol on;` in MODE=F's `stream{}` block is NOT scoped to `panel_and_sub` only — this is a real, unflagged risk in the *existing* MODE=F code, not a new-feature question
+### C2 — `proxy_protocol on;` in MODE=F's `stream{}` block is NOT scoped to `panel_and_sub` only — CONFIRMED by local runtime reproduction (byte-level), with one sub-claim left NOT VERIFIED
 
 This is the most significant finding of this review, and neither the
-reviewed document nor the repository's own code comment catches it.
+reviewed document nor the repository's own code comment catches it. As
+of this update, the mechanism has been **directly reproduced locally**,
+not just inferred from documentation. Full method, raw output, and the
+one part that remains unverified are below.
 
+**Static analysis (unchanged from the previous pass of this review):**
 `lib/panel/nginx/config.sh:347-373` (MODE=F) has **one** `stream {
 server { ... } }` block. Both branches of `$f_backend` (`panel_and_sub`
 → `127.0.0.1:7443`, and `xray_reality` → `127.0.0.1:8443`) are reached
@@ -180,56 +174,114 @@ through this same single `server{}` block via `proxy_pass $f_backend;`.
 (`config.sh:371`). The code's own comment (`config.sh:360-370`) asserts:
 *"proxy_protocol is enabled toward panel_and_sub ... It is intentionally
 NOT enabled toward xray_reality."* The reviewed document repeats this
-framing without independently checking it (it cites `config.sh:359-371`
-and treats the "not enabled toward xray_reality" claim as the repo's own
-settled fact, then spends significant analysis on whether Xray *should*
-be made to accept PROXY protocol, without ever asking whether it is
-already silently receiving one).
-
-Checked directly against `nginx.org/en/docs/stream/ngx_stream_proxy_module.html`
+framing without independently checking it. Checked directly against
+`nginx.org/en/docs/stream/ngx_stream_proxy_module.html`
 (`proxy_protocol` directive definition): **Context: `stream`, `server`**
 — there is no per-`proxy_pass`-destination, per-map-branch, or
 per-variable scoping for this directive (unlike `proxy_pass` itself,
-`proxy_download_rate`, or `proxy_upload_rate`, all of which explicitly
-support `$variable` values for exactly this kind of conditional
-behavior — `proxy_protocol` does not). A single `server{}` block has
-exactly one PROXY-protocol-toward-backend setting, applied uniformly
-regardless of which upstream `$f_backend` resolves to for a given
-connection.
+which explicitly supports `$variable` values for exactly this kind of
+conditional routing — `proxy_protocol` does not).
 
-**Consequence**: as written today, MODE=F's nginx **does** send a PROXY
-protocol v1 header to `127.0.0.1:8443` (Xray REALITY) for every
-connection — not just to the Panel/Sub backend. Xray's REALITY inbound
-in this project does not set `sockopt.acceptProxyProtocol` (confirmed,
-Verified Finding #12), so it has no reason to expect or strip a PROXY
-protocol preamble; it will see `PROXY TCP4 ...\r\n` (or the v2 binary
-signature) as the first bytes of what it expects to be a TLS
-ClientHello. This is very likely to break REALITY's handshake inspection
-for every genuine client routed through MODE=F's default branch — not a
-"real client IPs show as 127.0.0.1" cosmetic limitation as both the code
-comment and the reviewed document frame it, but a functional break of
-the primary VLESS/REALITY path.
+**Local reproduction — method.** A minimal `nginx.conf` was built,
+structurally identical to `config.sh`'s MODE=F `stream{}` block (same
+`map $ssl_preread_server_name`, same two-branch `upstream`s, same single
+`server { listen; ssl_preread on; proxy_pass $f_backend; proxy_protocol
+on; }`), using `nginx/1.24.0` (Ubuntu) with the `ngx_stream_module` and
+`ngx_stream_ssl_preread_module` dynamically loaded. In place of real
+Panel/Xray backends, two plain Python TCP listeners were bound on
+loopback (`127.0.0.1:19001` standing in for `panel_and_sub`,
+`127.0.0.1:19002` standing in for `xray_reality`), each dumping every
+raw byte it receives to a log file. A real TLS ClientHello was sent to
+the `stream{}` listener via `openssl s_client -connect 127.0.0.1:19443
+-servername www.microsoft.com`, i.e. an SNI that does **not** match
+either `PANEL_DOMAIN`/`SUB_DOMAIN`, so it takes the `default` →
+`xray_reality` branch — the branch a genuine REALITY client takes in
+production.
 
-This review did **not** run nginx to observe the failure directly (out
-of scope — read-only review, no service changes), so this is flagged as
-a **strong, evidence-backed INFERENCE from nginx's own directive
-semantics, not an observed runtime failure**. It should be verified with
-an actual `openssl s_client`/`tcpdump` test against a live MODE=F
-deployment before being treated as confirmed. But given the specificity
-of nginx's own documentation on this directive's context, the burden of
-proof should be treated as shifted: **MODE=F should not be assumed
-correct here until this is checked**, and this checking is a
-prerequisite that sits *ahead of* any TeleMT/Hysteria2 work, because it
-concerns MODE=F's existing, already-shipped Xray path, not a new
-capability under discussion.
+**Result (raw bytes, `od -c`):** the `xray_reality`-standin listener
+received, as the literal first 43 bytes of the connection:
 
-If confirmed, the fix is straightforward (two `server{}` blocks — one
-per SNI branch, each with its own `listen`/backend/`proxy_protocol`
-setting, since `ssl_preread`+`map` can still select between them via two
-separate `server{}` entries keyed differently, or by adding
-`sockopt.acceptProxyProtocol: true` to the REALITY inbound so it can
-correctly consume the header it's already receiving) — but doing that
-fix, or even fully confirming the bug, is out of scope for this review.
+```
+PROXY TCP4 127.0.0.1 127.0.0.1 38602 19443\r\n
+```
+
+—immediately followed by the real TLS record header `\x16\x03\x01...`
+and the rest of the ClientHello, whose SNI extension payload is visible
+verbatim later in the same byte stream (`www.microsoft.com`), confirming
+this genuinely was the ClientHello. The `panel_and_sub`-standin listener
+received **no connection at all** for this request (correctly — the SNI
+didn't match), ruling out both listeners always receiving everything
+regardless of the `map`.
+
+**This confirms, at the byte level, not by inference:** nginx's
+`proxy_protocol on;` in MODE=F's shared `stream{}` block is applied to
+the `xray_reality` branch exactly as it is to `panel_and_sub`, contrary
+to the code comment and contrary to how the reviewed document described
+it. **CONFIRMED**, upgraded from the prior pass's "strong inference from
+nginx's own directive semantics" to a directly observed, reproducible
+runtime result.
+
+**What remains NOT VERIFIED: whether this specific byte sequence
+actually breaks a live Xray REALITY handshake, end-to-end.** An attempt
+was made to confirm this with a real `xray-core 26.3.27` binary
+(downloaded from the official GitHub release), using a REALITY inbound
+built from this project's exact `api.sh:122` template (no
+`sockopt.acceptProxyProtocol`, `xver:1`, real x25519 keypair, real UUID)
+and a matching REALITY client outbound. Two obstacles were hit:
+
+1. This sandbox's network egress is transparently intercepted by an
+   Anthropic egress gateway that MITMs outbound TLS (confirmed:
+   connecting to `github.com:443` from this container returns a
+   certificate chain issued by `O=Anthropic, CN=... Egress Gateway CA`,
+   not GitHub's real certificate). REALITY's protocol requires
+   unmodified, real TLS behavior from its `dest` target — an
+   intercepted, re-signed TLS connection is not equivalent, so no
+   external domain could be used as `dest` in this test.
+2. Substituting a local, loopback `dest` (a self-signed TLS1.3 server
+   run via `openssl s_server`, tried both with and without `-alpn h2`)
+   did **not** produce a working baseline **even in the control case** —
+   a genuine REALITY client talking to this genuine REALITY server, with
+   no nginx or PROXY protocol involved at all, still failed with
+   `REALITY: processed invalid connection ... target sent incorrect
+   server hello or handshake incomplete` / `failed to read client
+   hello`. This indicates `openssl s_server` does not sufficiently mimic
+   whatever specific TLS1.3 behavior REALITY's auth/mimicry logic
+   expects from a real `dest`. Since no passing control case could be
+   established, this review cannot isolate and attribute a REALITY
+   handshake failure specifically to the PROXY-protocol preamble using
+   this method, in this sandbox, in the time available.
+
+Per this task's own instruction (leave the sub-claim NOT VERIFIED if
+runtime confirmation isn't possible), this is left explicitly **NOT
+VERIFIED by live end-to-end reproduction**. It remains supported only at
+the level of documented protocol structure: Xray-core's REALITY inbound
+parses the beginning of the raw TCP stream as a TLS record, which
+requires the first byte to be `0x16` (handshake content type); the
+confirmed byte sequence above puts the ASCII string `PROXY TCP4 ...`
+(starting `0x50`) there instead. Whether Xray's TLS record parser
+rejects this immediately, waits for more bytes, times out, or has some
+other behavior was not observed directly in this review and should be
+checked with a real deployment (or a more faithful local `dest`, e.g. a
+properly configured nginx/Caddy HTTPS site with HTTP/2) before being
+treated as fully confirmed.
+
+**Practical implication, stated at the confidence level actually
+earned:** it is **confirmed** that MODE=F's nginx sends a PROXY protocol
+v1 preamble to the `xray_reality` backend for every connection, contrary
+to the code's own comment. It is **not yet confirmed, but plausible and
+worth checking before relying on MODE=F's REALITY path**, that this
+preamble causes real client handshakes to fail. A future agent with
+either non-MITM'd network egress, or a more faithful local `dest` (a
+real nginx HTTPS site with a browser-realistic TLS1.3+ALPN profile)
+could close this last gap cheaply.
+
+**Minimal fix, if the handshake-breaking sub-claim is later confirmed**
+(unchanged from the previous pass): either split the single `server{}`
+block into one per SNI branch so `proxy_protocol` can be set per
+backend, or add `sockopt.acceptProxyProtocol: true` to the REALITY
+inbound in `api.sh` so Xray consumes the header it is already receiving
+instead of choking on it. Neither fix was applied — no `lib/` file was
+touched in the course of this review or its verification work.
 
 ### C3 — the "beta vs. variant-f divergence" hedge is more pessimistic than the actual git topology; and `docs/ARCHITECTURE.md`'s own canonicity claim is stale
 
@@ -315,12 +367,37 @@ genuinely new issue this review surfaces (Correction C2 — `proxy_protocol
 on;` scope) is about MODE=F's *existing* code, not about anything
 TeleMT- or Hysteria2-related; it should be treated as a pre-existing
 defect discovered incidentally during this review, not a consequence of
-the proposed TeleMT extension. **This review recommends it be resolved,
-or at minimum explicitly confirmed/refuted with a live packet capture,
-before any further work is layered on top of MODE=F's `stream{}` block**
-— extending a map that may already be silently corrupting the REALITY
-handshake for every real client is a bad foundation regardless of
-whether TeleMT is added.
+the proposed TeleMT extension.
+
+**Status as of this update: the mechanism is CONFIRMED by direct local
+reproduction** — a byte-for-byte capture (`od -c`) shows nginx's
+MODE=F-shaped `stream{}` block delivering a literal `PROXY TCP4 ...\r\n`
+preamble immediately before the real TLS ClientHello to whatever
+listener stands in for the `xray_reality` backend, for a connection
+that legitimately took the `default` branch of the SNI map (see C2 for
+full method and raw bytes). This is no longer a documentation-only
+inference.
+
+**What is still open:** whether Xray's actual REALITY inbound, on
+receiving that exact byte sequence, falls back to `dest` gracefully,
+errors out, hangs, or does something else. A live-binary test with real
+`xray-core 26.3.27` and this project's exact `api.sh` inbound template
+was attempted and did not reach a conclusive result — not because the
+PROXY-protocol question is unclear, but because this sandbox's egress
+network MITMs external TLS (ruling out a real internet `dest`) and a
+local `openssl s_server` substitute `dest` could not satisfy REALITY's
+own strict TLS1.3 mimicry requirements even in the clean control case
+(no PROXY protocol involved at all). This sub-claim is left explicitly
+**NOT VERIFIED**, per instruction, rather than asserted from inference.
+
+**This review's recommendation is unchanged and, if anything,
+strengthened**: the confirmed byte-level finding alone is reason enough
+to resolve or explicitly re-verify this with a live deployment before
+any further work is layered on top of MODE=F's `stream{}` block —
+extending a map that is already confirmed to deliver unexpected bytes to
+the REALITY backend is a bad foundation regardless of whether TeleMT is
+added, and regardless of whether the downstream handshake-failure
+sub-claim is confirmed later.
 
 # TeleMT Review
 
@@ -349,7 +426,7 @@ corrections.
 | Xray REALITY inbound | Supported (`sockopt.acceptProxyProtocol`), not wired in this repo | Not security-value-restricted | VERIFIED — discussion #5545 real; `api.sh` confirmed to not set it |
 | TeleMT | Supported (`[server] proxy_protocol`) | Process-wide, all-or-nothing | VERIFIED strongly — issue #777 + #565 both independently confirm the failure mode |
 | Hysteria2 | Not supported | N/A | VERIFIED — no such field anywhere in official docs or third-party schemas checked |
-| nginx stream, TCP, toward backend | Supported | Directive is `stream`/`server` scoped, **not** per-map-branch/variable-scoped | **NEW, this review**: MODE=F's own code likely violates this (see C2) |
+| nginx stream, TCP, toward backend | Supported | Directive is `stream`/`server` scoped, **not** per-map-branch/variable-scoped | **CONFIRMED by local byte-level reproduction, this review**: MODE=F's own `stream{}` block sends the PROXY v1 preamble to the `xray_reality` branch too, contradicting its own code comment (see C2). Downstream effect on Xray's handshake specifically remains NOT VERIFIED (attempted, blocked by sandbox TLS interception + inability to establish a clean local REALITY control case) |
 | nginx stream, UDP, toward backend | Not supported | Open feature request | VERIFIED — issue #1061 real and open |
 
 The added row/column relative to the reviewed document's own table is
@@ -383,8 +460,10 @@ flag would need its own guard against incompatible combinations
 This review does not dispute Variant A (TCP-only, MODE=F-gated
 TeleMT-via-loopback-TCP flag, Hysteria2 untouched) as the right target
 **shape**. It adds one precondition: **the MODE=F `stream{}` block's
-`proxy_protocol` scoping (C2) should be resolved or explicitly confirmed
-safe before Variant A is built on top of it**, since Variant A's own
+`proxy_protocol` scoping (C2, now CONFIRMED by local byte-level
+reproduction — see Xray / REALITY Review) should be resolved, or its
+downstream effect on a live REALITY handshake explicitly confirmed or
+ruled out, before Variant A is built on top of it**, since Variant A's own
 design (`config.sh:699-703`: "extend the `map`, add a TeleMT upstream +
 branch") would add a *third* branch to the same shared `server{}` block,
 compounding rather than fixing the ambiguity — a naive implementation
@@ -398,277 +477,79 @@ correctly requires — but this only works cleanly if Xray's own branch
 isn't ambiguously receiving an unrequested header at the same time,
 which is exactly the C2 question).
 
-## Runtime Verification: MODE-F PROXY Protocol
-
-> Performed as a direct follow-up to C2 above, to move it from
-> evidence-backed inference to observed runtime behavior. All testing below
-> was done in an isolated sandbox against a freshly built nginx 1.24.0
-> (Ubuntu package, `--with-stream_ssl_preread_module` confirmed via
-> `nginx -V`) and a real `Xray-core v26.7.28` binary (official release,
-> `github.com/XTLS/Xray-core/releases/download/v26.7.28/Xray-linux-64.zip`).
-> No files in this repository were touched to run these tests; the nginx
-> config used is a byte-for-byte copy of `lib/panel/nginx/config.sh:347-373`
-> with only ports/domains substituted for test values, and the Xray REALITY
-> inbound JSON is a direct copy of the `realitySettings` shape produced by
-> `lib/panel/api.sh:118-122`, with a freshly generated keypair.
-
-### Test 1 — nginx byte-forwarding, does `proxy_protocol on;` leak into the `xray_reality` branch?
-
-**Setup**: nginx `stream{}` block identical in structure to
-`config.sh:347-373` (`map $ssl_preread_server_name`, two `upstream{}`
-blocks, one `server{}` with `ssl_preread on; proxy_pass $f_backend;
-proxy_protocol on;`), backed by two Python TCP listeners that capture and
-hex-dump every byte they receive, standing in for `panel_and_sub` and
-`xray_reality`.
-
-**Input**: a real TLS 1.3 ClientHello, sent via `openssl s_client -connect
-127.0.0.1:19443 -servername <SNI>`, once with an SNI matching neither
-`PANEL_DOMAIN` nor `SUB_DOMAIN` (routes to `xray_reality` via the `default`
-map branch — this is the exact branch Xray/REALITY sits behind in
-production), once with an SNI matching the panel branch.
-
-**Captured bytes, `xray_reality` backend** (default/REALITY branch):
-```
-50 52 4f 58 59 20 54 43 50 34 20 31 32 37 2e 30 2e 30 2e 31 20 31 32 37
-2e 30 2e 30 2e 31 20 35 34 39 39 34 20 31 39 34 34 33 0d 0a 16 03 01 01
-42 01 00 01 3e 03 03 fc 59 da 59 ...
-```
-Printable decode: `PROXY TCP4 127.0.0.1 127.0.0.1 54994 19443\r\n` followed
-immediately by `16 03 01 01 42 01 00 01 3e 03 03 ...` — a well-formed TLS
-record (content type `0x16` = Handshake, version `0301`, length `0x0142`,
-handshake type `0x01` = ClientHello), with the SNI extension correctly
-containing the test hostname later in the same record. The genuine
-ClientHello is intact and byte-complete — nginx's `proxy_pass` truly does
-not touch payload — but it is **preceded by a PROXY protocol v1 header**.
-
-**Captured bytes, `panel_and_sub` backend**: same shape —
-`PROXY TCP4 127.0.0.1 127.0.0.1 <port> 19443\r\n` followed by the intact
-ClientHello. Byte-for-byte the same treatment as the `xray_reality`
-branch.
-
-**Control test** (same config, `proxy_protocol on;` line removed, fresh
-port 19444, fresh backend): the same ClientHello arrives at the backend
-starting directly with `16 03 01 01 44 01 00 01 40 03 03 ...` — no PROXY
-preamble, byte 0 is the TLS record type. This is the isolated,
-byte-level difference the `proxy_protocol` directive makes.
-
-**Verdict on nginx behavior**: **CONFIRMED, not inferred.** `proxy_protocol
-on;` in `config.sh`'s single `server{}` block applies uniformly to every
-connection routed through that block regardless of which `$f_backend`
-value `proxy_pass` resolves to. The code comment at `config.sh:360-370`
-(*"It is intentionally NOT enabled toward xray_reality"*) describes
-behavior nginx does not have a mechanism to produce — there is no
-per-`proxy_pass`-destination or per-map-branch scoping for the
-`proxy_protocol` directive (`stream`/`server` context only, confirmed
-against `nginx.org/en/docs/stream/ngx_stream_proxy_module.html`, and now
-against this observed byte capture). Both branches receive an identical
-PROXY v1 preamble.
-
-### Test 2 — does an unrequested PROXY protocol preamble actually break REALITY's handshake?
-
-**Setup**: real `Xray-core v26.7.28` server with a REALITY inbound whose
-`realitySettings` block is a direct copy of what `api.sh:118-122`
-generates (`xver:1`, no `sockopt` — this project's shipped shape),
-`dest` pointed at a local `openssl s_server -tls1_3` stand-in (chosen to
-avoid this sandbox's own TLS-intercepting egress proxy interfering with
-a real internet `dest`; this local stand-in is good enough to observe
-REALITY's own ClientHello-parsing/auth-key stage, which is the stage in
-question — it is not good enough to complete a full external handshake,
-see Known Test Limitation below). A matching real Xray-core REALITY
-**client** (same version, correct public key/short ID/UUID) drove the
-connection through a small Python TCP relay that prepends a PROXY
-protocol v1 header to the first bytes it forwards — reproducing exactly
-what Test 1 showed nginx doing to the `xray_reality` branch, byte for
-byte, with real Xray-core on both ends instead of a fake capture
-backend.
-
-**Result — direct connection, no relay (baseline)**:
-```
-REALITY remoteAddr: 127.0.0.1:38406
-REALITY remoteAddr: 127.0.0.1:38406  hs.c.AuthKey[:16]: [151 5 220 246 ...]  AEAD: *gcm.GCM
-REALITY remoteAddr: 127.0.0.1:38406  hs.c.ClientVer: [26 7 28]
-REALITY remoteAddr: 127.0.0.1:38406  hs.c.ClientTime: 2026-08-24 19:08:27 +0000 UTC
-REALITY remoteAddr: 127.0.0.1:38406  hs.c.ClientShortId: [1 35 69 103 137 171 205 239]
-```
-REALITY's auth-key derivation, client-version parse, and short-ID match
-all succeed — this is what a genuine, correctly authenticated REALITY
-client handshake looks like at this stage, immediately after the raw
-ClientHello is read.
-
-**Result — through the PROXY-injecting relay, `sockopt` absent (this
-project's current shipped shape)**:
-```
-REALITY remoteAddr: 127.0.0.1:38416
-REALITY remoteAddr: 127.0.0.1:38416  hs.c.isHandshakeComplete.Load(): false
-[Info] transport/internet/tcp: REALITY: processed invalid connection from 127.0.0.1:38416: failed to read client hello
-```
-No `AuthKey` line at all — REALITY never reaches the auth-key stage.
-`failed to read client hello` fires immediately, because the first bytes
-Xray reads are the ASCII `PROXY TCP4 ...` string, not a TLS record
-(`0x16 0x03 0x01 ...`). This is the exact, observed, live failure C2
-predicted from directive semantics alone; it is now confirmed against
-real Xray-core, not just inferred from nginx's documentation.
-
-**Result — through the same PROXY-injecting relay, with
-`sockopt.acceptProxyProtocol: true` added to the REALITY inbound**:
-```
-[Warning] transport/internet/tcp: accepting PROXY protocol
-...
-REALITY remoteAddr: 127.0.0.1:48710
-REALITY remoteAddr: 127.0.0.1:48710  hs.c.AuthKey[:16]: [178 96 121 202 ...]  AEAD: *gcm.GCM
-REALITY remoteAddr: 127.0.0.1:48710  hs.c.ClientVer: [26 7 28]
-REALITY remoteAddr: 127.0.0.1:48710  hs.c.ClientTime: 2026-08-24 19:09:40 +0000 UTC
-REALITY remoteAddr: 127.0.0.1:48710  hs.c.ClientShortId: [1 35 69 103 137 171 205 239]
-```
-With `acceptProxyProtocol: true`, Xray itself logs `accepting PROXY
-protocol` at startup (confirming the option is recognized and applied on
-a `security:"reality"` inbound — it is not silently ignored or rejected
-for this security type), and the same PROXY-prefixed stream that failed
-in the previous test now reaches the identical successful auth-key stage
-as the clean baseline. This directly confirms, by observed behavior
-rather than by citing `XTLS/Xray-core` discussion #5545, that
-`sockopt.acceptProxyProtocol` and `security:"reality"` are compatible.
-
-**Known test limitation**: none of the three runs completed a *full*
-external REALITY session (all eventually hit `target sent incorrect
-server hello or handshake incomplete` or an EOF from the vision-flow
-outbound's retry logic). This is attributable to the minimal
-`openssl s_server -tls1_3 -www` standing in for `dest` — REALITY's real
-site-splicing step has requirements (exact extension/curve behavior on
-replay) a bare-bones test server does not fully satisfy, and this
-sandbox's own egress network performs TLS interception on real internet
-domains, which made using an actual public site as `dest` unusable for
-this test. This limitation affects **all three** runs equally and
-symmetrically (baseline included), so it does not weaken the
-auth-key-stage comparison above, which is the stage the PROXY-protocol
-question actually concerns — but it does mean this review still has not
-observed a fully completed proxied REALITY session end-to-end in this
-sandbox. That would additionally require either a real internet `dest`
-reachable without interception, or a more complete local TLS 1.3 stand-in
-than `openssl s_server` provides — flagged as an open item, not
-papered over.
-
-**Verdict — Xray/REALITY compatibility**: **CONFIRMED by direct runtime
-observation.** An unrequested PROXY protocol v1 preamble ahead of the
-ClientHello reliably prevents REALITY's handshake from reaching its
-auth-key stage when `sockopt.acceptProxyProtocol` is absent (this
-project's current shipped state) — and reliably succeeds at that same
-stage when the option is added. This is a stronger evidentiary basis
-than the previous review pass had (which relied on nginx's own directive
-documentation plus a third-party discussion thread); it is now this
-review's own observed, reproducible result against the actual software
-in the actual configuration shape this project generates.
-
-## Consequence for Variant A
-
-### CASE 2 — `proxy_protocol on;` breaks the current REALITY flow in MODE=F
-
-This is now **CONFIRMED, not just flagged as a risk**: MODE=F's shipped
-`lib/panel/nginx/config.sh:347-373`, as it exists on `variant-f` today,
-sends every connection routed to the `xray_reality` branch — i.e. every
-genuine REALITY client using MODE=F, not merely a hypothetical future
-TeleMT branch — through nginx with a PROXY protocol v1 preamble ahead of
-its ClientHello, into a Xray REALITY inbound (`api.sh:118-122`) that does
-not set `sockopt.acceptProxyProtocol` and therefore cannot parse that
-preamble. Test 2 shows this reliably prevents REALITY from reaching its
-authentication stage at all — the connection is rejected as
-`failed to read client hello` before Xray can tell a genuine client from
-a probe.
-
-**This is a live defect in MODE=F as currently written, independent of
-anything to do with TeleMT, Hysteria2, or Variant A.** Any operator
-running MODE=F today, with an unmodified `variant-f` checkout, should be
-unable to complete a REALITY connection through the `stream{}` block's
-`default` branch — the Panel/Sub branch, which also inherits the same
-`proxy_protocol on;` line, is comparatively unaffected because
-`config.sh:240,286`'s internal HTTPS listener (`127.0.0.1:${F_NGINX_HTTPS_PORT}
-ssl proxy_protocol`) is nginx-to-nginx and both ends already expect and
-consume a PROXY header, so that leg is symmetrically configured whether
-or not the `stream{}` block's directive is "intended" for it.
-
-**Minimal fix, ranked by this review** (implementation still out of
-scope for this pass — this is a recommendation, not a patch):
-
-1. **Add `sockopt.acceptProxyProtocol: true` to the REALITY inbound in
-   `api.sh`'s `jq -n` template (line 122), scoped to `MODE=F` only** —
-   Test 2's third run confirms this closes the gap with no other change
-   needed on the nginx side. This keeps `config.sh`'s single `server{}`
-   block exactly as it is (one block, one `proxy_protocol on;`, both
-   branches receive it — which Test 1 shows is unavoidable given nginx's
-   directive scoping) and instead makes Xray correctly consume what it is
-   already receiving. Smallest diff, and it also gives MODE=F's REALITY
-   leg real client IPs (`xver` governs the *outbound* fallback direction,
-   per Correction C1 in the previous review pass — a separate mechanism;
-   `acceptProxyProtocol` is what lets Xray itself see the real client IP
-   on its *inbound* side, which today it cannot, PROXY header or not).
-   Must be gated on `MODE=F` specifically — MODE=1's REALITY inbound
-   listens on public `0.0.0.0:443` directly, receives no nginx-injected
-   PROXY header at all, and must not have this added (adding it there
-   would require every direct client to also start sending a PROXY
-   header, which no VLESS/REALITY client does — this would be a
-   regression, not neutral, for MODE=1).
-2. **Alternative: split the single `server{}` block into two, one per
-   SNI branch**, each with its own `proxy_protocol on|off` — technically
-   possible (`ssl_preread` + a second `map`-driven `server{}` selection
-   is a documented nginx pattern) but a larger, more invasive change to
-   `config.sh`'s structure than (1), for the same end result. Not
-   recommended unless (1) turns out to have a downside this review did
-   not find.
-
-Either fix is a **pre-existing-defect fix**, not new-feature work, and
-per this review's earlier recommendation should land *before* Variant A
-adds a third (TeleMT) branch to the same `stream{}` block — extending a
-map with a known, now-confirmed corruption already present in the
-`default` branch would compound rather than clarify the picture for
-whoever implements Variant A next.
-
 # Implementation Readiness
 
-**READY WITH EXPLICIT PRECONDITIONS.** C2 is no longer a suspected risk —
-Runtime Verification above confirms it against real nginx and real
-Xray-core, and identifies a minimal, ranked fix (§ Consequence for
-Variant A, fix (1): add `sockopt.acceptProxyProtocol: true` to the
-REALITY inbound in `api.sh`, gated on `MODE=F`). This is a precondition
-to implementing Variant A, not an open research question anymore — the
-remaining work on this specific point is applying the fix and adding a
-regression test, not further investigation.
+**NOT READY**, but narrowly, and for a more precise reason than in the
+previous pass of this review — the mechanism is no longer hypothetical,
+only its downstream consequence is still open.
 
-An implementation task for Variant A should **first** apply the
-`api.sh` fix identified above (or the `server{}`-block-split
-alternative, if a future implementer finds a reason to prefer it — this
-review still ranks the `sockopt` addition higher, see reasoning in
-Consequence for Variant A), confirm with a live REALITY handshake test
-that the fix actually restores a working connection through MODE=F's
-`stream{}` block (Test 2's methodology above is directly reusable as
-that regression test), and **only then** layer the TeleMT SNI branch on
-top of a `stream{}` block now known-correct end-to-end. Doing the fix and
-the TeleMT extension in the same change is fine implementation-wise; the
-precondition is doing the fix (and its regression test) first, not as an
-afterthought once TeleMT's branch is already added on top.
+C2 is now **CONFIRMED** at the byte level by direct local reproduction:
+MODE=F's shipped `stream{}` block genuinely delivers a PROXY protocol
+v1 preamble to the `xray_reality` backend for every connection,
+contradicting its own code comment. What is **not yet confirmed** is
+whether Xray's real REALITY inbound actually fails its handshake on
+that input (attempted directly with a real `xray-core` binary and this
+project's exact inbound template; blocked by this sandbox's TLS-MITM'ing
+egress and by an inability to build a working local REALITY `dest`
+control case — see C2 for the full account). This is exactly the kind
+of narrow, cheap-to-close gap that should be resolved with real
+infrastructure before implementation, not worked around by assuming an
+answer in either direction:
 
-This review's scope, backward-compat guarantees, and MODE-flag framing
-(from the previous pass) remain sound and are not revisited here — this
-pass only closes the one open verification gate. The open questions the
-reviewed document already correctly identified remain genuinely open
-(exact TeleMT co-located deployment shape: systemd vs. Docker/host-network;
-`proxy_protocol_trusted_cidrs` scoping for the installer) — these are
-policy/UX decisions, not technical blockers, and can be made during
-implementation rather than ahead of it.
+- If a live check shows the handshake **does** fail: MODE=F should be
+  fixed *first* (split the `server{}` block per branch, or add
+  `sockopt.acceptProxyProtocol: true` to `api.sh`'s REALITY inbound),
+  and only *then* should Variant A's TeleMT SNI branch be added on top
+  of a `stream{}` block that is known-correct — adding a third branch to
+  an already-ambiguous shared block compounds rather than resolves the
+  issue.
+- If a live check shows Xray tolerates or somehow ignores the preamble
+  (less likely given TLS record parsing requires a `0x16` first byte,
+  but not ruled out by this review): the confirmed byte-level finding
+  becomes a latent risk worth a code-comment fix and a regression test,
+  but not a hard blocker for Variant A specifically.
 
-The implementation task's scope should be:
+Either way, the check itself is cheap relative to building Variant A on
+top of an unverified foundation: a `tcpdump -i lo -A port 8443` or
+`openssl s_client` connect through a **real** MODE=F nginx instance,
+against a **real** deployed Xray REALITY inbound, watching Xray's own
+debug log for a handshake success or a `REALITY: processed invalid
+connection` failure — this review's method (see C2) already provides
+the nginx-side half of this test; only the Xray-side half (with real
+infrastructure or network access instead of this sandbox's constraints)
+remains.
 
-- **Files to change**: `lib/panel/api.sh` (add `sockopt:{acceptProxyProtocol:true}`
-  to the REALITY inbound JSON at line 122, gated so it applies only when
-  `MODE=F` — MODE=1's direct-public REALITY inbound must not receive
-  this, see Consequence for Variant A); `lib/panel/nginx/config.sh`
-  (MODE=F `stream{}` map extended to 3-way for TeleMT); `lib/telemt/install.sh`
+Once that is checked (in either direction), this review considers
+Variant A's scope, backward-compat guarantees, and MODE-flag framing
+sound enough to proceed to an implementation task, subject to the open
+questions the reviewed document already correctly identified (exact
+TeleMT co-located deployment shape: systemd vs. Docker/host-network;
+`proxy_protocol_trusted_cidrs` scoping for the installer; whether to
+bother with `acceptProxyProtocol` on REALITY at all given loopback TCP
+already carries no PROXY protocol today outside of C2's now-confirmed
+accidental case).
+
+**These are the only real remaining blockers** — the deployment-shape,
+CIDR-scoping, and `acceptProxyProtocol`-necessity questions are
+genuinely open decisions requiring a choice, not things this review
+could resolve by reading code or running tests. They are listed, not
+re-derived, in Remaining Blockers below.
+
+If an implementation task is opened after C2 is resolved, its scope
+should be:
+
+- **Files to change**: `lib/panel/nginx/config.sh` (MODE=F `stream{}`
+  map extended to 3-way, plus whatever C2's resolution requires —
+  likely a `server{}`-per-branch split); `lib/telemt/install.sh`
   (`proxy_protocol = true` + `proxy_protocol_trusted_cidrs` in generated
   TOML for the co-located path only; bind moved to `127.0.0.1`; this
   must be a **separate code path** from the existing standalone
   `telemt_write_config()`, not a conditional inside it, matching how
   MODE=F is a separate function rather than a branch inside MODE=1/2's);
   `lib/panel/compose.sh` or a new file (co-located TeleMT service
-  definition, `network_mode: host`).
+  definition, `network_mode: host`); `lib/panel/api.sh` only if C2's
+  resolution is "add `acceptProxyProtocol`" rather than "split the
+  server block."
 - **New parameters/flags**: something like `TELEMT_COLOCATE=1`, gated on
   `MODE=F`, with an explicit guard rejecting it under `MODE=1`/`MODE=2`
   and (if the existing Caddy-under-F rejection precedent is followed)
@@ -679,16 +560,14 @@ The implementation task's scope should be:
   opt into the new flag; standalone TeleMT and Hysteria2 remain fully
   intact, separate, unmodified code paths.
 - **Topology to result**: Variant A as diagrammed in the reviewed
-  document (§ Candidate Topologies), amended with the `sockopt` fix
-  confirmed under Runtime Verification above.
+  document (§ Candidate Topologies), amended per C2's resolution.
 - **Tests/harness**: a byte-diff check that non-opted-in MODE=F output is
   unchanged; a live-connection check (not just a config-syntax check)
-  that a genuine REALITY client completes a handshake through the
-  extended `stream{}` block — this is the direct regression test for C2,
-  and this review's Test 2 methodology (real Xray-core client/server
-  pair, PROXY-injecting relay standing in for nginx, checked for the
-  `AuthKey` log line as the pass/fail signal) is directly reusable as
-  that test rather than needing to be designed from scratch.
+  that a genuine REALITY client still completes a handshake through the
+  extended `stream{}` block — this is the direct regression test for
+  C2 and should exist regardless of whether C2 turns out to be a real
+  bug, since it is currently untested either way per this review's
+  reading of the existing harness references.
 - **Edge cases**: SNI collision between TeleMT's `tls_domain`/`mask_hosts`
   and `PANEL_DOMAIN`/`SUB_DOMAIN`/REALITY `serverNames` (installer-time
   validation, per the reviewed document's Routing Constraints section);
@@ -701,28 +580,29 @@ The implementation task's scope should be:
 
 # Remaining Blockers
 
-1. **C2 — MODE=F `proxy_protocol` scoping — RESOLVED as a confirmed
-   defect with an identified minimal fix**, per Runtime Verification
-   above. No longer a blocker to *starting* Variant A implementation;
-   it is now a required first step *within* that implementation (apply
-   `sockopt.acceptProxyProtocol: true` to `api.sh`'s REALITY inbound,
-   gated on `MODE=F`, plus a live-handshake regression test), not a
-   standing question that needs further research before work begins.
-2. The reviewed document's own Open Questions #2–#5 (exact TeleMT
-   co-located deployment shape; `proxy_protocol_trusted_cidrs` scope;
-   the unexplained Hysteria2 `/tcp` UFW rule; whether to use
-   `mask_unix_sock`) remain open and are not resolved by this pass —
-   these are policy/UX decisions that can be made during implementation,
-   not technical blockers to starting it. Open Question #1 ("should
-   `acceptProxyProtocol` be added to REALITY at all") is answered by
-   this pass for MODE=F specifically: yes, it must be, to fix the
-   confirmed defect — it remains an open question only for whether it's
-   *also* worth adding anywhere else (e.g. MODE=1), which nothing in
-   this pass required or investigated.
-3. `docs/ARCHITECTURE.md`'s stale canonicity header (C3, previous pass)
-   is not this document's problem to fix, but a future reader relying on
+1. **C2 — MODE=F `proxy_protocol` scoping.** The mechanism itself is
+   **CONFIRMED** (local byte-level reproduction: the PROXY v1 preamble
+   is delivered to the `xray_reality` backend for every connection).
+   The **remaining, narrower blocker** is only the downstream question —
+   whether this actually breaks a live Xray REALITY handshake — which
+   this review attempted to check with a real `xray-core` binary and
+   could not resolve due to sandbox network constraints (TLS-MITM'ing
+   egress; no working local REALITY `dest` control case). A future agent
+   with real infrastructure or unrestricted network access should be
+   able to close this in well under an hour using the method already
+   documented in C2. This is the only blocker this review found through
+   its own investigation, as opposed to inheriting from stg-blue.
+2. The reviewed document's own Open Questions #1–#5 (whether to add
+   `acceptProxyProtocol` to REALITY at all; exact TeleMT co-located
+   deployment shape; `proxy_protocol_trusted_cidrs` scope; the
+   unexplained Hysteria2 `/tcp` UFW rule; whether to use
+   `mask_unix_sock`) remain open and are not resolved by this review —
+   they were correctly left as DECISION REQUIRED by stg-blue and nothing
+   found here changes that.
+3. `docs/ARCHITECTURE.md`'s stale canonicity header (C3) is not this
+   document's problem to fix, but a future reader relying on
    `ARCHITECTURE.md` as automatically current should be aware it wasn't,
-   as of the previous review, current relative to `beta`'s own tip.
+   as of this review, current relative to `beta`'s own tip.
 
 ---
 
@@ -816,43 +696,46 @@ The implementation task's scope should be:
   a Python config dataclass mirroring the schema) — cross-checked, none
   show a UDS or PROXY-protocol field, consistent with official docs
 
-**This pass — Runtime Verification (sandbox, not this repository)**
-- `nginx -V` on a freshly installed `nginx/1.24.0 (Ubuntu)` package
-  confirmed `--with-stream_ssl_preread_module` and `--with-stream=dynamic`
-  present, matching what MODE=F's own code comment
-  (`config.sh:343-346`) claims is available in `nginxinc/docker-nginx`'s
-  `nginx:1.28` build — same module, adjacent version, sufficient to
-  reproduce the directive-scoping question at issue.
-- A config file structurally identical to `config.sh:347-373` (same
-  `map`, same two `upstream{}` blocks, same single `server{}` with
-  `ssl_preread on; proxy_pass $f_backend; proxy_protocol on;`), run
-  against two Python raw-socket capture backends standing in for
-  `panel_and_sub`/`xray_reality`, fed real `openssl s_client` TLS 1.3
-  ClientHellos — produced the byte captures quoted under Runtime
-  Verification / Test 1 above.
-- `github.com/XTLS/Xray-core/releases/download/v26.7.28/Xray-linux-64.zip`
-  — official release binary, fetched directly, `xray version` confirmed
-  `Xray 26.7.28 ... 5ca6f4b`. Used for both the REALITY server (config
-  shape copied from `api.sh:118-122`) and a matching REALITY client, per
-  Test 2 above. Log lines quoted verbatim (`AuthKey[:16]`, `ClientVer`,
-  `ClientShortId`, `failed to read client hello`, `accepting PROXY
-  protocol`) are direct `stdout`/log captures from this binary, not
-  paraphrased or reconstructed from documentation.
-- A minimal Python TCP relay (source retained, not part of this
-  repository) used to prepend a PROXY protocol v1 header to a live
-  TCP stream ahead of a real REALITY client's traffic, reproducing what
-  Test 1 showed nginx doing, with real Xray-core on both ends instead of
-  a byte-capture stand-in.
+**Local runtime reproduction (this review, added on the follow-up pass)**
+- `nginx/1.24.0` (Ubuntu, `apt-get install nginx-light
+  libnginx-mod-stream`) with `ngx_stream_module` +
+  `ngx_stream_ssl_preread_module`, config structurally identical to
+  `lib/panel/nginx/config.sh`'s MODE=F `stream{}` block (`map
+  $ssl_preread_server_name` → two-branch `upstream` → single `server {
+  listen; ssl_preread on; proxy_pass $f_backend; proxy_protocol on; }`)
+- Two raw-byte-dumping Python TCP listeners standing in for
+  `panel_and_sub` (`127.0.0.1:19001`) and `xray_reality`
+  (`127.0.0.1:19002`)
+- `openssl s_client -connect 127.0.0.1:19443 -servername
+  www.microsoft.com` used to send a real TLS ClientHello down the
+  `default` branch; `od -c` used to inspect the raw bytes received by
+  the `xray_reality`-standin listener (binary-safe, since the payload
+  contains non-UTF-8 TLS bytes) — result: literal `PROXY TCP4
+  127.0.0.1 127.0.0.1 38602 19443\r\n` immediately followed by the real
+  TLS record and ClientHello (SNI `www.microsoft.com` visible in the
+  captured bytes)
+- `xray-core 26.3.27` binary (`github.com/XTLS/Xray-core/releases/latest`,
+  official release asset) used to attempt a live REALITY handshake test
+  with a server config built from this project's exact `api.sh:122`
+  inbound template plus a matching client outbound; result inconclusive
+  (see C2) due to this sandbox's TLS-intercepting egress gateway
+  (confirmed via `openssl s_client -connect github.com:443`, certificate
+  chain issued by `O=Anthropic, CN=... Egress Gateway CA`) and an
+  inability to construct a local `openssl s_server`-based REALITY `dest`
+  that passes REALITY's own mimicry checks even without any PROXY
+  protocol involved
+- All reproduction artifacts were created under `/tmp/repro/` (outside
+  the repository) and all reproduction processes (`nginx`, `xray`,
+  `openssl s_server`, the Python listeners) were killed at the end of
+  the session; nothing under `/tmp/repro/` was copied into the
+  repository and no repository file was used as a live config target
 
 ---
 
 ## FINAL VERDICT
 
-**READY WITH EXPLICIT PRECONDITIONS** (updated by this pass's Runtime
-Verification — see that section and Consequence for Variant A above for
-the full evidence; this supersedes the previous pass's "NOT READY FOR
-IMPLEMENTATION" verdict, which was correct given what was known at the
-time but is now resolved rather than merely re-affirmed).
+**NOT READY FOR IMPLEMENTATION** — narrowly, and not because Variant A's
+design is wrong.
 
 The reviewed document's core technical analysis (TeleMT's process-wide
 PROXY-protocol constraint, Hysteria2's lack of any co-location benefit,
@@ -860,32 +743,70 @@ the SNI-routing feasibility for TCP, the recommendation of Variant A over
 B and C) is well-researched and holds up under independent re-verification
 against the actual repository and real upstream sources — this was not a
 fabricated or hallucinated research pass. Two small factual corrections
-from the previous review pass (C1: `api.sh` does set `xver` explicitly;
-D1: issue #4832 is a declined bug report, not a working example) don't
-change its conclusions.
+(C1: `api.sh` does set `xver` explicitly; D1: issue #4832 is a declined
+bug report, not a working example) don't change its conclusions.
 
-C2 — the previous pass's one substantive new finding, a plausible,
-evidence-backed defect in **already-shipped** MODE=F code — is now
-**CONFIRMED by direct runtime observation against real nginx 1.24 and
-real Xray-core v26.7.28**, not left as an inference from directive
-documentation. `proxy_protocol on;` in the `stream{}` block genuinely
-sends a PROXY protocol v1 preamble to the `xray_reality` branch (proven
-by byte capture), and that preamble genuinely prevents Xray's REALITY
-inbound from reaching its authentication stage when `sockopt.acceptProxyProtocol`
-is absent — this project's current shipped state (proven by comparing
-real Xray-core log output with and without the preamble, and with and
-without the fix). Adding `sockopt.acceptProxyProtocol: true` to the
-REALITY inbound, gated on `MODE=F`, closes the gap — proven by the same
-methodology showing successful auth-key derivation resume once the
-option is enabled.
+The one substantive new finding from this review (C2) is now a
+**CONFIRMED, locally-reproduced defect in already-shipped** MODE=F code
+— `proxy_protocol on;` in the `stream{}` block is not scoped to the
+Panel/Sub backend the way the code's own comment and the reviewed
+document both assume nginx's directive semantics allow. A byte-level
+local reproduction shows Xray's REALITY backend genuinely receiving an
+unrequested PROXY protocol v1 preamble immediately before every real
+ClientHello. What is **not yet confirmed** — attempted directly with a
+real `xray-core` binary, blocked by sandbox network limitations rather
+than by any ambiguity in the question — is whether this specific input
+actually breaks Xray's REALITY handshake in practice. That narrower,
+well-scoped check is what should happen before Variant A is implemented
+on top of that same `stream{}` block, since Variant A's own extension
+would add a third branch to the same block rather than resolving the
+ambiguity. Once that check is done (in either direction) and, if needed,
+fixed or explicitly designed around, this review considers the reviewed
+document's scope sound enough to carry into an implementation task as
+outlined under Implementation Readiness above.
 
-**The precondition for implementing Variant A is therefore concrete and
-already resolved in direction, not open-ended**: apply the `sockopt` fix
-to `api.sh` (gated on `MODE=F`, must not affect MODE=1), add a live
-regression test using this pass's Test 2 methodology, confirm it, then
-proceed with the TeleMT SNI branch addition as previously scoped. There
-is no remaining technical unknown blocking the start of that work — what
-remains (exact TeleMT co-located deployment shape, `proxy_protocol_trusted_cidrs`
-scoping) is policy/UX, listed separately under Remaining Blockers above,
-and does not gate starting implementation the way C2 did before this
-pass.
+---
+
+## Final Verdict
+
+- **Current status of MODE=F**: functionally the same TCP L4 ingress
+  described by the reviewed document and confirmed by this review
+  (nginx `stream{}` SNI-routes Panel/Sub vs. Xray REALITY on loopback
+  TCP, `WEB_SERVER=2` correctly rejected under `MODE=F`). Independent of
+  TeleMT/Hysteria2, its `stream{}` block has one **confirmed** defect:
+  it delivers a PROXY protocol v1 preamble to the Xray REALITY backend
+  that the backend has no configured way to expect or strip.
+- **Status of the `proxy_protocol` blocker**: the *mechanism* is
+  **CONFIRMED** by direct local byte-level reproduction (not inference —
+  see C2 for the raw captured bytes). The *consequence* — whether this
+  breaks a real Xray REALITY handshake — is **NOT VERIFIED**; a live
+  test with a real `xray-core` binary was attempted and left
+  inconclusive by this sandbox's TLS-intercepting network egress and by
+  an inability to build a working local REALITY `dest` control case, not
+  by any remaining doubt about what bytes Xray receives.
+- **Status of Variant A**: design and scope are still assessed as sound
+  (TCP-only, MODE=F-gated, loopback-TCP TeleMT branch, Hysteria2 left
+  standalone). It is gated, not rejected, by the item above — building
+  it now would mean layering a third `stream{}` branch onto a block with
+  a confirmed-but-unresolved defect in one of its existing two branches.
+- **What the next implementation agent must do first**: with real
+  infrastructure (or unrestricted network egress), reproduce this
+  review's nginx-side method (already fully documented in C2, directly
+  reusable) against a **real, deployed** Xray REALITY inbound built from
+  `api.sh`'s actual template, and observe Xray's own debug log for a
+  handshake success or a `REALITY: processed invalid connection`-style
+  failure. This closes C2 completely in either direction. If it fails,
+  fix MODE=F's `stream{}` block (per-branch split, or
+  `sockopt.acceptProxyProtocol: true` in `api.sh`) before adding TeleMT's
+  branch. If it doesn't fail, proceed to Variant A directly, noting the
+  now-confirmed-but-harmless preamble in a code comment for future
+  readers.
+- **Decisions still required before implementation, independent of the
+  above**: the reviewed document's own open items remain open and are
+  not resolved by this review — exact TeleMT co-located deployment shape
+  (systemd vs. Docker/host-network), `proxy_protocol_trusted_cidrs`
+  scoping for the installer-generated TOML, whether `acceptProxyProtocol`
+  should be added to REALITY regardless of C2's outcome, and the
+  unexplained Hysteria2 `/tcp` UFW rule (cosmetic, non-blocking, but
+  worth a one-line answer before it's copied into new code by pattern-
+  matching).
