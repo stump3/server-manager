@@ -35,6 +35,36 @@ panel_reality_inbound_port() {
     fi
 }
 
+# MODE=F only: nginx's public stream{} server (lib/panel/nginx/config.sh)
+# has a single `proxy_protocol on;` for the whole server{} block — nginx's
+# `proxy_protocol` directive is stream/server-scoped, not per-map-branch,
+# so it is sent to the xray_reality upstream exactly as it is to
+# panel_and_sub (confirmed by direct local reproduction, see
+# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md Correction C2). Xray-core
+# (transport/internet/tcp/hub.go, transport/internet/system_listener.go
+# — confirmed against v26.3.27 source) wraps the raw accepted conn with a
+# PROXY-protocol-stripping listener BEFORE dispatching to
+# TLS/REALITY *only if* streamSettings.sockopt.acceptProxyProtocol is
+# true; that field lives at the raw-TCP-listener level and has no
+# security-layer restriction (TLS vs REALITY is decided further down the
+# same call path), so it works for a REALITY inbound the same as for a
+# TLS one. Without it, REALITY's readClientHello() sees the literal
+# "PROXY TCP4 ...\r\n" preamble as the first bytes instead of a TLS
+# record — a structural parser mismatch, not a probabilistic one. MODE=1
+# does not go through nginx at all (Xray binds :443 directly, no PROXY
+# protocol involved anywhere on that path), so this must stay MODE=F-only
+# to keep MODE=1's JSON byte-identical. NOT the same thing as REALITY's
+# own `xver` (Xray → its fallback `dest`, opposite direction, unaffected
+# by this).
+panel_reality_sockopt_val() {
+    local MODE="$1"
+    if [ "$MODE" = "F" ]; then
+        echo '{"acceptProxyProtocol":true}'
+    else
+        echo 'null'
+    fi
+}
+
 panel_setup_api() {
     local SUPERADMIN_USER="$1"
     local SUPERADMIN_PASS="$2"
@@ -119,7 +149,8 @@ panel_setup_api() {
             --arg name "StealConfig" --arg domain "$SELFSTEAL_DOMAIN" \
             --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
             --argjson port "$(panel_reality_inbound_port "$MODE")" \
-            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
+            --argjson sockopt "$(panel_reality_sockopt_val "$MODE")" \
+            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:(({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}) + (if $sockopt == null then {} else {sockopt:$sockopt} end))}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
