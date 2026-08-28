@@ -35,6 +35,39 @@ panel_reality_inbound_port() {
     fi
 }
 
+# panel_reality_accept_proxy_protocol — MODE=F's nginx stream block
+# applies `proxy_protocol on;` to its single server{} regardless of which
+# map branch a connection resolves to (confirmed by runtime byte capture,
+# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification), so
+# the REALITY inbound behind it always receives a PROXY v1 preamble
+# ahead of the ClientHello and must set sockopt.acceptProxyProtocol to
+# parse it. MODE=1's REALITY inbound listens directly on public 443 with
+# no nginx in front of it — no client sends it a PROXY header, so adding
+# this there would break real handshakes rather than fix anything.
+# MODE=2's REALITY inbound is a remote node reachable over the internet
+# on its own dest, also with no local nginx stream in front — same
+# reasoning as MODE=1. Echoes "true"/"false" (not a shell boolean) so
+# the caller can pass it straight through jq's --argjson.
+#
+# Re-added 2026-08-28: this function and its JSON wiring were dropped in
+# 5b8ff53 ("remove unused function") bundled together with an unrelated
+# register/login fix. It was not actually unused — nginx/config.sh's
+# `proxy_protocol on;` (same commit range) still unconditionally applies
+# to the xray_reality branch, and docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md
+# still documents the requirement; nothing in the intervening history
+# changed that contract. Removing it re-opens the PROXY-v1-vs-REALITY
+# parser mismatch this project already confirmed against Xray-core
+# v26.3.27 source (transport/internet/tcp/hub.go,
+# transport/internet/system_listener.go).
+panel_reality_accept_proxy_protocol() {
+    local MODE="$1"
+    if [ "$MODE" = "F" ]; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
 panel_setup_api() {
     local SUPERADMIN_USER="$1"
     local SUPERADMIN_PASS="$2"
@@ -162,7 +195,8 @@ panel_setup_api() {
             --arg name "StealConfig" --arg domain "$SELFSTEAL_DOMAIN" \
             --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
             --argjson port "$(panel_reality_inbound_port "$MODE")" \
-            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
+            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
+            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
