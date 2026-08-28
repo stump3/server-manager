@@ -226,14 +226,40 @@ panel_setup_api() {
     done
     ok "Squad обновлён"
 
-    local SUB_TOKEN_R SUB_TOKEN
-    SUB_TOKEN_R=$(panel_api "POST" "http://$API/api/tokens" "$TOKEN" '{"tokenName":"subscription-page"}')
-    SUB_TOKEN=$(echo "$SUB_TOKEN_R" | jq -r '.response.token // empty' 2>/dev/null)
+    # POST /api/tokens (confirmed against Remnawave's own OpenAPI schema
+    # — Remnawave API v3.3.2 exactly, the version this project targets,
+    # via CreateApiTokenBodyDto: {name: string(2-30), expiresInDays:
+    # number(>=1) [both required], scopes: string[] [optional, defaults
+    # to ["*"]]}. The prior payload here, {"tokenName":"..."},  used the
+    # wrong field name entirely (no "tokenName" property exists in this
+    # schema) and omitted the required "expiresInDays" — a NestJS/
+    # class-validator 400 on both counts, which is the actual, now-
+    # confirmed root cause of the empty .response.token. Response shape
+    # is CreateApiTokenResponseDto: {response:{...,token:string}} — the
+    # existing `.response.token` extraction below was already correct
+    # and is unchanged. Endpoint still requires an admin JWT, which
+    # $TOKEN already is (this project's payload bug, unrelated to auth).
+    local SUB_TOKEN_RAW SUB_TOKEN_RC=0
+    SUB_TOKEN_RAW=$(panel_api_status "POST" "http://$API/api/tokens" "$TOKEN" '{"name":"subscription-page","expiresInDays":365,"scopes":["*"]}') || SUB_TOKEN_RC=$?
+    local SUB_TOKEN=""
+    if [ "$SUB_TOKEN_RC" -ne 0 ]; then
+        warn "Не удалось создать API-токен: сетевая ошибка при обращении к $API (transport failure)"
+    else
+        local SUB_TOKEN_STATUS="${SUB_TOKEN_RAW: -3}"
+        local SUB_TOKEN_BODY="${SUB_TOKEN_RAW:0:${#SUB_TOKEN_RAW}-3}"
+        SUB_TOKEN=$(echo "$SUB_TOKEN_BODY" | jq -r '.response.token // empty' 2>/dev/null)
+        if [ -z "$SUB_TOKEN" ]; then
+            local SUB_TOKEN_ERR_CODE SUB_TOKEN_ERR_MSG
+            SUB_TOKEN_ERR_CODE=$(echo "$SUB_TOKEN_BODY" | jq -r '.errorCode // empty' 2>/dev/null)
+            SUB_TOKEN_ERR_MSG=$(echo "$SUB_TOKEN_BODY" | jq -r '.message // empty' 2>/dev/null)
+            warn "Не удалось создать API-токен автоматически: HTTP $SUB_TOKEN_STATUS${SUB_TOKEN_ERR_CODE:+ ($SUB_TOKEN_ERR_CODE)}${SUB_TOKEN_ERR_MSG:+ — $SUB_TOKEN_ERR_MSG}"
+        fi
+    fi
     [ -n "$SUB_TOKEN" ] && {
         sed -i "s|REMNAWAVE_API_TOKEN=PLACEHOLDER|REMNAWAVE_API_TOKEN=$SUB_TOKEN|g" \
             /opt/remnawave/docker-compose.yml
         ok "API-токен для Subscription Page"
-    } || warn "Не удалось создать API-токен автоматически"
+    } || warn "Subscription Page останется без токена (REMNAWAVE_API_TOKEN=PLACEHOLDER) — создайте токен вручную в панели (Settings → API Tokens), подставьте его в /opt/remnawave/docker-compose.yml и перезапустите remnawave-subscription-page"
 
     docker compose down remnawave-subscription-page >/dev/null 2>&1 & spinner $! "Перезапуск Sub..."
     docker compose up -d remnawave-subscription-page >/dev/null 2>&1 & spinner $! "Запуск Sub..."
