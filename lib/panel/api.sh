@@ -35,28 +35,6 @@ panel_reality_inbound_port() {
     fi
 }
 
-# panel_reality_accept_proxy_protocol — MODE=F's nginx stream block
-# applies `proxy_protocol on;` to its single server{} regardless of which
-# map branch a connection resolves to (confirmed by runtime byte capture,
-# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification), so
-# the REALITY inbound behind it always receives a PROXY v1 preamble
-# ahead of the ClientHello and must set sockopt.acceptProxyProtocol to
-# parse it. MODE=1's REALITY inbound listens directly on public 443 with
-# no nginx in front of it — no client sends it a PROXY header, so adding
-# this there would break real handshakes rather than fix anything.
-# MODE=2's REALITY inbound is a remote node reachable over the internet
-# on its own dest, also with no local nginx stream in front — same
-# reasoning as MODE=1. Echoes "true"/"false" (not a shell boolean) so
-# the caller can pass it straight through jq's --argjson.
-panel_reality_accept_proxy_protocol() {
-    local MODE="$1"
-    if [ "$MODE" = "F" ]; then
-        echo "true"
-    else
-        echo "false"
-    fi
-}
-
 panel_setup_api() {
     local SUPERADMIN_USER="$1"
     local SUPERADMIN_PASS="$2"
@@ -82,13 +60,56 @@ panel_setup_api() {
     ok "Панель готова"
 
     local API="127.0.0.1:3000"
-    local REG
-    REG=$(panel_api "POST" "http://$API/api/auth/register" "" \
-        "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}")
+
+    # panel_setup_api() runs on every install AND on any re-run against
+    # an already-provisioned Panel (reinstall/repair). POST
+    # /api/auth/register only ever succeeds once — the superadmin
+    # already existing is an expected re-run condition, not a failure.
+    # Confirmed against a real Remnawave backend: a repeat
+    # /api/auth/register call returns HTTP 403 with body
+    # {"message":"Forbidden","errorCode":"E000"} — a generic guard-level
+    # rejection (an "admin already provisioned" guard throwing a bare
+    # ForbiddenException), distinct from the ERRORS registry's own
+    # FORBIDDEN/A068 business-logic error code. panel_api() itself
+    # doesn't expose the HTTP status (Contract 4's own reasoning — see
+    # panel_api_status()'s doc comment in lib/common/network.sh), so
+    # this one call uses panel_api_status() instead, same precedent
+    # already used by lib/panel/node/api.sh's rollback helpers. Every
+    # other call in this function is untouched and keeps using
+    # panel_api() exactly as before.
+    local REG_RAW REG_RC=0
+    REG_RAW=$(panel_api_status "POST" "http://$API/api/auth/register" "" \
+        "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}") || REG_RC=$?
+    [ "$REG_RC" -ne 0 ] && err "Ошибка регистрации: сетевая ошибка (transport failure)"
+    local REG_STATUS="${REG_RAW: -3}"
+    local REG="${REG_RAW:0:${#REG_RAW}-3}"
+
     local TOKEN
     TOKEN=$(echo "$REG" | jq -r '.response.accessToken // empty' 2>/dev/null)
-    [ -z "$TOKEN" ] && err "Ошибка регистрации: $REG"
-    ok "Суперадмин: $SUPERADMIN_USER"
+
+    if [ -z "$TOKEN" ]; then
+        # Only the specific, confirmed "already registered" signature
+        # (HTTP 403 + errorCode E000) falls through to login. Any other
+        # failure (network hiccup already handled above, validation
+        # error, unrelated 403/500, malformed body) still aborts via
+        # err() exactly as before — never silently proceeds through
+        # login on an error we haven't confirmed the meaning of.
+        local REG_ERR_CODE
+        REG_ERR_CODE=$(echo "$REG" | jq -r '.errorCode // empty' 2>/dev/null)
+        if [ "$REG_STATUS" = "403" ] && [ "$REG_ERR_CODE" = "E000" ]; then
+            info "Суперадмин уже зарегистрирован — выполняется вход вместо повторной регистрации"
+            local LOGIN_R
+            LOGIN_R=$(panel_api "POST" "http://$API/api/auth/login" "" \
+                "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}")
+            TOKEN=$(echo "$LOGIN_R" | jq -r '.response.accessToken // empty' 2>/dev/null)
+            [ -z "$TOKEN" ] && err "Ошибка входа существующим суперадмином: $LOGIN_R"
+            ok "Вход выполнен: $SUPERADMIN_USER"
+        else
+            err "Ошибка регистрации: $REG"
+        fi
+    else
+        ok "Суперадмин: $SUPERADMIN_USER"
+    fi
 
     local KEYS_R PRIV_KEY
     KEYS_R=$(panel_api "GET" "http://$API/api/system/tools/x25519/generate" "$TOKEN")
@@ -141,8 +162,7 @@ panel_setup_api() {
             --arg name "StealConfig" --arg domain "$SELFSTEAL_DOMAIN" \
             --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
             --argjson port "$(panel_reality_inbound_port "$MODE")" \
-            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
-            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
+            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
