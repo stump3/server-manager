@@ -1,5 +1,5 @@
 # lib/panel/xray/templates/f.json — jq FILTER (not static JSON — read via
-# `jq -f`, see lib/panel/xray/render.sh) producing the Xray "inbounds"
+# `jq -f`, see lib/panel/xray/templates/render.sh) producing the Xray "inbounds"
 # array for the single-Vision/REALITY-inbound shape used by MODE=1, MODE=2,
 # and MODE=F (all three use exactly this one-inbound "Steal" shape; only
 # MODE=J's StealConfig profile grows a second inbound — see j.json).
