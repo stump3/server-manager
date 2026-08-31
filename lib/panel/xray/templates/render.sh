@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 #
-# lib/panel/xray/render.sh — safe parameter substitution for the F/J Xray
-# inbound JSON templates (lib/panel/xray/templates/{f,j}.json).
+# lib/panel/xray/templates/render.sh — safe parameter substitution for the
+# F/J Xray inbound JSON templates (lib/panel/xray/templates/{f,j}.json,
+# same directory as this file).
 #
 # Extracted 2026-08-31: previously, lib/panel/api.sh's panel_setup_api()
 # contained two full inline `jq -n ... '[...]'` blocks (one per MODE
@@ -18,7 +19,7 @@
 # discipline the original inline blocks already followed; moving them to
 # template files does not relax it. Do NOT sed/printf values into the
 # .json template files; always pass them as jq variables here.
-_PANEL_XRAY_TEMPLATE_DIR="$(dirname "${BASH_SOURCE[0]}")/templates"
+_PANEL_XRAY_TEMPLATE_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 # panel_xray_render_inbounds — MODE-dispatching renderer for the Xray
 # "inbounds" JSON array used by panel_setup_api()'s StealConfig
