@@ -36,6 +36,41 @@ panel_reality_inbound_port() {
     fi
 }
 
+# panel_reality_accept_proxy_protocol — MODE=F's nginx stream block
+# applies `proxy_protocol on;` to its single server{} regardless of which
+# map branch a connection resolves to (confirmed by runtime byte capture,
+# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification), so
+# the REALITY inbound behind it always receives a PROXY v1 preamble
+# ahead of the ClientHello and must set sockopt.acceptProxyProtocol to
+# parse it. MODE=1's REALITY inbound listens directly on public 443 with
+# no nginx in front of it — no client sends it a PROXY header, so adding
+# this there would break real handshakes rather than fix anything.
+# MODE=2's REALITY inbound is a remote node reachable over the internet
+# on its own dest, also with no local nginx stream in front — same
+# reasoning as MODE=1. Echoes "true"/"false" (not a shell boolean) so
+# the caller can pass it straight through jq's --argjson.
+#
+# Re-added 2026-08-31: this function and its JSON wiring were dropped a
+# second time in 3d2d24c ("include new inbound ports"), bundled together
+# with the legitimate Variant J INBOUNDS_JSON rewrite. It was not
+# unused: variant_f.sh's stream{} server still unconditionally applies
+# `proxy_protocol on;` to the xray_reality branch (see its own comment
+# there), so the Steal (Vision/TCP) inbound must still declare
+# acceptProxyProtocol for MODE=F or every REALITY handshake breaks.
+# Deliberately NOT applied to StealXHTTP: variant_f.sh's :8443 stream
+# server for XHTTP does not set proxy_protocol (documented there as
+# intentional — Xray's XHTTP inbound JSON does not expect a PROXY
+# preamble), so sending acceptProxyProtocol on that inbound would be
+# wrong in the other direction.
+panel_reality_accept_proxy_protocol() {
+    local MODE="$1"
+    if [ "$MODE" = "F" ]; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
 # panel_reality_xhttp_inbound_port — Variant J. XHTTP is MODE=F-only
 # (public :8443 is only meaningful in Variant F's dual-public-port
 # topology; MODE=1/2 have no :8443 story and are not asked to grow one
@@ -165,15 +200,17 @@ panel_setup_api() {
             --argjson vport "$(panel_reality_inbound_port "$MODE")" \
             --argjson xport "$(panel_reality_xhttp_inbound_port)" \
             --arg xpath "$XHTTP_PATH" \
+            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
             '[
-                {tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}},
+                {tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))},
                 {tag:"StealXHTTP",port:$xport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"xhttp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]},xhttpSettings:{path:$xpath}}}
             ]' 2>/dev/null)
     else
         INBOUNDS_JSON=$(jq -n \
             --arg pk "$PRIV_KEY" --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" --arg domain "$SELFSTEAL_DOMAIN" \
             --argjson vport "$(panel_reality_inbound_port "$MODE")" \
-            '[{tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}]' 2>/dev/null)
+            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
+            '[{tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))}]' 2>/dev/null)
     fi
 
     # Contract 13 (lookup-before-create, not always-create): reuse an
@@ -314,14 +351,44 @@ panel_setup_api() {
     done
     ok "Squad обновлён"
 
-    local SUB_TOKEN_R SUB_TOKEN
-    SUB_TOKEN_R=$(panel_api "POST" "http://$API/api/tokens" "$TOKEN" '{"tokenName":"subscription-page"}')
-    SUB_TOKEN=$(echo "$SUB_TOKEN_R" | jq -r '.response.token // empty' 2>/dev/null)
+    # POST /api/tokens (confirmed against Remnawave's own OpenAPI schema
+    # — Remnawave API v3.3.2 exactly, the version this project targets,
+    # via CreateApiTokenBodyDto: {name: string(2-30), expiresInDays:
+    # number(>=1) [both required], scopes: string[] [optional, defaults
+    # to ["*"]]}. The prior payload here, {"tokenName":"..."},  used the
+    # wrong field name entirely (no "tokenName" property exists in this
+    # schema) and omitted the required "expiresInDays" — a NestJS/
+    # class-validator 400 on both counts, which is the actual, now-
+    # confirmed root cause of the empty .response.token. Response shape
+    # is CreateApiTokenResponseDto: {response:{...,token:string}} — the
+    # existing `.response.token` extraction below was already correct
+    # and is unchanged. Endpoint still requires an admin JWT, which
+    # $TOKEN already is (this project's payload bug, unrelated to auth).
+    #
+    # Re-restored 2026-08-31: this fix (originally 46d2e0c) was silently
+    # reverted by 3d2d24c while that commit was adding the unrelated
+    # Variant J inbound/host/squad wiring above. See provenance report.
+    local SUB_TOKEN_RAW SUB_TOKEN_RC=0
+    SUB_TOKEN_RAW=$(panel_api_status "POST" "http://$API/api/tokens" "$TOKEN" '{"name":"subscription-page","expiresInDays":365,"scopes":["*"]}') || SUB_TOKEN_RC=$?
+    local SUB_TOKEN=""
+    if [ "$SUB_TOKEN_RC" -ne 0 ]; then
+        warn "Не удалось создать API-токен: сетевая ошибка при обращении к $API (transport failure)"
+    else
+        local SUB_TOKEN_STATUS="${SUB_TOKEN_RAW: -3}"
+        local SUB_TOKEN_BODY="${SUB_TOKEN_RAW:0:${#SUB_TOKEN_RAW}-3}"
+        SUB_TOKEN=$(echo "$SUB_TOKEN_BODY" | jq -r '.response.token // empty' 2>/dev/null)
+        if [ -z "$SUB_TOKEN" ]; then
+            local SUB_TOKEN_ERR_CODE SUB_TOKEN_ERR_MSG
+            SUB_TOKEN_ERR_CODE=$(echo "$SUB_TOKEN_BODY" | jq -r '.errorCode // empty' 2>/dev/null)
+            SUB_TOKEN_ERR_MSG=$(echo "$SUB_TOKEN_BODY" | jq -r '.message // empty' 2>/dev/null)
+            warn "Не удалось создать API-токен автоматически: HTTP $SUB_TOKEN_STATUS${SUB_TOKEN_ERR_CODE:+ ($SUB_TOKEN_ERR_CODE)}${SUB_TOKEN_ERR_MSG:+ — $SUB_TOKEN_ERR_MSG}"
+        fi
+    fi
     [ -n "$SUB_TOKEN" ] && {
         sed -i "s|REMNAWAVE_API_TOKEN=PLACEHOLDER|REMNAWAVE_API_TOKEN=$SUB_TOKEN|g" \
             /opt/remnawave/docker-compose.yml
         ok "API-токен для Subscription Page"
-    } || warn "Не удалось создать API-токен автоматически"
+    } || warn "Subscription Page останется без токена (REMNAWAVE_API_TOKEN=PLACEHOLDER) — создайте токен вручную в панели (Settings → API Tokens), подставьте его в /opt/remnawave/docker-compose.yml и перезапустите remnawave-subscription-page"
 
     docker compose down remnawave-subscription-page >/dev/null 2>&1 & spinner $! "Перезапуск Sub..."
     docker compose up -d remnawave-subscription-page >/dev/null 2>&1 & spinner $! "Запуск Sub..."
