@@ -8,10 +8,11 @@
 # functions rather than three more scattered `[ "$MODE" = ... ]`
 # ternaries, so each reads as one named decision instead of an inline
 # condition repeated at its call site, and each is unit-testable in
-# isolation. $F_XRAY_PORT is defined in lib/panel/nginx/config.sh —
-# both files are always sourced together via lib/panel.sh before either
-# is called, so the reference resolves at call time regardless of
-# source order.
+# isolation. $F_XRAY_VISION_PORT/$F_XRAY_XHTTP_PORT are defined in
+# lib/panel/nginx/variant_f.sh — all panel/*.sh files are always sourced
+# together via lib/panel.sh before any of them is called, so the
+# reference resolves at call time regardless of source order (same
+# precedent as the original $F_XRAY_PORT reference this replaces).
 panel_reality_needs_2222_ufw_rule() {
     local MODE="$1"
     [ "$MODE" = "1" ] || [ "$MODE" = "F" ]
@@ -29,43 +30,22 @@ panel_reality_dest_val() {
 panel_reality_inbound_port() {
     local MODE="$1"
     if [ "$MODE" = "F" ]; then
-        echo "${F_XRAY_PORT:-8443}"
+        echo "${F_XRAY_VISION_PORT:-18443}"
     else
         echo 443
     fi
 }
 
-# panel_reality_accept_proxy_protocol — MODE=F's nginx stream block
-# applies `proxy_protocol on;` to its single server{} regardless of which
-# map branch a connection resolves to (confirmed by runtime byte capture,
-# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification), so
-# the REALITY inbound behind it always receives a PROXY v1 preamble
-# ahead of the ClientHello and must set sockopt.acceptProxyProtocol to
-# parse it. MODE=1's REALITY inbound listens directly on public 443 with
-# no nginx in front of it — no client sends it a PROXY header, so adding
-# this there would break real handshakes rather than fix anything.
-# MODE=2's REALITY inbound is a remote node reachable over the internet
-# on its own dest, also with no local nginx stream in front — same
-# reasoning as MODE=1. Echoes "true"/"false" (not a shell boolean) so
-# the caller can pass it straight through jq's --argjson.
-#
-# Re-added 2026-08-28: this function and its JSON wiring were dropped in
-# 5b8ff53 ("remove unused function") bundled together with an unrelated
-# register/login fix. It was not actually unused — nginx/config.sh's
-# `proxy_protocol on;` (same commit range) still unconditionally applies
-# to the xray_reality branch, and docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md
-# still documents the requirement; nothing in the intervening history
-# changed that contract. Removing it re-opens the PROXY-v1-vs-REALITY
-# parser mismatch this project already confirmed against Xray-core
-# v26.3.27 source (transport/internet/tcp/hub.go,
-# transport/internet/system_listener.go).
-panel_reality_accept_proxy_protocol() {
-    local MODE="$1"
-    if [ "$MODE" = "F" ]; then
-        echo "true"
-    else
-        echo "false"
-    fi
+# panel_reality_xhttp_inbound_port — Variant J. XHTTP is MODE=F-only
+# (public :8443 is only meaningful in Variant F's dual-public-port
+# topology; MODE=1/2 have no :8443 story and are not asked to grow one
+# here). Callers must still gate on `[ "$MODE" = "F" ]` themselves
+# before using this — this function is a single source of truth for the
+# port NUMBER, not for the MODE decision itself, mirroring how
+# panel_reality_inbound_port() already separates "which port" from
+# "should we even be here".
+panel_reality_xhttp_inbound_port() {
+    echo "${F_XRAY_XHTTP_PORT:-18444}"
 }
 
 panel_setup_api() {
@@ -166,25 +146,78 @@ panel_setup_api() {
     SHORT_ID=$(openssl rand -hex 8)
     DEST_VAL=$(panel_reality_dest_val "$MODE" "$SELFSTEAL_DOMAIN")
 
+    # Variant J: MODE=F gets a second inbound (StealXHTTP, network:xhttp)
+    # in the SAME config-profile as Vision — confirmed against official
+    # Remnawave docs (docs.rw, Config Profiles page) that multiple
+    # inbounds per profile is the standard, documented way to do this,
+    # not an unusual composition. Both inbounds intentionally share
+    # privateKey/serverNames/shortIds (same REALITY identity — this is
+    # what makes both reachable under the same domain on two different
+    # public ports); only tag/port/network/xhttpSettings differ. Built
+    # as a standalone JSON array (INBOUNDS_JSON) rather than inlined
+    # into the profile template below, so MODE!=F's template is
+    # untouched byte-for-byte aside from this substitution.
+    local XHTTP_PATH="/$(openssl rand -hex 8)"
+    local INBOUNDS_JSON
+    if [ "$MODE" = "F" ]; then
+        INBOUNDS_JSON=$(jq -n \
+            --arg pk "$PRIV_KEY" --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" --arg domain "$SELFSTEAL_DOMAIN" \
+            --argjson vport "$(panel_reality_inbound_port "$MODE")" \
+            --argjson xport "$(panel_reality_xhttp_inbound_port)" \
+            --arg xpath "$XHTTP_PATH" \
+            '[
+                {tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}},
+                {tag:"StealXHTTP",port:$xport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"xhttp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]},xhttpSettings:{path:$xpath}}}
+            ]' 2>/dev/null)
+    else
+        INBOUNDS_JSON=$(jq -n \
+            --arg pk "$PRIV_KEY" --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" --arg domain "$SELFSTEAL_DOMAIN" \
+            --argjson vport "$(panel_reality_inbound_port "$MODE")" \
+            '[{tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}}}]' 2>/dev/null)
+    fi
+
     # Contract 13 (lookup-before-create, not always-create): reuse an
     # already-existing "StealConfig" profile by name if one is already
     # present, instead of always POSTing a new one. Existence alone is
     # the check — no content-diff/repair against an existing profile
     # that might not match what we'd generate fresh; that reconciliation
     # behaviour isn't defined anywhere and isn't invented here.
-    # CFG_UUID/IBD_UUID инициализированы пустой строкой явно: под
-    # server-manager.sh's `set -euo pipefail` (nounset) `local x` без `=`
-    # трактуется как unbound до первого присваивания. Без explicit-init
-    # обычный первый запуск (StealConfig ещё не существует,
-    # EXISTING_PROFILE пуст, ветка присвоения ниже не выполняется)
-    # приводил к `CFG_UUID: unbound variable` на строке с `[ -n "$CFG_UUID" ]`.
-    local CFG_UUID="" IBD_UUID=""
+    # CFG_UUID/IBD_UUID/XHTTP_IBD_UUID инициализированы пустой строкой
+    # явно: под server-manager.sh's `set -euo pipefail` (nounset) `local
+    # x` без `=` трактуется как unbound до первого присваивания. Без
+    # explicit-init обычный первый запуск (StealConfig ещё не
+    # существует, EXISTING_PROFILE пуст, ветка присвоения ниже не
+    # выполняется) приводил к `CFG_UUID: unbound variable` на строке с
+    # `[ -n "$CFG_UUID" ]`.
+    #
+    # UUID lookup — по tag, не по индексу (`.inbounds[0]`/`.inbounds[1]`):
+    # индекс хрупок при повторных запусках/будущих inbound'ах, tag
+    # устойчив и однозначен. Одинаковый паттерн применяется что для уже
+    # существующего профиля (EXISTING_PROFILE), что для только что
+    # созданного (PROFILE_R) — единственное различие между этими двумя
+    # веток ниже.
+    local CFG_UUID="" IBD_UUID="" XHTTP_IBD_UUID=""
     local EXISTING_PROFILE
     EXISTING_PROFILE=$(panel_api "GET" "http://$API/api/config-profiles" "$TOKEN" | \
         jq -c '.response.configProfiles[]? | select(.name=="StealConfig")' 2>/dev/null | head -1)
     if [ -n "$EXISTING_PROFILE" ]; then
         CFG_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.uuid // empty' 2>/dev/null)
-        IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[0].uuid // empty' 2>/dev/null)
+        IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
+        [ "$MODE" = "F" ] && XHTTP_IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
+        # Известный, намеренно не автоматизируемый пробел: если профиль
+        # StealConfig существует ЕЩЁ ДО Variant J (т.е. был создан до
+        # появления StealXHTTP), IBD_UUID найдётся, а XHTTP_IBD_UUID —
+        # нет. Автоматически PATCH-ить существующий профиль, добавляя
+        # второй inbound, здесь НЕ реализовано — не подтверждено, что
+        # Remnawave API поддерживает частичное добавление inbound'а к
+        # уже существующему profile без побочных эффектов; такая
+        # миграция требует отдельного явного решения, а не
+        # предположения. Пользователь увидит warn ниже и должен будет
+        # пересоздать профиль вручную (удалить старый StealConfig и
+        # перезапустить установку), если хочет получить XHTTP.
+        if [ "$MODE" = "F" ] && [ -z "$XHTTP_IBD_UUID" ]; then
+            warn "StealConfig существует без StealXHTTP inbound (профиль создан до Variant J) — XHTTP не будет доступен, пока профиль не пересоздан вручную"
+        fi
     fi
 
     if [ -n "$CFG_UUID" ] && [ -n "$IBD_UUID" ]; then
@@ -192,23 +225,37 @@ panel_setup_api() {
     else
         local PROFILE_R
         PROFILE_R=$(panel_api "POST" "http://$API/api/config-profiles" "$TOKEN" "$(jq -n \
-            --arg name "StealConfig" --arg domain "$SELFSTEAL_DOMAIN" \
-            --arg pk "$PRIV_KEY"     --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" \
-            --argjson port "$(panel_reality_inbound_port "$MODE")" \
-            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
-            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:[{tag:"Steal",port:$port,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
+            --arg name "StealConfig" --argjson inbounds "$INBOUNDS_JSON" \
+            '{name:$name,config:{log:{loglevel:"warning"},dns:{queryStrategy:"UseIPv4",servers:[{address:"https://dns.google/dns-query",skipFallback:false}]},inbounds:$inbounds,outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{ip:["geoip:private"],type:"field",outboundTag:"BLOCK"},{type:"field",protocol:["bittorrent"],outboundTag:"BLOCK"}]}}}' 2>/dev/null)")
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
-        IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[0].uuid // empty' 2>/dev/null)
+        IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
+        [ "$MODE" = "F" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
         [ -z "$CFG_UUID" ] && err "Ошибка создания конфиг-профиля"
         ok "Конфиг-профиль создан"
+    fi
+
+    # Variant J: activeInbounds/Squad must carry BOTH uuids when MODE=F
+    # has a real XHTTP_IBD_UUID, or the new inbound exists in the
+    # profile but stays unreachable by users (confirmed against
+    # official Remnawave docs — a new inbound must be added to both the
+    # Node's activeInbounds and the Internal Squad to actually be
+    # usable, not just exist in the config-profile). Built once here and
+    # reused by both the Node POST and the Squad PATCH loop below, so
+    # there's exactly one place that decides "which inbounds are active"
+    # instead of two copies of the same conditional.
+    local ACTIVE_INBOUNDS_JSON
+    if [ -n "$XHTTP_IBD_UUID" ]; then
+        ACTIVE_INBOUNDS_JSON=$(jq -n --arg a "$IBD_UUID" --arg b "$XHTTP_IBD_UUID" '[$a,$b]')
+    else
+        ACTIVE_INBOUNDS_JSON=$(jq -n --arg a "$IBD_UUID" '[$a]')
     fi
 
     local NODE_ADDR
     [ "$MODE" = "2" ] && NODE_ADDR="$SELFSTEAL_DOMAIN" || NODE_ADDR="172.30.0.1"
     panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
-        --arg na "$NODE_ADDR" --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" \
-        '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:[$iu]},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)" >/dev/null 2>&1 \
+        --arg na "$NODE_ADDR" --arg cu "$CFG_UUID" --argjson ai "$ACTIVE_INBOUNDS_JSON" \
+        '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)" >/dev/null 2>&1 \
         && ok "Нода создана" || warn "Ошибка создания ноды"
 
     panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
@@ -216,50 +263,65 @@ panel_setup_api() {
         '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
         && ok "Хост создан" || warn "Ошибка создания хоста"
 
+    # Variant J: second Host for XHTTP, only when MODE=F actually
+    # produced an XHTTP inbound. Unlike the Vision Host above (unchanged,
+    # pre-existing, no lookup-before-create — out of scope to retrofit
+    # here), this new path DOES look up an existing Host first: this is
+    # new code being added under an explicit idempotency requirement, so
+    # it follows the config-profile's own established lookup-before-
+    # create pattern rather than the older, always-POST Vision pattern.
+    # Match key: configProfileInboundUuid, the one field that uniquely
+    # identifies "the Host for this specific inbound" regardless of
+    # remark/address, which an operator could change later.
+    # Host field shape follows the same pattern as the Vision Host
+    # above (remark/fingerprint/allowInsecure/securityLayer field names
+    # confirmed already correct from that existing, working call);
+    # `path` is new here (XHTTP requires it, Vision leaves it empty) and
+    # network/transport is deliberately NOT set as a separate field —
+    # confirmed against official Remnawave docs (docs.rw, Hosts page):
+    # "the Host inherits its configuration from the selected Inbound,
+    # including... transport" — transport comes entirely from
+    # configProfileInboundUuid, there is no separate Host-level field
+    # for it to get wrong.
+    if [ "$MODE" = "F" ] && [ -n "$XHTTP_IBD_UUID" ]; then
+        local EXISTING_XHTTP_HOST
+        EXISTING_XHTTP_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
+            jq -r --arg iu "$XHTTP_IBD_UUID" \
+            '(.response.hosts // .response // [])[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid' 2>/dev/null | head -1)
+        # NOTE: точное имя поля в ответе GET /api/hosts (`.response.hosts`
+        # vs `.response` как плоский массив) не подтверждено напрямую —
+        # jq-выражение выше пробует оба варианта через `//`, по аналогии
+        # с уже существующим defensive-паттерном в этом файле
+        # (`.response.configProfiles[]?`). Смотри итоговый отчёт,
+        # раздел OPEN QUESTIONS.
+        if [ -n "$EXISTING_XHTTP_HOST" ]; then
+            ok "Хост для XHTTP уже существует, используется существующий"
+        else
+            panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
+                --arg cu "$CFG_UUID" --arg iu "$XHTTP_IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" --arg xpath "$XHTTP_PATH" \
+                '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"StealXHTTP",address:$addr,port:8443,path:$xpath,sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
+                && ok "Хост для XHTTP создан" || warn "Ошибка создания хоста для XHTTP"
+        fi
+    fi
+
     local SQUAD_UUIDS
     SQUAD_UUIDS=$(panel_api "GET" "http://$API/api/internal-squads" "$TOKEN" | \
         jq -r '.response.internalSquads[].uuid' 2>/dev/null || echo "")
     for su in $SQUAD_UUIDS; do
         [[ "$su" =~ ^[0-9a-f-]{36}$ ]] || continue
         panel_api "PATCH" "http://$API/api/internal-squads" "$TOKEN" \
-            "{\"uuid\":\"$su\",\"inbounds\":[\"$IBD_UUID\"]}" >/dev/null 2>&1 || true
+            "$(jq -n --arg su "$su" --argjson ai "$ACTIVE_INBOUNDS_JSON" '{uuid:$su,inbounds:$ai}' 2>/dev/null)" >/dev/null 2>&1 || true
     done
     ok "Squad обновлён"
 
-    # POST /api/tokens (confirmed against Remnawave's own OpenAPI schema
-    # — Remnawave API v3.3.2 exactly, the version this project targets,
-    # via CreateApiTokenBodyDto: {name: string(2-30), expiresInDays:
-    # number(>=1) [both required], scopes: string[] [optional, defaults
-    # to ["*"]]}. The prior payload here, {"tokenName":"..."},  used the
-    # wrong field name entirely (no "tokenName" property exists in this
-    # schema) and omitted the required "expiresInDays" — a NestJS/
-    # class-validator 400 on both counts, which is the actual, now-
-    # confirmed root cause of the empty .response.token. Response shape
-    # is CreateApiTokenResponseDto: {response:{...,token:string}} — the
-    # existing `.response.token` extraction below was already correct
-    # and is unchanged. Endpoint still requires an admin JWT, which
-    # $TOKEN already is (this project's payload bug, unrelated to auth).
-    local SUB_TOKEN_RAW SUB_TOKEN_RC=0
-    SUB_TOKEN_RAW=$(panel_api_status "POST" "http://$API/api/tokens" "$TOKEN" '{"name":"subscription-page","expiresInDays":365,"scopes":["*"]}') || SUB_TOKEN_RC=$?
-    local SUB_TOKEN=""
-    if [ "$SUB_TOKEN_RC" -ne 0 ]; then
-        warn "Не удалось создать API-токен: сетевая ошибка при обращении к $API (transport failure)"
-    else
-        local SUB_TOKEN_STATUS="${SUB_TOKEN_RAW: -3}"
-        local SUB_TOKEN_BODY="${SUB_TOKEN_RAW:0:${#SUB_TOKEN_RAW}-3}"
-        SUB_TOKEN=$(echo "$SUB_TOKEN_BODY" | jq -r '.response.token // empty' 2>/dev/null)
-        if [ -z "$SUB_TOKEN" ]; then
-            local SUB_TOKEN_ERR_CODE SUB_TOKEN_ERR_MSG
-            SUB_TOKEN_ERR_CODE=$(echo "$SUB_TOKEN_BODY" | jq -r '.errorCode // empty' 2>/dev/null)
-            SUB_TOKEN_ERR_MSG=$(echo "$SUB_TOKEN_BODY" | jq -r '.message // empty' 2>/dev/null)
-            warn "Не удалось создать API-токен автоматически: HTTP $SUB_TOKEN_STATUS${SUB_TOKEN_ERR_CODE:+ ($SUB_TOKEN_ERR_CODE)}${SUB_TOKEN_ERR_MSG:+ — $SUB_TOKEN_ERR_MSG}"
-        fi
-    fi
+    local SUB_TOKEN_R SUB_TOKEN
+    SUB_TOKEN_R=$(panel_api "POST" "http://$API/api/tokens" "$TOKEN" '{"tokenName":"subscription-page"}')
+    SUB_TOKEN=$(echo "$SUB_TOKEN_R" | jq -r '.response.token // empty' 2>/dev/null)
     [ -n "$SUB_TOKEN" ] && {
         sed -i "s|REMNAWAVE_API_TOKEN=PLACEHOLDER|REMNAWAVE_API_TOKEN=$SUB_TOKEN|g" \
             /opt/remnawave/docker-compose.yml
         ok "API-токен для Subscription Page"
-    } || warn "Subscription Page останется без токена (REMNAWAVE_API_TOKEN=PLACEHOLDER) — создайте токен вручную в панели (Settings → API Tokens), подставьте его в /opt/remnawave/docker-compose.yml и перезапустите remnawave-subscription-page"
+    } || warn "Не удалось создать API-токен автоматически"
 
     docker compose down remnawave-subscription-page >/dev/null 2>&1 & spinner $! "Перезапуск Sub..."
     docker compose up -d remnawave-subscription-page >/dev/null 2>&1 & spinner $! "Запуск Sub..."
