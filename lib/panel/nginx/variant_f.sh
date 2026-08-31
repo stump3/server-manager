@@ -36,14 +36,14 @@
 #   - Everything else (SELFSTEAL_DOMAIN + no SNI match, matching what
 #     REALITY itself already treats as "not my client" traffic) → raw
 #     TCP passthrough, untouched, to Xray's REALITY inbound, moved from
-#     public 0.0.0.0:443 to loopback-only 127.0.0.1:$F_XRAY_PORT.
+#     public 0.0.0.0:443 to loopback-only 127.0.0.1:$F_XRAY_VISION_PORT.
 # Xray's own REALITY fallback (dest = /dev/shm/nginx.sock, the decoy
 # selfsteal site) is NOT touched by any of this — that mechanism lives
 # entirely inside Xray and fires only after Xray's own REALITY handshake
 # inspection, which still runs identically once nginx's stream block
 # hands it the raw bytes.
 F_NGINX_HTTPS_PORT=7443
-F_XRAY_PORT=8443
+F_XRAY_VISION_PORT=8443
 
 # panel_generate_nginx_config_f — Variant F. Writes a FULL top-level
 # nginx.conf (mounted at /etc/nginx/nginx.conf, NOT conf.d/default.conf
@@ -226,7 +226,7 @@ stream {
         default         xray_reality;
     }
     upstream panel_and_sub { server 127.0.0.1:${F_NGINX_HTTPS_PORT}; }
-    upstream xray_reality  { server 127.0.0.1:${F_XRAY_PORT}; }
+    upstream xray_reality  { server 127.0.0.1:${F_XRAY_VISION_PORT}; }
 
     server {
         listen 443;
