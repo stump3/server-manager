@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #
 # Этот файл — loader. Реализация панели разбита на подмодули в
-# lib/panel/{core,cert,install,compose,mgmt_script,api,selfsteal,nginx/config,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
+# lib/panel/{core,cert,install,compose,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
 #
 # Поддерживаются оба способа загрузки:
 #   1. _sm_source_file / _load_module panel  (обычный путь из server-manager.sh,
@@ -16,7 +16,18 @@
 
 _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
 
-for _panel_module in core cert install compose mgmt_script api selfsteal nginx/config caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+# nginx/variant_f и nginx/variant_j добавлены 2026-08-31: до этого
+# panel_generate_nginx_config_f() дублировалась (byte-for-byte идентичной
+# копией) в nginx/config.sh, а lib/panel/nginx/variant_f.sh не был здесь
+# подключён вообще — то есть определение из variant_f.sh было мёртвым
+# кодом, а реально вызывалась копия из config.sh (см. отчёт о carve-out
+# F/J). Порядок относительно nginx/config не важен — bash просто
+# определяет функции при source, а panel_generate_webserver_config()
+# (в config.sh) вызывает panel_generate_nginx_config_f/_j только во
+# время установки, когда все модули уже загружены — но variant_f/variant_j
+# перечислены сразу после nginx/config для наглядности (все три файла
+# про nginx-топологию идут подряд).
+for _panel_module in core cert install compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
     # shellcheck source=/dev/null
     source "${_PANEL_MODULE_DIR}/${_panel_module}.sh"
 done
