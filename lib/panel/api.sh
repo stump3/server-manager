@@ -64,21 +64,16 @@ panel_reality_inbound_port() {
 # "true"/"false" (not a shell boolean) so the caller can pass it
 # straight through jq's --argjson.
 #
-# DECISION REQUIRED (found during 2026-08-31 F/J port-wiring audit, NOT
-# resolved here): this function intentionally returns "false" for
-# StealXHTTP's own acceptProxyProtocol (the XHTTP inbound is never
-# passed through this function at all in the renderer — see j.json,
-# which never references $accept_pp on the StealXHTTP inbound). That was
-# written on the assumption that nothing in front of XHTTP sends a PROXY
-# preamble. But variant_j.sh's second stream server{} (its
-# :$J_XHTTP_PUBLIC_PORT listener, proxying straight to xray_xhttp) DOES
-# set `proxy_protocol on;` — same as the :443 leg. If that's intentional,
-# StealXHTTP's inbound JSON needs its own acceptProxyProtocol=true (a
-# second $accept_pp-shaped value, since it's a materially different
-# question from Vision's). If variant_j.sh's proxy_protocol on that
-# second server{} is itself the bug, it should be removed instead. Left
-# as-is (no acceptProxyProtocol on StealXHTTP) pending that decision —
-# do not resolve this by guessing either direction.
+# RESOLVED 2026-08-31 (was DECISION REQUIRED during the initial F/J
+# port-wiring audit): variant_j.sh's :$J_XHTTP_PUBLIC_PORT server{} was
+# found to also set `proxy_protocol on;`, contradicting this function's
+# assumption that nothing sends XHTTP a PROXY preamble. Confirmed
+# (Natalie): that was a bug in variant_j.sh, not a requirement — XHTTP's
+# inbound is not meant to receive a PROXY preamble. Fixed by removing
+# proxy_protocol from that server{} block rather than adding
+# acceptProxyProtocol here; StealXHTTP correctly never receives an
+# accept_pp value from this function (see j.json, which only wires
+# $accept_pp onto the Steal/Vision inbound).
 panel_reality_accept_proxy_protocol() {
     local MODE="$1"
     if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
@@ -202,37 +197,40 @@ panel_setup_api() {
     SHORT_ID=$(openssl rand -hex 8)
     DEST_VAL=$(panel_reality_dest_val "$MODE" "$SELFSTEAL_DOMAIN")
 
-    # Variant J: MODE=F gets a second inbound (StealXHTTP, network:xhttp)
-    # in the SAME config-profile as Vision — confirmed against official
+    # MODE=J gets a second inbound (StealXHTTP, network:xhttp) in the
+    # SAME config-profile as Vision — confirmed against official
     # Remnawave docs (docs.rw, Config Profiles page) that multiple
     # inbounds per profile is the standard, documented way to do this,
     # not an unusual composition. Both inbounds intentionally share
     # privateKey/serverNames/shortIds (same REALITY identity — this is
     # what makes both reachable under the same domain on two different
-    # public ports); only tag/port/network/xhttpSettings differ. Built
-    # as a standalone JSON array (INBOUNDS_JSON) rather than inlined
-    # into the profile template below, so MODE!=F's template is
-    # untouched byte-for-byte aside from this substitution.
+    # public ports); only tag/port/network/xhttpSettings differ.
+    #
+    # FIXED 2026-08-31 (F/J port-wiring audit): this used to be two
+    # inline `jq -n '[...]'` blocks here, gated on `[ "$MODE" = "F" ]` —
+    # i.e. choosing Variant F (meant to stay a single-inbound topology,
+    # see variant_f.sh) was what actually produced the dual-inbound
+    # Vision+XHTTP profile, while Variant J (the variant whose nginx
+    # topology, variant_j.sh, actually has the second public port and
+    # loopback wiring for XHTTP) got F's plain single-inbound shape
+    # instead — the two variants' API and nginx layers disagreed with
+    # each other. Replaced with a single call to
+    # panel_xray_render_inbounds() (lib/panel/xray/templates/render.sh,
+    # now wired into lib/panel.sh's loader — it previously wasn't
+    # sourced anywhere and did not exist at runtime), whose own MODE
+    # dispatch (MODE=J -> j.json dual-inbound, anything else -> f.json
+    # single-inbound) is the corrected gating. f.json/j.json were
+    # confirmed semantically identical to the old inline blocks for
+    # their respective shapes before this switch (see xray/templates/
+    # header comments for the $-variable contract).
     local XHTTP_PATH="/$(openssl rand -hex 8)"
     local INBOUNDS_JSON
-    if [ "$MODE" = "F" ]; then
-        INBOUNDS_JSON=$(jq -n \
-            --arg pk "$PRIV_KEY" --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" --arg domain "$SELFSTEAL_DOMAIN" \
-            --argjson vport "$(panel_reality_inbound_port "$MODE")" \
-            --argjson xport "$(panel_reality_xhttp_inbound_port)" \
-            --arg xpath "$XHTTP_PATH" \
-            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
-            '[
-                {tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))},
-                {tag:"StealXHTTP",port:$xport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:{network:"xhttp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]},xhttpSettings:{path:$xpath}}}
-            ]' 2>/dev/null)
-    else
-        INBOUNDS_JSON=$(jq -n \
-            --arg pk "$PRIV_KEY" --arg sid "$SHORT_ID" --arg dest "$DEST_VAL" --arg domain "$SELFSTEAL_DOMAIN" \
-            --argjson vport "$(panel_reality_inbound_port "$MODE")" \
-            --argjson accept_pp "$(panel_reality_accept_proxy_protocol "$MODE")" \
-            '[{tag:"Steal",port:$vport,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"]},streamSettings:({network:"tcp",security:"reality",realitySettings:{show:false,xver:1,dest:$dest,spiderX:"",shortIds:[$sid],privateKey:$pk,serverNames:[$domain]}} + (if $accept_pp then {sockopt:{acceptProxyProtocol:true}} else {} end))}]' 2>/dev/null)
-    fi
+    INBOUNDS_JSON=$(panel_xray_render_inbounds "$MODE" "$PRIV_KEY" "$SHORT_ID" "$DEST_VAL" "$SELFSTEAL_DOMAIN" \
+        "$(panel_reality_inbound_port "$MODE")" \
+        "$(panel_reality_xhttp_inbound_port)" \
+        "$XHTTP_PATH" \
+        "$(panel_reality_accept_proxy_protocol "$MODE")")
+    [ -z "$INBOUNDS_JSON" ] && err "Ошибка генерации Xray inbounds JSON (panel_xray_render_inbounds)"
 
     # Contract 13 (lookup-before-create, not always-create): reuse an
     # already-existing "StealConfig" profile by name if one is already
@@ -261,7 +259,7 @@ panel_setup_api() {
     if [ -n "$EXISTING_PROFILE" ]; then
         CFG_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
-        [ "$MODE" = "F" ] && XHTTP_IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
+        [ "$MODE" = "J" ] && XHTTP_IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
         # Известный, намеренно не автоматизируемый пробел: если профиль
         # StealConfig существует ЕЩЁ ДО Variant J (т.е. был создан до
         # появления StealXHTTP), IBD_UUID найдётся, а XHTTP_IBD_UUID —
@@ -273,7 +271,7 @@ panel_setup_api() {
         # предположения. Пользователь увидит warn ниже и должен будет
         # пересоздать профиль вручную (удалить старый StealConfig и
         # перезапустить установку), если хочет получить XHTTP.
-        if [ "$MODE" = "F" ] && [ -z "$XHTTP_IBD_UUID" ]; then
+        if [ "$MODE" = "J" ] && [ -z "$XHTTP_IBD_UUID" ]; then
             warn "StealConfig существует без StealXHTTP inbound (профиль создан до Variant J) — XHTTP не будет доступен, пока профиль не пересоздан вручную"
         fi
     fi
@@ -288,12 +286,12 @@ panel_setup_api() {
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
-        [ "$MODE" = "F" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
+        [ "$MODE" = "J" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
         [ -z "$CFG_UUID" ] && err "Ошибка создания конфиг-профиля"
         ok "Конфиг-профиль создан"
     fi
 
-    # Variant J: activeInbounds/Squad must carry BOTH uuids when MODE=F
+    # Variant J: activeInbounds/Squad must carry BOTH uuids when MODE=J
     # has a real XHTTP_IBD_UUID, or the new inbound exists in the
     # profile but stays unreachable by users (confirmed against
     # official Remnawave docs — a new inbound must be added to both the
@@ -321,7 +319,7 @@ panel_setup_api() {
         '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
         && ok "Хост создан" || warn "Ошибка создания хоста"
 
-    # Variant J: second Host for XHTTP, only when MODE=F actually
+    # Variant J: second Host for XHTTP, only when MODE=J actually
     # produced an XHTTP inbound. Unlike the Vision Host above (unchanged,
     # pre-existing, no lookup-before-create — out of scope to retrofit
     # here), this new path DOES look up an existing Host first: this is
@@ -340,8 +338,10 @@ panel_setup_api() {
     # "the Host inherits its configuration from the selected Inbound,
     # including... transport" — transport comes entirely from
     # configProfileInboundUuid, there is no separate Host-level field
-    # for it to get wrong.
-    if [ "$MODE" = "F" ] && [ -n "$XHTTP_IBD_UUID" ]; then
+    # for it to get wrong. `port` references J_XHTTP_PUBLIC_PORT
+    # (lib/panel/nginx/variant_j.sh, currently 8443) rather than a bare
+    # literal, so this stays correct if that constant is ever changed.
+    if [ "$MODE" = "J" ] && [ -n "$XHTTP_IBD_UUID" ]; then
         local EXISTING_XHTTP_HOST
         EXISTING_XHTTP_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
             jq -r --arg iu "$XHTTP_IBD_UUID" \
@@ -357,7 +357,8 @@ panel_setup_api() {
         else
             panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
                 --arg cu "$CFG_UUID" --arg iu "$XHTTP_IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" --arg xpath "$XHTTP_PATH" \
-                '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"StealXHTTP",address:$addr,port:8443,path:$xpath,sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
+                --argjson port "${J_XHTTP_PUBLIC_PORT:-8443}" \
+                '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"StealXHTTP",address:$addr,port:$port,path:$xpath,sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
                 && ok "Хост для XHTTP создан" || warn "Ошибка создания хоста для XHTTP"
         fi
     fi
