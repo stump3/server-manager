@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #
 # Этот файл — loader. Реализация панели разбита на подмодули в
-# lib/panel/{core,cert,install,compose,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
+# lib/panel/{core,cert,install,compose,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,xray/templates/render,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
 #
 # Поддерживаются оба способа загрузки:
 #   1. _sm_source_file / _load_module panel  (обычный путь из server-manager.sh,
@@ -27,7 +27,16 @@ _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
 # время установки, когда все модули уже загружены — но variant_f/variant_j
 # перечислены сразу после nginx/config для наглядности (все три файла
 # про nginx-топологию идут подряд).
-for _panel_module in core cert install compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+#
+# xray/templates/render добавлен 2026-08-31: panel_xray_render_inbounds()
+# (lib/panel/xray/templates/render.sh) была написана и вручную протестирована
+# раньше, но НЕ была подключена ни в этот loader, ни в один другой файл —
+# grep по всему дереву (кроме самого render.sh) не находил ни одного вызова
+# и ни одного `source`. То есть функция физически не существовала в рантайме
+# ни при одной установке до этого коммита; api.sh продолжал использовать
+# свои старые inline `jq -n` блоки. См. api.sh: panel_setup_api() теперь
+# вызывает panel_xray_render_inbounds() напрямую вместо дублирования JSON.
+for _panel_module in core cert install compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
     # shellcheck source=/dev/null
     source "${_PANEL_MODULE_DIR}/${_panel_module}.sh"
 done
