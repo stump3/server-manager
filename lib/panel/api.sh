@@ -2,25 +2,37 @@
 # panel/api.sh — Panel API bootstrap (MODE=1): superadmin, Reality keys,
 # config-profile, node, host, sub-token
 
-# Variant F (docs/ARCHITECTURE.md §6.1): three MODE-aware decisions
-# shared by every co-located topology (MODE=1, MODE=F — both run Panel
-# and Node on the same host; MODE=2 does not). Kept as three small pure
-# functions rather than three more scattered `[ "$MODE" = ... ]`
+# Variant F/J (docs/ARCHITECTURE.md §6.1): four MODE-aware decisions
+# shared by every co-located topology (MODE=1, MODE=F, MODE=J — all
+# three run Panel and Node on the same host; MODE=2 does not). Kept as
+# four small pure functions rather than scattered `[ "$MODE" = ... ]`
 # ternaries, so each reads as one named decision instead of an inline
 # condition repeated at its call site, and each is unit-testable in
-# isolation. $F_XRAY_VISION_PORT/$F_XRAY_XHTTP_PORT are defined in
-# lib/panel/nginx/variant_f.sh — all panel/*.sh files are always sourced
+# isolation. $F_XRAY_VISION_PORT is defined in lib/panel/nginx/variant_f.sh;
+# $J_XRAY_VISION_PORT/$J_XRAY_XHTTP_PORT are defined in
+# lib/panel/nginx/variant_j.sh — all panel/*.sh files are always sourced
 # together via lib/panel.sh before any of them is called, so the
-# reference resolves at call time regardless of source order (same
-# precedent as the original $F_XRAY_PORT reference this replaces).
+# reference resolves at call time regardless of source order.
+#
+# FIXED 2026-08-31 (F/J port-wiring audit): panel_reality_inbound_port()'s
+# MODE=F branch previously read $F_XRAY_VISION_PORT with a fallback
+# default of 18443 — but F_XRAY_VISION_PORT was never actually defined
+# anywhere in the tree (variant_f.sh still defined the old $F_XRAY_PORT
+# name), so every MODE=F install silently fell through to that fallback
+# and generated a Vision inbound listening on 18443 while variant_f.sh's
+# nginx stream{} unconditionally forwards to 127.0.0.1:8443 — a total
+# port mismatch, confirmed by grep (no other definition site existed).
+# Fixed by renaming variant_f.sh's F_XRAY_PORT to F_XRAY_VISION_PORT
+# (same value, 8443) so the two files agree, and removing the
+# now-misleading 18443 fallback here.
 panel_reality_needs_2222_ufw_rule() {
     local MODE="$1"
-    [ "$MODE" = "1" ] || [ "$MODE" = "F" ]
+    [ "$MODE" = "1" ] || [ "$MODE" = "F" ] || [ "$MODE" = "J" ]
 }
 
 panel_reality_dest_val() {
     local MODE="$1" SELFSTEAL_DOMAIN="$2"
-    if [ "$MODE" = "1" ] || [ "$MODE" = "F" ]; then
+    if [ "$MODE" = "1" ] || [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
         echo '/dev/shm/nginx.sock'
     else
         echo "${SELFSTEAL_DOMAIN}:443"
@@ -29,58 +41,67 @@ panel_reality_dest_val() {
 
 panel_reality_inbound_port() {
     local MODE="$1"
-    if [ "$MODE" = "F" ]; then
-        echo "${F_XRAY_VISION_PORT:-18443}"
-    else
-        echo 443
-    fi
+    case "$MODE" in
+        F) echo "${F_XRAY_VISION_PORT:-8443}" ;;
+        J) echo "${J_XRAY_VISION_PORT:-18443}" ;;
+        *) echo 443 ;;
+    esac
 }
 
-# panel_reality_accept_proxy_protocol — MODE=F's nginx stream block
-# applies `proxy_protocol on;` to its single server{} regardless of which
-# map branch a connection resolves to (confirmed by runtime byte capture,
-# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification), so
-# the REALITY inbound behind it always receives a PROXY v1 preamble
-# ahead of the ClientHello and must set sockopt.acceptProxyProtocol to
-# parse it. MODE=1's REALITY inbound listens directly on public 443 with
-# no nginx in front of it — no client sends it a PROXY header, so adding
-# this there would break real handshakes rather than fix anything.
-# MODE=2's REALITY inbound is a remote node reachable over the internet
-# on its own dest, also with no local nginx stream in front — same
-# reasoning as MODE=1. Echoes "true"/"false" (not a shell boolean) so
-# the caller can pass it straight through jq's --argjson.
+# panel_reality_accept_proxy_protocol — MODE=F's and MODE=J's nginx
+# stream blocks both apply `proxy_protocol on;` to the server{} that
+# routes their public :443 (confirmed by runtime byte capture for F,
+# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification; J's
+# :443 server{} in variant_j.sh applies it identically, same map-based
+# single-server{} shape), so the Vision/REALITY inbound behind either
+# variant always receives a PROXY v1 preamble ahead of the ClientHello
+# and must set sockopt.acceptProxyProtocol to parse it. MODE=1's REALITY
+# inbound listens directly on public 443 with no nginx in front of it —
+# no client sends it a PROXY header, so adding this there would break
+# real handshakes rather than fix anything. MODE=2's REALITY inbound is
+# a remote node reachable over the internet on its own dest, also with
+# no local nginx stream in front — same reasoning as MODE=1. Echoes
+# "true"/"false" (not a shell boolean) so the caller can pass it
+# straight through jq's --argjson.
 #
-# Re-added 2026-08-31: this function and its JSON wiring were dropped a
-# second time in 3d2d24c ("include new inbound ports"), bundled together
-# with the legitimate Variant J INBOUNDS_JSON rewrite. It was not
-# unused: variant_f.sh's stream{} server still unconditionally applies
-# `proxy_protocol on;` to the xray_reality branch (see its own comment
-# there), so the Steal (Vision/TCP) inbound must still declare
-# acceptProxyProtocol for MODE=F or every REALITY handshake breaks.
-# Deliberately NOT applied to StealXHTTP: variant_f.sh's :8443 stream
-# server for XHTTP does not set proxy_protocol (documented there as
-# intentional — Xray's XHTTP inbound JSON does not expect a PROXY
-# preamble), so sending acceptProxyProtocol on that inbound would be
-# wrong in the other direction.
+# DECISION REQUIRED (found during 2026-08-31 F/J port-wiring audit, NOT
+# resolved here): this function intentionally returns "false" for
+# StealXHTTP's own acceptProxyProtocol (the XHTTP inbound is never
+# passed through this function at all in the renderer — see j.json,
+# which never references $accept_pp on the StealXHTTP inbound). That was
+# written on the assumption that nothing in front of XHTTP sends a PROXY
+# preamble. But variant_j.sh's second stream server{} (its
+# :$J_XHTTP_PUBLIC_PORT listener, proxying straight to xray_xhttp) DOES
+# set `proxy_protocol on;` — same as the :443 leg. If that's intentional,
+# StealXHTTP's inbound JSON needs its own acceptProxyProtocol=true (a
+# second $accept_pp-shaped value, since it's a materially different
+# question from Vision's). If variant_j.sh's proxy_protocol on that
+# second server{} is itself the bug, it should be removed instead. Left
+# as-is (no acceptProxyProtocol on StealXHTTP) pending that decision —
+# do not resolve this by guessing either direction.
 panel_reality_accept_proxy_protocol() {
     local MODE="$1"
-    if [ "$MODE" = "F" ]; then
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
         echo "true"
     else
         echo "false"
     fi
 }
 
-# panel_reality_xhttp_inbound_port — Variant J. XHTTP is MODE=F-only
-# (public :8443 is only meaningful in Variant F's dual-public-port
-# topology; MODE=1/2 have no :8443 story and are not asked to grow one
-# here). Callers must still gate on `[ "$MODE" = "F" ]` themselves
-# before using this — this function is a single source of truth for the
-# port NUMBER, not for the MODE decision itself, mirroring how
-# panel_reality_inbound_port() already separates "which port" from
-# "should we even be here".
+# panel_reality_xhttp_inbound_port — MODE=J only (public
+# :$J_XHTTP_PUBLIC_PORT is only meaningful in Variant J's dual-public-port
+# topology; MODE=1/2/F have no XHTTP story). Callers must still gate on
+# `[ "$MODE" = "J" ]` themselves before using this — this function is a
+# single source of truth for the port NUMBER, not for the MODE decision
+# itself, mirroring how panel_reality_inbound_port() already separates
+# "which port" from "should we even be here".
+#
+# FIXED 2026-08-31: previously read $F_XRAY_XHTTP_PORT (a variable that,
+# like F_XRAY_VISION_PORT above, was never defined anywhere — XHTTP was
+# still wrongly wired to MODE=F at the time). Now reads
+# $J_XRAY_XHTTP_PORT, which variant_j.sh actually defines (18444).
 panel_reality_xhttp_inbound_port() {
-    echo "${F_XRAY_XHTTP_PORT:-18444}"
+    echo "${J_XRAY_XHTTP_PORT:-18444}"
 }
 
 panel_setup_api() {
