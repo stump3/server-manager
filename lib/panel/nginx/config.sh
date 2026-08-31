@@ -150,14 +150,15 @@ server {
 NGINX_CONF_EOF
 }
 
-# panel_generate_nginx_config_f() moved to lib/panel/nginx/variant_f.sh —
-# see that file for Variant F's topology and constants. Moved out
-# 2026-08-31 so this file stays a thin dispatcher and each variant's
-# nginx generator lives in its own file (variant_f.sh / variant_j.sh),
-# per the module split decided for Variant F/J. lib/panel.sh sources
-# nginx/variant_f (and nginx/variant_j) alongside this file, so
-# panel_generate_nginx_config_f() is defined before
-# panel_generate_webserver_config() below ever calls it.
+# panel_generate_nginx_config_f() moved to lib/panel/nginx/variant_f.sh, and
+# panel_generate_nginx_config_j() lives in lib/panel/nginx/variant_j.sh —
+# see those files for Variant F/J's respective topologies and constants.
+# Moved out 2026-08-31 so this file stays a thin dispatcher and each
+# variant's nginx generator lives in its own file (variant_f.sh /
+# variant_j.sh), per the module split decided for Variant F/J. lib/panel.sh
+# sources nginx/variant_f and nginx/variant_j alongside this file, so both
+# panel_generate_nginx_config_f() and panel_generate_nginx_config_j() are
+# defined before panel_generate_webserver_config() below ever calls them.
 
 # panel_generate_webserver_config — dispatcher, выбирает nginx/caddy backend
 # по значению WEB_SERVER. Orchestration-level функция; отдельный третий
@@ -175,14 +176,26 @@ panel_generate_webserver_config() {
     local COOKIE_VAL="${10}"
 
     if [ "$WEB_SERVER" = "1" ]; then
-        # MODE=F routes to the standalone Variant F generator instead of
-        # panel_generate_nginx_config()'s MODE=1/2 heredoc — dispatcher-
-        # level only, panel_generate_nginx_config()'s body is untouched
-        # (guarantees MODE=1/2 stay byte-identical). WEB_SERVER=2+MODE=F
-        # is already rejected upstream (lib/panel/install.sh:208, before
-        # this function is ever called), so no guard is needed here.
+        # MODE=F/MODE=J each route to their own standalone generator
+        # instead of panel_generate_nginx_config()'s MODE=1/2 heredoc —
+        # dispatcher-level only, panel_generate_nginx_config()'s body is
+        # untouched (guarantees MODE=1/2 stay byte-identical). WEB_SERVER=2
+        # + MODE=F is already rejected upstream (lib/panel/install.sh:208,
+        # before this function is ever called); MODE=J is not yet a choice
+        # install.sh's prompt can produce at all (its regex is
+        # ^([12]|[Ff])$), so the branch below is unreachable through the
+        # installer today — added ahead of that wiring per the F/J
+        # carve-out plan, not a functional change to any currently
+        # reachable code path. TELEMT_DOMAIN/TELEMT_PORT aren't collected
+        # anywhere yet either, so panel_generate_nginx_config_j() is called
+        # here with just its 8 required args — see variant_j.sh's header
+        # for what "not yet wired" covers.
         if [ "$MODE" = "F" ]; then
             panel_generate_nginx_config_f \
+                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL"
+        elif [ "$MODE" = "J" ]; then
+            panel_generate_nginx_config_j \
                 "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
                 "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL"
         else
