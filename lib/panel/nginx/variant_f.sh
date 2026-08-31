@@ -1,15 +1,30 @@
 # shellcheck shell=bash
 #
-# lib/panel/nginx/variant_f.sh — Variant F (и его расширение, Variant J)
-# nginx-топология. Вынесено из lib/panel/nginx/config.sh, чтобы дальнейшее
-# добавление ingress-вариантов расширяло этот файл (или создавало
-# variant_<x>.sh рядом), а не разрастало центральный config.sh —
-# см. docs/research/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md, раздел
-# "NGINX REFACTOR ASSESSMENT". Механический перенос: тело
-# panel_generate_nginx_config_f() не менялось при переносе, кроме правок,
-# описанных ниже для Variant J. panel_generate_nginx_config() (MODE=1/2)
-# остаётся в lib/panel/nginx/config.sh — не тронуто.
-
+# lib/panel/nginx/variant_f.sh — Variant F nginx-топология.
+#
+# RESTORED 2026-08-31: this file previously (commit 90411ca) contained a
+# version of panel_generate_nginx_config_f() with Variant J's additions
+# folded into it — see the provenance report for the exact list of what
+# was removed. F and J must be independent, and none of that belongs in
+# F. The function body below is restored byte-for-byte from
+# origin/variant-f (lib/panel/nginx/config.sh, the pre-J baseline) —
+# confirmed by diffing this file's generated nginx.conf output against
+# that baseline for identical inputs (see report). Variant J's own,
+# separate topology will get its own lib/panel/nginx/variant_j.sh in a
+# later step — not folded back in here.
+#
+# KNOWN OPEN ITEM (tracked for the next step, not fixed here): this file
+# is not yet added to lib/panel.sh's module-loading loop, so
+# panel_generate_nginx_config_f() as defined here is currently NOT the
+# active definition — lib/panel/nginx/config.sh still carries its own,
+# unmodified copy of the same function name (also matching baseline
+# byte-for-byte, since it was never touched by the J work), and that is
+# the one actually sourced and called by
+# panel_generate_webserver_config(). Deciding how config.sh and this
+# file divide responsibility (which one keeps the function, when this
+# file gets added to the loader) is explicitly deferred to the
+# "carve out J" step, per instruction not to do further refactoring in
+# this restoration step.
 # Variant F (docs/ARCHITECTURE.md §4b): nginx stream module owns public
 # :443 and routes by SNI (ssl_preread — reads ClientHello without
 # terminating TLS, so REALITY still receives the genuine handshake) to
@@ -21,66 +36,22 @@
 #   - Everything else (SELFSTEAL_DOMAIN + no SNI match, matching what
 #     REALITY itself already treats as "not my client" traffic) → raw
 #     TCP passthrough, untouched, to Xray's REALITY inbound, moved from
-#     public 0.0.0.0:443 to loopback-only 127.0.0.1:$F_XRAY_VISION_PORT.
+#     public 0.0.0.0:443 to loopback-only 127.0.0.1:$F_XRAY_PORT.
 # Xray's own REALITY fallback (dest = /dev/shm/nginx.sock, the decoy
 # selfsteal site) is NOT touched by any of this — that mechanism lives
 # entirely inside Xray and fires only after Xray's own REALITY handshake
 # inspection, which still runs identically once nginx's stream block
 # hands it the raw bytes.
-#
-# Variant J (docs/MULTI_PROTOCOL_L4_INGRESS.md, Variant A + XHTTP
-# extension): two additions on top of the above, both additive —
-# existing PANEL/SUB/default branches and their ports are unchanged in
-# meaning, only the Vision port's NUMBER changes (freed for :8443, see
-# below):
-#   - A second, independent public TCP listener on :8443. This is a
-#     direct proxy_pass, NOT ssl_preread/SNI routing — there is only one
-#     possible backend (Xray's XHTTP+REALITY inbound), so there is
-#     nothing to route by SNI. Kept as its own stream{} server block
-#     rather than folded into the :443 map, since the two have no
-#     shared routing logic.
-#   - An optional third SNI branch on the existing :443 map, for
-#     co-located TeleMT (docs/MULTI_PROTOCOL_L4_INGRESS.md, Variant A).
-#     Gated on TELEMT_DOMAIN being non-empty specifically so that not
-#     passing it (every call site today) reproduces today's exact 2-way
-#     map byte-for-byte — this function does not itself decide whether
-#     co-located TeleMT is installed; that remains an open
-#     installer/deployment-flow question (flagged separately, not
-#     decided here — see the implementation report).
-#
-# Port renumbering (Variant J): F_XRAY_PORT=8443 (the single Vision
-# loopback port) is renamed and renumbered to F_XRAY_VISION_PORT=18443,
-# and a new F_XRAY_XHTTP_PORT=18444 is added for the new XHTTP inbound.
-# This is not a cosmetic rename: 8443 is now needed as nginx's *public*
-# listener for XHTTP, and a public 0.0.0.0:8443 nginx bind cannot
-# coexist with a process already holding 127.0.0.1:8443 (confirmed by
-# local reproduction during planning — Linux rejects a wildcard bind
-# against an already-bound specific address on the same port,
-# EADDRINUSE, no SO_REUSEADDR trick applies here since these are two
-# unrelated processes). Xray must NOT listen on 8443 in any form after
-# this change — the public :8443 belongs to nginx exclusively. Both
-# 18443 and 18444 were checked against the full repository (grep, no
-# prior use anywhere) before being chosen.
 F_NGINX_HTTPS_PORT=7443
-F_XRAY_VISION_PORT=18443
-F_XRAY_XHTTP_PORT=18444
+F_XRAY_PORT=8443
 
-# panel_generate_nginx_config_f — Variant F/J. Writes a FULL top-level
+# panel_generate_nginx_config_f — Variant F. Writes a FULL top-level
 # nginx.conf (mounted at /etc/nginx/nginx.conf, NOT conf.d/default.conf
 # — the `stream {}` directive is only valid at the top level, never
 # nested inside `http {}`; this is a hard nginx constraint, not a style
 # choice). Includes the standard boilerplate the base nginx:1.28 image's
 # own main config normally provides, since this file replaces it
 # entirely rather than extending conf.d.
-#
-# TELEMT_DOMAIN (new, optional, 10th positional arg): SNI for co-located
-# TeleMT on the existing :443 map. Pass "" (or omit — `${10:-}` below
-# defaults it) to reproduce the exact pre-Variant-J 2-way map; every
-# current call site does this today, so MODE=F's generated config is
-# unchanged in the TeleMT respect until a caller actually supplies a
-# domain. TELEMT_PORT (11th, optional) is the loopback port TeleMT
-# listens on when co-located — meaningless/unused when TELEMT_DOMAIN is
-# empty.
 panel_generate_nginx_config_f() {
     local PANEL_DOMAIN="$1"
     local SUB_DOMAIN="$2"
@@ -90,21 +61,6 @@ panel_generate_nginx_config_f() {
     local STC="$6"
     local COOKIE_KEY="$7"
     local COOKIE_VAL="$8"
-    local TELEMT_DOMAIN="${9:-}"
-    local TELEMT_PORT="${10:-}"
-
-    # Built once, outside the heredoc: the TeleMT map line + upstream
-    # block are either both present or both absent, keeping the
-    # generated config internally consistent (a map branch referencing
-    # a nonexistent upstream would be an nginx config error, not a
-    # silent no-op). Indentation matches the surrounding heredoc by
-    # hand since this is spliced into a `map {}` block, not re-indented
-    # by any tool.
-    local TELEMT_MAP_LINE="" TELEMT_UPSTREAM=""
-    if [ -n "$TELEMT_DOMAIN" ]; then
-        TELEMT_MAP_LINE="        ${TELEMT_DOMAIN} telemt;"
-        TELEMT_UPSTREAM="    upstream telemt { server 127.0.0.1:${TELEMT_PORT}; }"
-    fi
 
     cat > /opt/remnawave/nginx.conf << NGINX_CONF_EOF
 user nginx;
@@ -230,7 +186,7 @@ http {
     # Xray's own REALITY fallback destination (realitySettings.dest =
     # /dev/shm/nginx.sock) — reached only from inside Xray, after Xray's
     # own REALITY handshake inspection decides a connection isn't a
-    # genuine proxy client. Nothing about Variant F/J touches this path.
+    # genuine proxy client. Nothing about Variant F touches this path.
     server {
         server_name ${SELFSTEAL_DOMAIN};
         listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
@@ -267,64 +223,35 @@ stream {
     map \$ssl_preread_server_name \$f_backend {
         ${PANEL_DOMAIN} panel_and_sub;
         ${SUB_DOMAIN}   panel_and_sub;
-${TELEMT_MAP_LINE}
         default         xray_reality;
     }
     upstream panel_and_sub { server 127.0.0.1:${F_NGINX_HTTPS_PORT}; }
-    upstream xray_reality  { server 127.0.0.1:${F_XRAY_VISION_PORT}; }
-${TELEMT_UPSTREAM}
+    upstream xray_reality  { server 127.0.0.1:${F_XRAY_PORT}; }
 
     server {
         listen 443;
         ssl_preread on;
         proxy_pass \$f_backend;
-        # proxy_protocol is enabled toward panel_and_sub (matches the
-        # proxy_protocol listener above) so Panel/sub keep real client
-        # IPs. It is intentionally NOT enabled toward xray_reality: this
-        # repo's REALITY inbound JSON (lib/panel/api.sh) has not been
-        # verified to accept PROXY protocol on a REALITY-security
-        # inbound (rawSettings.acceptProxyProtocol is documented for
-        # security:"tls" inbounds, not confirmed for security:"reality"
-        # ones) — enabling it without that confirmation risks silently
-        # breaking every REALITY handshake. Real client IPs at the Xray
-        # leg will show as 127.0.0.1 until this is verified. Documented
-        # as a known limitation, not silently assumed away.
-        #
-        # PRE-EXISTING ISSUE, NOT TOUCHED BY VARIANT J (see
-        # docs/research/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md, section
-        # C2): this directive is scoped to the whole server{} block, not
-        # per-map-branch — nginx has no mechanism to apply
-        # proxy_protocol to panel_and_sub only within a single shared
-        # server{}. The comment above describes the *intended* behavior,
-        # not the confirmed actual behavior; a local byte-level
-        # reproduction during that research showed the PROXY preamble
-        # does reach the xray_reality branch too. Left exactly as found
-        # — fixing it is out of scope for Variant J per explicit
-        # instruction, and doing so here would conflate an unrelated
-        # pre-existing fix with this change's diff.
+        # proxy_protocol is a stream/server-scoped directive, not a
+        # per-upstream one — nginx does not support conditioning it on
+        # \$f_backend, so it applies identically to both branches reached
+        # through this single server{} block: panel_and_sub AND
+        # xray_reality both receive a PROXY v1 preamble ahead of the raw
+        # TLS bytes (confirmed by local byte-level reproduction, see
+        # docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md Correction C2 — do not
+        # re-introduce the earlier assumption that this was scoped to
+        # panel_and_sub only). To make the xray_reality leg actually
+        # consume that preamble instead of choking on it, the REALITY
+        # inbound JSON generated for MODE=F sets
+        # streamSettings.sockopt.acceptProxyProtocol=true
+        # (lib/panel/api.sh: panel_reality_accept_proxy_protocol). That field wraps
+        # Xray's raw TCP listener before TLS/REALITY dispatch and is not
+        # security-layer-specific (confirmed against Xray-core v26.3.27
+        # source: transport/internet/tcp/hub.go,
+        # transport/internet/system_listener.go), so it works the same
+        # for a REALITY inbound as for a plain TLS one. Real client IPs
+        # now propagate correctly on both legs.
         proxy_protocol on;
-    }
-
-    # Variant J: public :8443, XHTTP+REALITY only. Not an SNI router —
-    # there is exactly one backend, so ssl_preread/map would add
-    # complexity with no routing decision to make. proxy_protocol is
-    # deliberately NOT set here: Xray's XHTTP transport binds via the
-    # same generic internet.ListenSystem()/sockopt.acceptProxyProtocol
-    # mechanism as the raw TCP/Vision inbound (confirmed by reading
-    # Xray-core 26.3.27 source: transport/internet/splithttp/hub.go's
-    # ListenXH() calls internet.ListenSystem() exactly like
-    # transport/internet/tcp/hub.go does for Vision) — since the new
-    # XHTTP inbound's JSON does not set sockopt.acceptProxyProtocol
-    # (matching Vision's inbound, deliberately not changed per this
-    # round's constraints), sending a PROXY preamble here would corrupt
-    # the byte stream Xray expects, the same way it does for
-    # xray_reality above. Because this is a brand-new, standalone
-    # server{} block (not sharing a block with anything else), leaving
-    # proxy_protocol off is both correct and simple — unlike the :443
-    # case, there's no other branch forcing a shared, ambiguous setting.
-    server {
-        listen 8443;
-        proxy_pass 127.0.0.1:${F_XRAY_XHTTP_PORT};
     }
 }
 NGINX_CONF_EOF
