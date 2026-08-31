@@ -26,10 +26,13 @@
 #   - Public :$J_XHTTP_PUBLIC_PORT (8443) is that entry point: a dedicated
 #     stream{} listener, separate from :443, plain TCP passthrough straight
 #     to the loopback XHTTP inbound. No SNI map is needed here (unlike the
-#     :443 leg) since there is exactly one destination behind this port —
-#     but proxy_protocol is still applied for the same real-client-IP reason
-#     as everywhere else in this file (see the note on the shared C2 defect
-#     inherited from Variant F, below).
+#     :443 leg) since there is exactly one destination behind this port.
+#     Unlike the :443 leg, this listener does NOT set `proxy_protocol on;`
+#     — an intentional asymmetry with Vision, not an oversight; see the
+#     dedicated comment on that server{} block below for why, and keep it
+#     in lockstep with lib/panel/xray/templates/j.json's StealXHTTP
+#     inbound (which correspondingly never sets
+#     sockopt.acceptProxyProtocol).
 #   - Panel/Sub reuse the same "internal nginx HTTPS backend behind the
 #     stream router" shape Variant F already uses, just on J's own loopback
 #     port ($J_NGINX_HTTPS_PORT, 7444 — deliberately NOT F's 7443, so the
@@ -317,11 +320,24 @@ ${TELEMT_UPSTREAM}
     server {
         listen ${J_XHTTP_PUBLIC_PORT};
         proxy_pass xray_xhttp;
-        # Same reasoning as the :443 server{} block above: applies
-        # uniformly (there is only one destination here, so no per-branch
-        # ambiguity like the C2 defect, but the acceptProxyProtocol
-        # requirement on the Xray side still applies identically).
-        proxy_protocol on;
+        # Deliberately NO "proxy_protocol on;" here, unlike the :443
+        # server{} block above — this is an intentional asymmetry, not an
+        # oversight. This mirrors the exact reasoning already established
+        # for Variant F's own XHTTP leg before the F/J split (see
+        # lib/panel/api.sh's panel_reality_accept_proxy_protocol():
+        # "Xray's XHTTP inbound JSON does not expect a PROXY preamble").
+        # If this listener sent proxy_protocol and the StealXHTTP inbound
+        # did not set sockopt.acceptProxyProtocol (or vice versa), every
+        # XHTTP handshake through :${J_XHTTP_PUBLIC_PORT} would fail to
+        # parse — so this MUST stay in lockstep with StealXHTTP's inbound
+        # JSON in lib/panel/xray/templates/j.json, which correspondingly
+        # never sets sockopt.acceptProxyProtocol for that inbound. Do not
+        # add "proxy_protocol on;" here without also adding matching
+        # sockopt wiring on the Xray side, and not without confirming the
+        # real-client-IP story for XHTTP through some other means first
+        # (e.g. an HTTP-layer X-Forwarded-For, since XHTTP carries actual
+        # HTTP requests unlike Vision's raw TCP) — this is an open
+        # question, not a settled gap.
     }
 }
 NGINX_CONF_EOF
