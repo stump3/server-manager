@@ -19,7 +19,6 @@
     {
         "tag": "Steal",
         "port": $vport,
-        "port": 0,
         "protocol": "vless",
         "settings": { "clients": [], "decryption": "none" },
         "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
@@ -30,26 +29,14 @@
                 "realitySettings": {
                     "show": false,
                     "xver": 1,
-                    "dest": $dest,
+                    "target": $dest,
                     "spiderX": "",
                     "shortIds": [$sid],
                     "privateKey": $pk,
                     "serverNames": [$domain]
                 }
-        "streamSettings": {
-            "network": "tcp",
-            "security": "reality",
-            "realitySettings": {
-                "show": false,
-                "xver": 1,
-                "dest": "",
-                "spiderX": "",
-                "shortIds": [""],
-                "privateKey": "",
-                "serverNames": [""]
             }
             + (if $accept_pp then { "sockopt": { "acceptProxyProtocol": true } } else {} end)
         )
-        }
     }
 ]
