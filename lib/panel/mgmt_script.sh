@@ -5,21 +5,23 @@
 
 panel_install_mgmt_script() {
     local panel_domain="$1" cookie_key="$2" cookie_val="$3" mode="$4"
-    # NOTE: $mode above is accepted (both callers — install.sh and
-    # management.sh's panel_reinstall_mgmt() — already pass it as the 4th
-    # arg) but intentionally NOT interpolated into the heredoc below: the
-    # heredoc delimiter is the single-quoted 'MGMTEOF', so nothing in it
-    # is substituted at generation time in the first place (every other
-    # $-prefixed thing inside is deployed-script-runtime syntax, not a
-    # server-manager variable). The deployed script instead re-derives
-    # MODE itself at runtime via its own _detect_mode() (see below,
-    # same fingerprint as management.sh's panel_reinstall_mgmt()) — this
-    # is deliberate, not an oversight: the mgmt script can be
-    # reinstalled/updated independently of any install-time value, so a
-    # value baked in at generation time could go stale.
     local mgmt="/usr/local/bin/remnawave_panel"
-    cat > "$mgmt" << 'MGMTEOF'
+    # FIXED 2026-08-31: `mode` was captured from the caller but never
+    # actually used anywhere below — the main body is a QUOTED heredoc
+    # (<< 'MGMTEOF'), so $mode never got substituted into the deployed
+    # script; it was silently dead. That mattered because do_open_port/
+    # do_close_port (further down) assume the classic MODE=1/2 nginx
+    # layout (single conf.d server{} per domain, sed-patchable) and have
+    # no idea Variant F/J's nginx.conf is structurally different (a full
+    # top-level config with stream{} + http{}, panel's server{} listening
+    # on loopback only) — see the guard added there. This tiny unquoted
+    # header is the one place MODE actually needs to reach the deployed,
+    # standalone script.
+    cat > "$mgmt" << MGMTEOF_HEADER
 #!/bin/bash
+MODE="${mode}"
+MGMTEOF_HEADER
+    cat >> "$mgmt" << 'MGMTEOF'
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; WHITE='\033[1;37m'; PURPLE='\033[0;35m'; NC='\033[0m'
 DIR="/opt/remnawave"
@@ -35,32 +37,6 @@ _spinner() {
     done; printf "\r\033[K">/dev/tty
 }
 _detect_ws() { grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml 2>/dev/null && echo "caddy" || echo "nginx"; }
-# _detect_mode — runtime fingerprint, NOT the value passed in at
-# generation time (panel_install_mgmt_script's own $mode/$4 argument is
-# intentionally unused inside this heredoc — see that function's
-# comment). This script is deployed standalone and reinstalled/updated
-# independently of the install-time call, so it re-derives MODE itself
-# every time it runs, from the same nginx.conf shape check verified
-# against real generated output for all four variants (kept in sync with
-# lib/panel/management.sh's panel_reinstall_mgmt(), which needs the exact
-# same fingerprint for its own display purposes and cannot source this
-# file at runtime either — same standalone-copy constraint as
-# _migrate_env_for_remnawave_v2 below):
-#   MODE=1 — conf.d-style nginx.conf, no top-level `stream {`
-#   MODE=F — top-level `stream {` (SNI routing to REALITY), no
-#            "xray_xhttp" upstream (Variant F has no XHTTP inbound)
-#   MODE=J — top-level `stream {` AND an "xray_xhttp" upstream
-#   MODE=2 — no nginx.conf's stream{} shape applies (remote, no Node);
-#            Caddy (ws=caddy) never reaches this function at all, since
-#            F/J don't support Caddy and 1/2 don't need MODE here.
-_detect_mode() {
-    local nc="/opt/remnawave/nginx.conf"
-    if [ -f "$nc" ] && grep -q "^stream {" "$nc" 2>/dev/null; then
-        grep -q "xray_xhttp" "$nc" 2>/dev/null && echo "J" || echo "F"
-    else
-        grep -q "remnanode" /opt/remnawave/docker-compose.yml 2>/dev/null && echo "1" || echo "2"
-    fi
-}
 # Keep in sync with panel_migrate_env_for_remnawave_v2 in
 # lib/panel/migrate.sh (same migration logic, same atomic-write
 # pattern) — this script is deployed standalone and can't source that
@@ -206,10 +182,10 @@ do_open_port() {
         _info "Для экстренного доступа: rp restart && rp logs caddy"
         return 0
     fi
-    local mode; mode=$(_detect_mode)
-    if [ "$mode" = "F" ] || [ "$mode" = "J" ]; then
-        _warn "Экстренное открытие порта 8443 не поддерживается для Variant $mode"
-        _info "Variant $mode's nginx.conf uses a top-level stream{} SNI router, not the plain conf.d-style single-vhost file this sed-based mechanism expects — inserting 'listen 8443 ssl;' into it would not do what MODE=1/2 users expect, and for Variant J port 8443 is already the public XHTTP listener."
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+        _warn "open_port не поддерживается для Variant $MODE"
+        _info "nginx.conf у Variant $MODE — это stream{}+http{} топология (SNI-роутинг), а не один server{} на conf.d; открытие 8443 через sed сюда неприменимо."
+        _info "Для экстренного доступа: rp restart && rp logs nginx"
         return 1
     fi
     local nc="/opt/remnawave/nginx.conf"
@@ -220,7 +196,7 @@ do_open_port() {
     ufw allow 8443/tcp>/dev/null 2>&1; ufw reload>/dev/null 2>&1
     local ck cv
     ck=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '~\*\K\w+(?==)')
-    cv=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '=\K\w+(?= 1)')
+    cv=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '=\K\w+(?=" 1)')
     _ok "Порт 8443 открыт."
     echo -e "  ${WHITE}https://${pd}:8443/auth/login?${ck}=${cv}${NC}"
     _warn "Закройте после работы: remnawave_panel close_port"
@@ -228,9 +204,8 @@ do_open_port() {
 do_close_port() {
     local ws; ws=$(_detect_ws)
     if [ "$ws" = "caddy" ]; then _warn "Не применимо для Caddy"; return 0; fi
-    local mode; mode=$(_detect_mode)
-    if [ "$mode" = "F" ] || [ "$mode" = "J" ]; then
-        _warn "Не применимо для Variant $mode (см. 'rp open_port' — эта пара команд для MODE=1/2)"
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+        _warn "close_port не поддерживается для Variant $MODE (open_port для него никогда не выполнялся — см. rp open_port)"
         return 1
     fi
     local nc="/opt/remnawave/nginx.conf"
