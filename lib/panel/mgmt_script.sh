@@ -6,8 +6,22 @@
 panel_install_mgmt_script() {
     local panel_domain="$1" cookie_key="$2" cookie_val="$3" mode="$4"
     local mgmt="/usr/local/bin/remnawave_panel"
-    cat > "$mgmt" << 'MGMTEOF'
+    # FIXED 2026-08-31: `mode` was captured from the caller but never
+    # actually used anywhere below — the main body is a QUOTED heredoc
+    # (<< 'MGMTEOF'), so $mode never got substituted into the deployed
+    # script; it was silently dead. That mattered because do_open_port/
+    # do_close_port (further down) assume the classic MODE=1/2 nginx
+    # layout (single conf.d server{} per domain, sed-patchable) and have
+    # no idea Variant F/J's nginx.conf is structurally different (a full
+    # top-level config with stream{} + http{}, panel's server{} listening
+    # on loopback only) — see the guard added there. This tiny unquoted
+    # header is the one place MODE actually needs to reach the deployed,
+    # standalone script.
+    cat > "$mgmt" << MGMTEOF_HEADER
 #!/bin/bash
+MODE="${mode}"
+MGMTEOF_HEADER
+    cat >> "$mgmt" << 'MGMTEOF'
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; WHITE='\033[1;37m'; PURPLE='\033[0;35m'; NC='\033[0m'
 DIR="/opt/remnawave"
@@ -168,6 +182,12 @@ do_open_port() {
         _info "Для экстренного доступа: rp restart && rp logs caddy"
         return 0
     fi
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+        _warn "open_port не поддерживается для Variant $MODE"
+        _info "nginx.conf у Variant $MODE — это stream{}+http{} топология (SNI-роутинг), а не один server{} на conf.d; открытие 8443 через sed сюда неприменимо."
+        _info "Для экстренного доступа: rp restart && rp logs nginx"
+        return 1
+    fi
     local nc="/opt/remnawave/nginx.conf"
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     ss -tuln|grep -q ":8443" && { _warn "Порт 8443 занят"; return 1; }
@@ -184,6 +204,10 @@ do_open_port() {
 do_close_port() {
     local ws; ws=$(_detect_ws)
     if [ "$ws" = "caddy" ]; then _warn "Не применимо для Caddy"; return 0; fi
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+        _warn "close_port не поддерживается для Variant $MODE (open_port для него никогда не выполнялся — см. rp open_port)"
+        return 1
+    fi
     local nc="/opt/remnawave/nginx.conf"
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     sed -i "/server_name $pd;/,/}/{s/    listen 8443 ssl;//}" "$nc"
