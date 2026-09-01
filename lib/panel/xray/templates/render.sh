@@ -14,28 +14,54 @@
 # MODE-gating fix described in lib/panel/api.sh's own comments for the one
 # real behavior change, which is scoped to MODE=F/J only).
 #
-# FIXED (this pass): f.json/j.json were previously jq FILTER PROGRAMS
-# (read via `jq -f`, containing unbound `$variable` references and `#`
-# comments) rather than actual JSON documents — `jq empty
-# lib/panel/xray/templates/f.json` failed, because the file's own content
-# was never meant to be parsed as JSON, only as jq source that PRODUCES
-# JSON when executed with bound variables. That is a real, working
-# mechanism, but it doesn't satisfy "the template is a standalone,
-# independently-inspectable JSON artifact" — a template a reviewer can't
-# `jq empty`/diff/open in a JSON-aware editor without also reading
-# render.sh isn't really standalone. Templates are now genuine, static,
-# valid JSON (`jq empty` passes on both) holding neutral placeholder
-# values (0 for ports, "" for strings) for every field this file fills
-# in; all the substitution logic (including the conditional
-# sockopt.acceptProxyProtocol addition, applied only to the "Steal" tag —
-# see the ACCEPT_PP note below) now lives here, in render.sh, as a single
-# `jq` filter applied ON TOP of the loaded template via `--slurpfile`,
-# rather than being written into the template file itself. The rendered
-# output is unchanged — verified by diffing this version's output against
-# the previous jq-filter-file version's output for both MODE=F and MODE=J
-# (accept_pp true and false), byte-for-byte identical after `jq -S`
-# canonicalization.
+# FIXED (this pass, 2026-09-01): f.json/j.json had been left in a broken
+# intermediate state by an in-progress migration to genuine static JSON —
+# both still contained bare, unbound `$vport`/`$dest`/`$sid`/etc. tokens,
+# which are not valid JSON syntax at all (`jq empty` failed with "Invalid
+# numeric literal" on both, confirmed empirically, not assumed from
+# reading the header comments' claim that they already passed). Every
+# actual call to panel_xray_render_inbounds() for every MODE (1/2/F/J)
+# was silently returning an empty string as a result — confirmed by
+# actually invoking the renderer before this fix, not inferred. Both
+# templates are now genuine static JSON (jq empty passes) holding neutral
+# placeholders (0 for ports, "" for strings) for every field this filter
+# below fills in. Moving the fix here, into render.sh's own comments,
+# because genuine JSON cannot contain `#` comments the way the old
+# jq-filter-style templates could — the documentation that used to live
+# at the top of f.json/j.json themselves (bound-variable list, the
+# StealXHTTP/no-sockopt rule, j.json's once-missing-entirely history) is
+# consolidated into this file's comments instead, not deleted:
+#   - f.json: single "Steal" (Vision/REALITY) inbound. Used for MODE=1,
+#     MODE=2, and MODE=F alike — all three only ever needed this one
+#     inbound shape; only the $vport/$dest/$accept_pp *values* passed to
+#     this function differ between them.
+#   - j.json: "Steal" (Vision/REALITY) + "StealXHTTP" (REALITY-over-XHTTP,
+#     Variant J's second public leg — nginx's :$J_XHTTP_PUBLIC_PORT in
+#     lib/panel/nginx/variant_j.sh proxy_passes to this inbound's loopback
+#     port). Both inbounds share privateKey/serverNames/shortIds (same
+#     REALITY identity, reachable on two different public ports); only
+#     tag/port/network/xhttpSettings differ. This file did not exist at
+#     all until 2026-08-31 (93d9d2f) despite being referenced by name
+#     elsewhere before that — see that commit if the history matters.
 #
+# REALITY dest/target naming (2026-09-01): Xray-core's own docs
+# (https://xtls.github.io/en/config/transports/reality.html) confirm
+# `dest` is the old name and `target` is now current, with the two kept
+# as aliases — so this rename is not a functional change, either name
+# works against a real Xray-core. The specific internal doc this was
+# originally sourced from (09-lab-protocol-expansion.md) could not be
+# found in this repository or in stump3/xray-lab when checked — flagging
+# that honestly rather than presenting it as verified. The reference repo
+# eGamesAPI/remnawave-reverse-proxy (commit 8486fc4) still uses `dest`,
+# which doesn't contradict the above — both names work, that project
+# simply hasn't adopted the newer one. `target` was chosen here for
+# consistency with current upstream Xray-core documentation. The jq
+# --arg binding is still named $dest below (and DEST_VAL/panel_reality_dest_val
+# elsewhere in lib/panel/api.sh) — only the JSON key this filter assigns
+# into changed, not the shell/jq variable name carrying the value,
+# per explicit instruction not to rename that for its own sake.
+#
+
 # All parameter substitution goes through jq --arg/--argjson (never string
 # interpolation into JSON text itself) — this was already the discipline
 # the original inline blocks followed; this file does not relax it.
@@ -102,7 +128,7 @@ panel_xray_render_inbounds() {
             | .streamSettings.realitySettings.privateKey = $pk
             | .streamSettings.realitySettings.shortIds = [$sid]
             | .streamSettings.realitySettings.serverNames = [$domain]
-            | .streamSettings.realitySettings.dest = $dest
+            | .streamSettings.realitySettings.target = $dest
             | (if .tag == "StealXHTTP" then .streamSettings.xhttpSettings.path = $xpath else . end)
             | (if (.tag == "Steal" and $accept_pp)
                then .streamSettings.sockopt = { "acceptProxyProtocol": true }
