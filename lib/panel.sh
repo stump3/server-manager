@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #
 # Этот файл — loader. Реализация панели разбита на подмодули в
-# lib/panel/{core,cert,install,compose,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,xray/templates/render,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
+# lib/panel/{core,cert,install,compose,compose/common,compose/colocated,compose/remote,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,xray/templates/render,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
 #
 # Поддерживаются оба способа загрузки:
 #   1. _sm_source_file / _load_module panel  (обычный путь из server-manager.sh,
@@ -36,7 +36,7 @@ _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
 # ни при одной установке до этого коммита; api.sh продолжал использовать
 # свои старые inline `jq -n` блоки. См. api.sh: panel_setup_api() теперь
 # вызывает panel_xray_render_inbounds() напрямую вместо дублирования JSON.
-for _panel_module in core cert install compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+for _panel_module in core cert install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
     # shellcheck source=/dev/null
     source "${_PANEL_MODULE_DIR}/${_panel_module}.sh"
 done
