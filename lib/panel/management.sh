@@ -141,9 +141,39 @@ panel_reinstall_mgmt() {
         return 1
     fi
 
-    mode=$([ -f /opt/remnawave/docker-compose.yml ] \
-        && grep -q "remnanode" /opt/remnawave/docker-compose.yml \
-        && echo "1" || echo "2")
+    # FIXED 2026-08-31: previously a single binary check
+    # (`grep -q remnanode` -> "1" else "2"), which cannot tell MODE=1
+    # apart from MODE=F/J -- all three are co-located (remnanode always
+    # present), so F/J installs silently got mode="1" here. That
+    # mattered as of 453973e: do_open_port/do_close_port's MODE=F/J
+    # guard in the DEPLOYED script only fires if MODE was baked in
+    # correctly by panel_install_mgmt_script -- getting "1" here would
+    # silently regenerate the script back into the old, unguarded
+    # behavior for an F/J box. Caddy (web_server=2) is untouched: F/J
+    # never reaches Caddy at all (rejected upstream by
+    # lib/panel/cli.sh:panel_cli_select_webserver() and
+    # lib/panel/compose/colocated.sh's own guard), so the plain 1-vs-2
+    # check there was never wrong and needs no fingerprinting.
+    # For nginx (web_server=1), fingerprint variant_f.sh's/variant_j.sh's
+    # own generated markers instead of guessing: F/J's nginx.conf is a
+    # full top-level config with its own `stream {` block (MODE=1's
+    # nginx.conf -- lib/panel/nginx/config.sh's panel_generate_nginx_config()
+    # -- has no stream{} at all, Xray binds public 443 directly), and only
+    # J additionally defines an `xray_xhttp` upstream for its second
+    # (XHTTP) inbound (lib/panel/nginx/variant_j.sh) -- F has no XHTTP
+    # inbound and so no such upstream. Confirmed empirically against real
+    # generator output for all three MODEs, not assumed.
+    if [ -f /opt/remnawave/docker-compose.yml ] && grep -q "remnanode" /opt/remnawave/docker-compose.yml; then
+        if [ "$web_server" = "1" ] && grep -q "xray_xhttp" "$nc" 2>/dev/null; then
+            mode="J"
+        elif [ "$web_server" = "1" ] && grep -q "^stream {" "$nc" 2>/dev/null; then
+            mode="F"
+        else
+            mode="1"
+        fi
+    else
+        mode="2"
+    fi
 
     if [ -z "$pd" ] || [ -z "$ck" ] || [ -z "$cv" ]; then
         warn "Не удалось извлечь параметры из конфига веб-сервера"
