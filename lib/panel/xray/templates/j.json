@@ -1,4 +1,5 @@
-{
+[
+    {
         "tag": "Steal",
         "port": 0,
         "protocol": "vless",
@@ -39,3 +40,4 @@
             "xhttpSettings": { "path": "" }
         }
     }
+]
