@@ -174,22 +174,23 @@ panel_generate_webserver_config() {
     local STC="$8"
     local COOKIE_KEY="$9"
     local COOKIE_VAL="${10}"
+    local TELEMT_DOMAIN="${11:-}"
+    local TELEMT_PORT="${12:-}"
 
     if [ "$WEB_SERVER" = "1" ]; then
         # MODE=F/MODE=J each route to their own standalone generator
         # instead of panel_generate_nginx_config()'s MODE=1/2 heredoc —
         # dispatcher-level only, panel_generate_nginx_config()'s body is
         # untouched (guarantees MODE=1/2 stay byte-identical). WEB_SERVER=2
-        # + MODE=F is already rejected upstream (lib/panel/install.sh:208,
-        # before this function is ever called); MODE=J is not yet a choice
-        # install.sh's prompt can produce at all (its regex is
-        # ^([12]|[Ff])$), so the branch below is unreachable through the
-        # installer today — added ahead of that wiring per the F/J
-        # carve-out plan, not a functional change to any currently
-        # reachable code path. TELEMT_DOMAIN/TELEMT_PORT aren't collected
-        # anywhere yet either, so panel_generate_nginx_config_j() is called
-        # here with just its 8 required args — see variant_j.sh's header
-        # for what "not yet wired" covers.
+        # + MODE=F/MODE=J is already rejected upstream
+        # (lib/panel/cli.sh:panel_cli_select_webserver(), before this
+        # function is ever called). MODE=J is now selectable via
+        # lib/panel/cli.sh:panel_cli_select_mode(), and
+        # TELEMT_DOMAIN/TELEMT_PORT are now collected by
+        # lib/panel/cli.sh:panel_cli_collect_j_options() (11th/12th
+        # positional args here, empty for every MODE except J) — both
+        # pass straight through to panel_generate_nginx_config_j()'s own
+        # optional 9th/10th args unchanged.
         if [ "$MODE" = "F" ]; then
             panel_generate_nginx_config_f \
                 "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
@@ -197,7 +198,8 @@ panel_generate_webserver_config() {
         elif [ "$MODE" = "J" ]; then
             panel_generate_nginx_config_j \
                 "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL"
+                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
+                "$TELEMT_DOMAIN" "$TELEMT_PORT"
         else
             panel_generate_nginx_config \
                 "$MODE" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
