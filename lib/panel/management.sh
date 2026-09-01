@@ -135,38 +135,39 @@ panel_reinstall_mgmt() {
         pd=$(grep "server_name " "$nc" | grep -v "hash_bucket\|server_name _" \
             | head -1 | awk '{print $2}' | tr -d ';')
         ck=$(grep "map \$http_cookie" "$nc" -A2 | grep -oP '~\*\K\w+(?==)' | head -1)
-        cv=$(grep "map \$http_cookie" "$nc" -A2 | grep -oP '=\K\w+(?= 1)' | head -1)
+        cv=$(grep "map \$http_cookie" "$nc" -A2 | grep -oP '=\K\w+(?=" 1)' | head -1)
     else
         warn "Ни nginx.conf ни Caddyfile не найдены — панель не установлена?"
         return 1
     fi
 
-    # Определение MODE: наличие remnanode отличает co-located (1/F/J) от
-    # remote (2) — это было верно и раньше. Но раньше ЛЮБОЙ co-located
-    # результат безусловно записывался как "1", хотя F и J тоже
-    # co-located и тоже содержат remnanode в docker-compose.yml — то есть
-    # переустановка management-скрипта для сервера с MODE=F или MODE=J
-    # молча воспринимала его как MODE=1. Среди co-located вариантов
-    # 1/F/J различаются по форме самого nginx.conf (подтверждено на
-    # реально сгенерированных конфигах всех трёх вариантов):
-    #   MODE=1 — обычный conf.d-стиль, нет top-level `stream {`, нет
-    #            апстрима "xray_xhttp" (lib/panel/nginx/config.sh)
-    #   MODE=F — top-level `stream {` (SNI-роутинг на REALITY), но без
-    #            "xray_xhttp" — у F нет XHTTP inbound вообще
-    #            (lib/panel/nginx/variant_f.sh)
-    #   MODE=J — top-level `stream {` И апстрим "xray_xhttp"
-    #            (lib/panel/nginx/variant_j.sh)
-    # Только для Caddy (web_server=2, нет nginx.conf) фингерпринт не
-    # нужен и не применяется — MODE=F/J сейчас не поддерживают Caddy
-    # вообще (см. lib/panel/cli.sh / compose/colocated.sh), так что
-    # Caddy-ветка остаётся 1/2-only, как и раньше.
+    # FIXED 2026-08-31: previously a single binary check
+    # (`grep -q remnanode` -> "1" else "2"), which cannot tell MODE=1
+    # apart from MODE=F/J -- all three are co-located (remnanode always
+    # present), so F/J installs silently got mode="1" here. That
+    # mattered as of 453973e: do_open_port/do_close_port's MODE=F/J
+    # guard in the DEPLOYED script only fires if MODE was baked in
+    # correctly by panel_install_mgmt_script -- getting "1" here would
+    # silently regenerate the script back into the old, unguarded
+    # behavior for an F/J box. Caddy (web_server=2) is untouched: F/J
+    # never reaches Caddy at all (rejected upstream by
+    # lib/panel/cli.sh:panel_cli_select_webserver() and
+    # lib/panel/compose/colocated.sh's own guard), so the plain 1-vs-2
+    # check there was never wrong and needs no fingerprinting.
+    # For nginx (web_server=1), fingerprint variant_f.sh's/variant_j.sh's
+    # own generated markers instead of guessing: F/J's nginx.conf is a
+    # full top-level config with its own `stream {` block (MODE=1's
+    # nginx.conf -- lib/panel/nginx/config.sh's panel_generate_nginx_config()
+    # -- has no stream{} at all, Xray binds public 443 directly), and only
+    # J additionally defines an `xray_xhttp` upstream for its second
+    # (XHTTP) inbound (lib/panel/nginx/variant_j.sh) -- F has no XHTTP
+    # inbound and so no such upstream. Confirmed empirically against real
+    # generator output for all three MODEs, not assumed.
     if [ -f /opt/remnawave/docker-compose.yml ] && grep -q "remnanode" /opt/remnawave/docker-compose.yml; then
-        if [ "$web_server" = "1" ] && grep -q "^stream {" "$nc" 2>/dev/null; then
-            if grep -q "xray_xhttp" "$nc" 2>/dev/null; then
-                mode="J"
-            else
-                mode="F"
-            fi
+        if [ "$web_server" = "1" ] && grep -q "xray_xhttp" "$nc" 2>/dev/null; then
+            mode="J"
+        elif [ "$web_server" = "1" ] && grep -q "^stream {" "$nc" 2>/dev/null; then
+            mode="F"
         else
             mode="1"
         fi
