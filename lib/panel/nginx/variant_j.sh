@@ -318,7 +318,7 @@ ${TELEMT_UPSTREAM}
         listen ${J_XHTTP_PUBLIC_PORT};
         proxy_pass xray_xhttp;
         # FIXED 2026-08-31: this server{} previously also set
-        # `proxy_protocol on;`, which was wrong — confirmed (Natalie):
+        # "proxy_protocol on;", which was wrong — confirmed (Natalie):
         # StealXHTTP's Xray inbound does not set
         # sockopt.acceptProxyProtocol (see lib/panel/api.sh's
         # panel_reality_accept_proxy_protocol()/j.json, which never
