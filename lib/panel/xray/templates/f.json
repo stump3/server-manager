@@ -1,42 +1,22 @@
-# lib/panel/xray/templates/f.json — jq FILTER (not static JSON — read via
-# `jq -f`, see lib/panel/xray/templates/render.sh) producing the Xray "inbounds"
-# array for the single-Vision/REALITY-inbound shape used by MODE=1, MODE=2,
-# and MODE=F (all three use exactly this one-inbound "Steal" shape; only
-# MODE=J's StealConfig profile grows a second inbound — see j.json).
-# Extracted 2026-08-31 from the inline `jq -n ... '[...]'` block that used
-# to live directly in lib/panel/api.sh's panel_setup_api(), so the same
-# JSON shape isn't duplicated a third time when render.sh dispatches on
-# MODE. Bound variables (via jq --arg/--argjson in render.sh):
-#   $vport      — REALITY inbound port (panel_reality_inbound_port)
-#   $pk         — REALITY private key
-#   $sid        — REALITY short ID
-#   $dest       — REALITY fallback dest (panel_reality_dest_val)
-#   $domain     — REALITY serverName (SELFSTEAL_DOMAIN)
-#   $accept_pp  — sockopt.acceptProxyProtocol toggle (panel_reality_accept_proxy_protocol)
-# ($xport/$xpath are also bound by render.sh for j.json's sake, but this
-# template does not reference them — jq does not error on unused bindings.)
 [
     {
         "tag": "Steal",
-        "port": $vport,
+        "port": 0,
         "protocol": "vless",
         "settings": { "clients": [], "decryption": "none" },
         "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
-        "streamSettings": (
-            {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "show": false,
-                    "xver": 1,
-                    "dest": $dest,
-                    "spiderX": "",
-                    "shortIds": [$sid],
-                    "privateKey": $pk,
-                    "serverNames": [$domain]
-                }
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "show": false,
+                "xver": 1,
+                "dest": "",
+                "spiderX": "",
+                "shortIds": [""],
+                "privateKey": "",
+                "serverNames": [""]
             }
-            + (if $accept_pp then { "sockopt": { "acceptProxyProtocol": true } } else {} end)
-        )
+        }
     }
 ]
