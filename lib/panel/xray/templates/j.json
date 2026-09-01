@@ -1,80 +1,26 @@
-# lib/panel/xray/templates/j.json — jq FILTER (not static JSON — read via
-# `jq -f`, see lib/panel/xray/templates/render.sh) producing the Xray "inbounds"
-# array for Variant J's dual-inbound shape: Steal (Vision/REALITY, identical
-# in shape to f.json's single inbound) + StealXHTTP (REALITY over XHTTP,
-# Variant J's second public leg — nginx :$J_XHTTP_PUBLIC_PORT in
-# lib/panel/nginx/variant_j.sh proxy_passes to this inbound's loopback port).
-#
-# CREATED 2026-08-31: this file was referenced by name in f.json's own
-# header comment, in render.sh's MODE=J dispatch branch, and in
-# lib/panel/api.sh's comments (panel_xray_render_inbounds() call site,
-# panel_reality_accept_proxy_protocol()'s doc comment) as something that
-# already existed — but `git log --all -- lib/panel/xray/templates/j.json`
-# returns nothing: no commit ever added this file. Every MODE=J install
-# would have called panel_xray_render_inbounds(), which resolves
-# TEMPLATE="${_PANEL_XRAY_TEMPLATE_DIR}/j.json" for MODE=J and passes it to
-# `jq -n ... -f "$TEMPLATE" 2>/dev/null` — a nonexistent file makes jq exit
-# non-zero with its error suppressed by that redirect, so
-# panel_xray_render_inbounds would silently print nothing, and
-# panel_setup_api()'s own `[ -z "$INBOUNDS_JSON" ] && err ...` guard would
-# abort every MODE=J run right after key generation. Confirmed by actually
-# invoking the renderer before adding this file (see regression report) —
-# not inferred from reading the code alone.
-#
-# Both inbounds share privateKey/serverNames/shortIds — same REALITY
-# identity — because that's what makes both reachable under the same
-# domain on two different public ports (Vision on :443 via nginx's
-# xray_vision upstream, XHTTP on :$J_XHTTP_PUBLIC_PORT via nginx's
-# xray_xhttp upstream — see variant_j.sh). Only tag/port/network/
-# xhttpSettings differ between them.
-#
-# Bound variables (via jq --arg/--argjson in render.sh — same full set
-# render.sh binds for f.json; this template is simply the one that uses
-# all of them instead of leaving $xport/$xpath unused):
-#   $vport      — Steal (Vision) REALITY inbound port (panel_reality_inbound_port)
-#   $xport      — StealXHTTP inbound port (panel_reality_xhttp_inbound_port)
-#   $xpath      — StealXHTTP's xhttpSettings.path (random per install, see
-#                 panel_setup_api()'s $XHTTP_PATH)
-#   $pk         — REALITY private key (shared by both inbounds)
-#   $sid        — REALITY short ID (shared by both inbounds)
-#   $dest       — REALITY fallback dest (panel_reality_dest_val)
-#   $domain     — REALITY serverName (SELFSTEAL_DOMAIN, shared by both inbounds)
-#   $accept_pp  — sockopt.acceptProxyProtocol toggle (panel_reality_accept_proxy_protocol).
-#                 Applied ONLY to Steal, never to StealXHTTP — see
-#                 lib/panel/nginx/variant_j.sh's :$J_XHTTP_PUBLIC_PORT
-#                 server{} (no `proxy_protocol on;` there, deliberately) and
-#                 lib/panel/api.sh's panel_reality_accept_proxy_protocol()
-#                 doc comment (2026-08-31 fix: StealXHTTP does not receive
-#                 a PROXY preamble, so it must not expect one either — a
-#                 mismatch here would break every MODE=J REALITY handshake
-#                 on the XHTTP leg, not just fail to help).
-[
-    {
+{
         "tag": "Steal",
-        "port": $vport,
+        "port": 0,
         "protocol": "vless",
         "settings": { "clients": [], "decryption": "none" },
         "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
-        "streamSettings": (
-            {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "show": false,
-                    "xver": 1,
-                    "dest": $dest,
-                    "spiderX": "",
-                    "shortIds": [$sid],
-                    "privateKey": $pk,
-                    "serverNames": [$domain]
-                }
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "show": false,
+                "xver": 1,
+                "dest": "",
+                "spiderX": "",
+                "shortIds": [""],
+                "privateKey": "",
+                "serverNames": [""]
             }
-            + (if $accept_pp then { "sockopt": { "acceptProxyProtocol": true } } else {} end)
-        )
+        }
     },
     {
         "tag": "StealXHTTP",
-        "port": $xport,
+        "port": 0,
         "protocol": "vless",
         "settings": { "clients": [], "decryption": "none" },
         "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
@@ -84,13 +30,12 @@
             "realitySettings": {
                 "show": false,
                 "xver": 1,
-                "dest": $dest,
+                "dest": "",
                 "spiderX": "",
-                "shortIds": [$sid],
-                "privateKey": $pk,
-                "serverNames": [$domain]
+                "shortIds": [""],
+                "privateKey": "",
+                "serverNames": [""]
             },
-            "xhttpSettings": { "path": $xpath }
+            "xhttpSettings": { "path": "" }
         }
     }
-]
