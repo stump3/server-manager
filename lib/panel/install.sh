@@ -162,74 +162,18 @@ panel_install() {
     STEP_NUM=1
     check_root
 
-    # ── Сбор данных ──────────────────────────────────────────────
-    section "Режим"
-    echo "  1) Панель + Нода (Reality selfsteal, всё на одном сервере)"
-    echo "  2) Только панель (нода на отдельном сервере)"
-    echo "  F) Панель + Нода, :443 у nginx (TCP passthrough к Xray/REALITY)"
-    echo ""
-    local MODE=""
-    while [[ ! "$MODE" =~ ^([12]|[Ff])$ ]]; do
-        read -p "  Выбор (1/2/F): " MODE < /dev/tty
-    done
-    [[ "$MODE" =~ ^[Ff]$ ]] && MODE="F"
+    # ── Сбор данных (lib/panel/cli.sh) ──────────────────────────────
+    local MODE PANEL_DOMAIN SUB_DOMAIN SELFSTEAL_DOMAIN WEB_SERVER
+    local CERT_METHOD PANEL_CF_EMAIL PANEL_CF_KEY PANEL_LE_EMAIL GCORE_TOKEN
+    local TELEMT_ENABLED TELEMT_DOMAIN TELEMT_PORT
 
-    echo ""
-    section "Домены"
-    local PANEL_DOMAIN SUB_DOMAIN SELFSTEAL_DOMAIN
-    while true; do ask PANEL_DOMAIN "Домен панели (panel.example.com)"; validate_domain "$PANEL_DOMAIN" && break || warn "Неверный формат"; done
-    while true; do ask SUB_DOMAIN   "Домен подписок (sub.example.com)";  validate_domain "$SUB_DOMAIN"   && break || warn "Неверный формат"; done
-    while true; do ask SELFSTEAL_DOMAIN "Домен selfsteal (node.example.com)"; validate_domain "$SELFSTEAL_DOMAIN" && break || warn "Неверный формат"; done
-
-    if [ "$PANEL_DOMAIN" = "$SUB_DOMAIN" ] || \
-       [ "$PANEL_DOMAIN" = "$SELFSTEAL_DOMAIN" ] || \
-       [ "$SUB_DOMAIN" = "$SELFSTEAL_DOMAIN" ]; then
-        err "Все три домена должны быть уникальными"
-    fi
-
-    echo ""
-    section "Веб-сервер"
-    echo "  1) Nginx   (SSL через certbot — Cloudflare / Let's Encrypt / Gcore)"
-    echo "  2) Caddy   (SSL автоматически — встроенный ACME, certbot не нужен)"
-    echo ""
-    local WEB_SERVER=""
-    while [[ ! "$WEB_SERVER" =~ ^[12]$ ]]; do
-        read -p "  Выбор (1/2): " WEB_SERVER < /dev/tty
-    done
-
-    # Режим F (TCP passthrough к Xray через nginx stream) реализован пока
-    # только для nginx. Для Caddy эквивалентный механизм — сторонний
-    # плагин caddy-l4 (mholt/caddy-l4), который требует собственной сборки
-    # бинарника (xcaddy build --with github.com/mholt/caddy-l4) — НЕ входит
-    # в официальный образ caddy:2.11, уже используемый ниже для MODE=1/2.
-    # Это не архитектурное решение "Caddy не поддерживается вообще" — это
-    # явное ограничение объёма текущего изменения; см. docs/ARCHITECTURE.md
-    # §4b (Variant F).
-    if [ "$MODE" = "F" ] && [ "$WEB_SERVER" = "2" ]; then
-        err "Режим F сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy для F требует отдельной сборки (caddy-l4, не входит в official caddy:2.11 image) — не реализовано в этом проходе."
-    fi
-
-    local CERT_METHOD="" PANEL_CF_EMAIL="" PANEL_CF_KEY="" PANEL_LE_EMAIL="" GCORE_TOKEN=""
-    if [ "$WEB_SERVER" = "1" ]; then
-        echo ""
-        section "SSL сертификаты"
-        echo "  1) Cloudflare DNS-01 (wildcard, рекомендуется)"
-        echo "  2) ACME HTTP-01 (Let's Encrypt)"
-        echo "  3) Gcore DNS-01 (wildcard)"
-        while [[ ! "$CERT_METHOD" =~ ^[123]$ ]]; do
-            read -p "  Метод (1/2/3): " CERT_METHOD < /dev/tty
-        done
-        case $CERT_METHOD in
-            1) ask PANEL_CF_KEY   "  Cloudflare API Token"
-               ask PANEL_CF_EMAIL "  Email Cloudflare" ;;
-            2) ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
-            3) ask GCORE_TOKEN    "  Gcore API Token"
-               ask PANEL_LE_EMAIL "  Email для Let's Encrypt" ;;
-        esac
-    else
-        info "Caddy: SSL будет получен автоматически через ACME при первом запуске"
-        [ "$MODE" = "2" ] && info "Для ACME нужны порты 80 и 443 — откроются автоматически"
-    fi
+    panel_cli_select_mode
+    panel_cli_collect_domains
+    panel_cli_select_webserver
+    panel_cli_select_cert
+    panel_cli_collect_j_options
+    panel_cli_show_summary "$MODE" "$WEB_SERVER" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+        "$CERT_METHOD" "$TELEMT_ENABLED" "$TELEMT_DOMAIN" "$TELEMT_PORT"
 
     echo ""
     info "Проверка DNS..."
@@ -270,7 +214,9 @@ panel_install() {
         "$SC" \
         "$STC" \
         "$COOKIE_KEY" \
-        "$COOKIE_VAL"
+        "$COOKIE_VAL" \
+        "$TELEMT_DOMAIN" \
+        "$TELEMT_PORT"
 
     ok "Конфигурация сгенерирована"
 
