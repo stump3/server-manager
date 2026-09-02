@@ -61,6 +61,27 @@ panel_generate_nginx_config_f() {
     local STC="$6"
     local COOKIE_KEY="$7"
     local COOKIE_VAL="$8"
+    local TELEMT_DOMAIN="${9:-}"
+    local TELEMT_PORT="${10:-}"
+
+    # Added for the F/XHTTP/TeleMT feature-flag split (canonical state:
+    # MODE=F + XHTTP_ENABLE + TELEMT_COLOCATE) — mirrors
+    # lib/panel/nginx/variant_j.sh's own TELEMT_DOMAIN/TELEMT_PORT
+    # handling exactly (same param positions, same empty-string-means-
+    # no-branch contract), so that "F + TeleMT, no XHTTP" is reachable
+    # without needing XHTTP at all. Before this, TeleMT support existed
+    # only in variant_j.sh — variant_f.sh had no TeleMT capability
+    # whatsoever, meaning that state was unreachable through either
+    # generator. This does NOT touch the plain-F case: every existing
+    # call site passes only 8 args, so TELEMT_DOMAIN defaults to empty
+    # and the map/upstream below render exactly as before (verified by
+    # byte-identity below, not assumed).
+    local TELEMT_MAP_LINE=""
+    local TELEMT_UPSTREAM=""
+    if [ -n "$TELEMT_DOMAIN" ]; then
+        TELEMT_MAP_LINE=$'\n'"        ${TELEMT_DOMAIN}   telemt;"
+        TELEMT_UPSTREAM=$'\n'"    upstream telemt { server 127.0.0.1:${TELEMT_PORT}; }"
+    fi
 
     cat > /opt/remnawave/nginx.conf << NGINX_CONF_EOF
 user nginx;
@@ -222,11 +243,11 @@ http {
 stream {
     map \$ssl_preread_server_name \$f_backend {
         ${PANEL_DOMAIN} panel_and_sub;
-        ${SUB_DOMAIN}   panel_and_sub;
+        ${SUB_DOMAIN}   panel_and_sub;${TELEMT_MAP_LINE}
         default         xray_reality;
     }
     upstream panel_and_sub { server 127.0.0.1:${F_NGINX_HTTPS_PORT}; }
-    upstream xray_reality  { server 127.0.0.1:${F_XRAY_VISION_PORT}; }
+    upstream xray_reality  { server 127.0.0.1:${F_XRAY_VISION_PORT}; }${TELEMT_UPSTREAM}
 
     server {
         listen 443;
