@@ -2,29 +2,32 @@
 # panel/api.sh — Panel API bootstrap (MODE=1): superadmin, Reality keys,
 # config-profile, node, host, sub-token
 
-# Variant F/J (docs/ARCHITECTURE.md §6.1): four MODE-aware decisions
-# shared by every co-located topology (MODE=1, MODE=F, MODE=J — all
-# three run Panel and Node on the same host; MODE=2 does not). Kept as
-# four small pure functions rather than scattered `[ "$MODE" = ... ]`
-# ternaries, so each reads as one named decision instead of an inline
-# condition repeated at its call site, and each is unit-testable in
-# isolation. $F_XRAY_VISION_PORT is defined in lib/panel/nginx/variant_f.sh;
-# $J_XRAY_VISION_PORT/$J_XRAY_XHTTP_PORT are defined in
-# lib/panel/nginx/variant_j.sh — all panel/*.sh files are always sourced
-# together via lib/panel.sh before any of them is called, so the
-# reference resolves at call time regardless of source order.
+# Variant F/J (docs/ARCHITECTURE.md §6.1): MODE-aware decisions shared
+# by every co-located topology (MODE=1, MODE=F, MODE=J — all three run
+# Panel and Node on the same host; MODE=2 does not). Kept as small pure
+# functions rather than scattered `[ "$MODE" = ... ]` ternaries, so each
+# reads as one named decision instead of an inline condition repeated at
+# its call site, and each is unit-testable in isolation. $F_XRAY_VISION_PORT
+# is defined in lib/panel/nginx/variant_f.sh; $J_XRAY_VISION_PORT/
+# $J_XRAY_XHTTP_PORT are defined in lib/panel/nginx/variant_j.sh — all
+# panel/*.sh files are always sourced together via lib/panel.sh before
+# any of them is called, so the reference resolves at call time
+# regardless of source order.
 #
-# FIXED 2026-08-31 (F/J port-wiring audit): panel_reality_inbound_port()'s
-# MODE=F branch previously read $F_XRAY_VISION_PORT with a fallback
-# default of 18443 — but F_XRAY_VISION_PORT was never actually defined
-# anywhere in the tree (variant_f.sh still defined the old $F_XRAY_PORT
-# name), so every MODE=F install silently fell through to that fallback
-# and generated a Vision inbound listening on 18443 while variant_f.sh's
-# nginx stream{} unconditionally forwards to 127.0.0.1:8443 — a total
-# port mismatch, confirmed by grep (no other definition site existed).
-# Fixed by renaming variant_f.sh's F_XRAY_PORT to F_XRAY_VISION_PORT
-# (same value, 8443) so the two files agree, and removing the
-# now-misleading 18443 fallback here.
+# CANONICAL STATE (this pass): "MODE=J" was an artificial bundling of
+# two independent capabilities — co-located TeleMT and the XHTTP+dual-
+# public-port topology. The real controlling variable for everything
+# XHTTP-shaped is now XHTTP_ENABLE (0/1), threaded explicitly through
+# the functions below and through panel_setup_api(). "J" as a MODE
+# value is kept working everywhere below as a legacy/defensive
+# fallback (every function here still recognizes a literal MODE="J" and
+# behaves as if XHTTP_ENABLE=1 had been passed) — this is deliberate
+# backward compatibility for any caller that hasn't been updated to
+# pass XHTTP_ENABLE explicitly, not a sign that "J" is still a distinct
+# architecture. lib/panel/cli.sh is where MODE=J actually gets
+# normalized into MODE=F + XHTTP_ENABLE=1 for new installs; this file's
+# fallback exists so existing installs / any code path that still
+# passes bare MODE=J keep working identically either way.
 panel_reality_needs_2222_ufw_rule() {
     local MODE="$1"
     [ "$MODE" = "1" ] || [ "$MODE" = "F" ] || [ "$MODE" = "J" ]
@@ -39,41 +42,52 @@ panel_reality_dest_val() {
     fi
 }
 
+# panel_reality_inbound_port — the Vision/REALITY inbound's own listen
+# port. Depends on XHTTP_ENABLE, not just MODE: when XHTTP is enabled,
+# nginx's own public :$J_XHTTP_PUBLIC_PORT listener (variant_j.sh) takes
+# over the topology entirely, and Xray's Vision inbound moves to
+# $J_XRAY_VISION_PORT (18443) specifically to stay clear of that;
+# without XHTTP, Vision stays on $F_XRAY_VISION_PORT (8443, unchanged
+# since before the F/J split existed). MODE=1/2 both listen on public
+# 443 directly, as before, regardless of XHTTP_ENABLE (XHTTP is not a
+# concept those MODEs have). A literal MODE="J" is still accepted as a
+# legacy-equivalent to MODE=F + XHTTP_ENABLE=1, same fallback reasoning
+# as the rest of this block.
 panel_reality_inbound_port() {
     local MODE="$1"
-    case "$MODE" in
-        F) echo "${F_XRAY_VISION_PORT:-8443}" ;;
-        J) echo "${J_XRAY_VISION_PORT:-18443}" ;;
-        *) echo 443 ;;
-    esac
+    local XHTTP_ENABLE="${2:-0}"
+    if [ "$MODE" = "J" ]; then MODE="F"; XHTTP_ENABLE=1; fi
+    if [ "$MODE" = "F" ] && [ "$XHTTP_ENABLE" = "1" ]; then
+        echo "${J_XRAY_VISION_PORT:-18443}"
+    elif [ "$MODE" = "F" ]; then
+        echo "${F_XRAY_VISION_PORT:-8443}"
+    else
+        echo 443
+    fi
 }
 
-# panel_reality_accept_proxy_protocol — MODE=F's and MODE=J's nginx
-# stream blocks both apply `proxy_protocol on;` to the server{} that
-# routes their public :443 (confirmed by runtime byte capture for F,
-# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification; J's
-# :443 server{} in variant_j.sh applies it identically, same map-based
-# single-server{} shape), so the Vision/REALITY inbound behind either
-# variant always receives a PROXY v1 preamble ahead of the ClientHello
-# and must set sockopt.acceptProxyProtocol to parse it. MODE=1's REALITY
-# inbound listens directly on public 443 with no nginx in front of it —
-# no client sends it a PROXY header, so adding this there would break
-# real handshakes rather than fix anything. MODE=2's REALITY inbound is
-# a remote node reachable over the internet on its own dest, also with
-# no local nginx stream in front — same reasoning as MODE=1. Echoes
-# "true"/"false" (not a shell boolean) so the caller can pass it
-# straight through jq's --argjson.
+# panel_reality_accept_proxy_protocol — deliberately depends ONLY on
+# MODE (F-family), NOT on XHTTP_ENABLE or TELEMT_COLOCATE: both
+# variant_f.sh's and variant_j.sh's :443 server{} apply `proxy_protocol
+# on;` to the same shared stream/server block regardless of which
+# optional legs (XHTTP, TeleMT) are attached to it, so the Vision/
+# REALITY inbound behind either always receives a PROXY v1 preamble
+# ahead of the ClientHello and must set sockopt.acceptProxyProtocol to
+# parse it — confirmed by runtime byte capture for F,
+# docs/MULTI_PROTOCOL_L4_INGRESS_REVIEW.md § Runtime Verification.
+# MODE=1's REALITY inbound listens directly on public 443 with no nginx
+# in front of it — no client sends it a PROXY header, so adding this
+# there would break real handshakes rather than fix anything. MODE=2's
+# REALITY inbound is a remote node reachable over the internet on its
+# own dest, also with no local nginx stream in front — same reasoning
+# as MODE=1. Echoes "true"/"false" (not a shell boolean) so the caller
+# can pass it straight through jq's --argjson.
 #
-# RESOLVED 2026-08-31 (was DECISION REQUIRED during the initial F/J
-# port-wiring audit): variant_j.sh's :$J_XHTTP_PUBLIC_PORT server{} was
-# found to also set `proxy_protocol on;`, contradicting this function's
-# assumption that nothing sends XHTTP a PROXY preamble. Confirmed
-# (Natalie): that was a bug in variant_j.sh, not a requirement — XHTTP's
-# inbound is not meant to receive a PROXY preamble. Fixed by removing
-# proxy_protocol from that server{} block rather than adding
-# acceptProxyProtocol here; StealXHTTP correctly never receives an
-# accept_pp value from this function (see j.json, which only wires
-# $accept_pp onto the Steal/Vision inbound).
+# StealXHTTP never receives a value from this function at all (see
+# render.sh: $accept_pp is only ever applied to the "Steal" tag) —
+# confirmed correct against variant_j.sh's own :$J_XHTTP_PUBLIC_PORT
+# server{}, which does NOT set proxy_protocol, so there is nothing for
+# an XHTTP-leg acceptProxyProtocol to consume in the first place.
 panel_reality_accept_proxy_protocol() {
     local MODE="$1"
     if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
@@ -83,27 +97,29 @@ panel_reality_accept_proxy_protocol() {
     fi
 }
 
-# panel_reality_xhttp_inbound_port — MODE=J only (public
-# :$J_XHTTP_PUBLIC_PORT is only meaningful in Variant J's dual-public-port
-# topology; MODE=1/2/F have no XHTTP story). Callers must still gate on
-# `[ "$MODE" = "J" ]` themselves before using this — this function is a
-# single source of truth for the port NUMBER, not for the MODE decision
-# itself, mirroring how panel_reality_inbound_port() already separates
-# "which port" from "should we even be here".
-#
-# FIXED 2026-08-31: previously read $F_XRAY_XHTTP_PORT (a variable that,
-# like F_XRAY_VISION_PORT above, was never defined anywhere — XHTTP was
-# still wrongly wired to MODE=F at the time). Now reads
-# $J_XRAY_XHTTP_PORT, which variant_j.sh actually defines (18444).
+# panel_reality_xhttp_inbound_port — only meaningful when XHTTP_ENABLE=1
+# (public :$J_XHTTP_PUBLIC_PORT is only meaningful in the XHTTP/dual-
+# public-port topology; MODE=1/2 and plain F have no XHTTP story).
+# Callers must still gate on XHTTP_ENABLE themselves before using this —
+# this function is a single source of truth for the port NUMBER, not
+# for the enable/disable decision itself, mirroring how
+# panel_reality_inbound_port() already separates "which port" from
+# "should we even be here".
 panel_reality_xhttp_inbound_port() {
     echo "${J_XRAY_XHTTP_PORT:-18444}"
 }
-
 panel_setup_api() {
     local SUPERADMIN_USER="$1"
     local SUPERADMIN_PASS="$2"
     local SELFSTEAL_DOMAIN="$3"
     local MODE="$4"
+    local XHTTP_ENABLE="${5:-0}"
+    # Legacy fallback: a bare MODE="J" (any caller not yet updated to
+    # pass XHTTP_ENABLE explicitly) is treated as MODE=F + XHTTP_ENABLE=1
+    # — same normalization panel_reality_inbound_port() already applies,
+    # kept in sync here so panel_setup_api() never disagrees with its
+    # own helpers about what "J" means.
+    if [ "$MODE" = "J" ]; then MODE="F"; XHTTP_ENABLE=1; fi
 
     cd /opt/remnawave
     panel_reality_needs_2222_ufw_rule "$MODE" && \
@@ -225,8 +241,8 @@ panel_setup_api() {
     # header comments for the $-variable contract).
     local XHTTP_PATH="/$(openssl rand -hex 8)"
     local INBOUNDS_JSON
-    INBOUNDS_JSON=$(panel_xray_render_inbounds "$MODE" "$PRIV_KEY" "$SHORT_ID" "$DEST_VAL" "$SELFSTEAL_DOMAIN" \
-        "$(panel_reality_inbound_port "$MODE")" \
+    INBOUNDS_JSON=$(panel_xray_render_inbounds "$MODE" "$XHTTP_ENABLE" "$PRIV_KEY" "$SHORT_ID" "$DEST_VAL" "$SELFSTEAL_DOMAIN" \
+        "$(panel_reality_inbound_port "$MODE" "$XHTTP_ENABLE")" \
         "$(panel_reality_xhttp_inbound_port)" \
         "$XHTTP_PATH" \
         "$(panel_reality_accept_proxy_protocol "$MODE")")
@@ -259,7 +275,7 @@ panel_setup_api() {
     if [ -n "$EXISTING_PROFILE" ]; then
         CFG_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
-        [ "$MODE" = "J" ] && XHTTP_IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
+        [ "$XHTTP_ENABLE" = "1" ] && XHTTP_IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
         # Известный, намеренно не автоматизируемый пробел: если профиль
         # StealConfig существует ЕЩЁ ДО Variant J (т.е. был создан до
         # появления StealXHTTP), IBD_UUID найдётся, а XHTTP_IBD_UUID —
@@ -271,7 +287,7 @@ panel_setup_api() {
         # предположения. Пользователь увидит warn ниже и должен будет
         # пересоздать профиль вручную (удалить старый StealConfig и
         # перезапустить установку), если хочет получить XHTTP.
-        if [ "$MODE" = "J" ] && [ -z "$XHTTP_IBD_UUID" ]; then
+        if [ "$XHTTP_ENABLE" = "1" ] && [ -z "$XHTTP_IBD_UUID" ]; then
             warn "StealConfig существует без StealXHTTP inbound (профиль создан до Variant J) — XHTTP не будет доступен, пока профиль не пересоздан вручную"
         fi
     fi
@@ -286,7 +302,7 @@ panel_setup_api() {
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
-        [ "$MODE" = "J" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
+        [ "$XHTTP_ENABLE" = "1" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
         [ -z "$CFG_UUID" ] && err "Ошибка создания конфиг-профиля"
         ok "Конфиг-профиль создан"
     fi
@@ -341,7 +357,7 @@ panel_setup_api() {
     # for it to get wrong. `port` references J_XHTTP_PUBLIC_PORT
     # (lib/panel/nginx/variant_j.sh, currently 8443) rather than a bare
     # literal, so this stays correct if that constant is ever changed.
-    if [ "$MODE" = "J" ] && [ -n "$XHTTP_IBD_UUID" ]; then
+    if [ "$XHTTP_ENABLE" = "1" ] && [ -n "$XHTTP_IBD_UUID" ]; then
         local EXISTING_XHTTP_HOST
         EXISTING_XHTTP_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
             jq -r --arg iu "$XHTTP_IBD_UUID" \
