@@ -166,6 +166,7 @@ panel_install() {
     local MODE PANEL_DOMAIN SUB_DOMAIN SELFSTEAL_DOMAIN WEB_SERVER
     local CERT_METHOD PANEL_CF_EMAIL PANEL_CF_KEY PANEL_LE_EMAIL GCORE_TOKEN
     local TELEMT_ENABLED TELEMT_DOMAIN TELEMT_PORT
+    local TELEMT_INSTALL_ACTION TELEMT_INSTALL_MODE
 
     panel_cli_select_mode
     panel_cli_collect_domains
@@ -219,6 +220,37 @@ panel_install() {
         "$TELEMT_PORT"
 
     ok "Конфигурация сгенерирована"
+
+    # ── TeleMT integrated (MODE=F/J, опционально) ──────────────────
+    # Nginx routing для TeleMT уже сгенерирован выше (внутри
+    # panel_generate_webserver_config → variant_f.sh/variant_j.sh).
+    # Здесь — только сам процесс TeleMT: вызывается non-interactively
+    # ТОЛЬКО когда panel_cli_collect_j_options() решила, что нужно
+    # действие ("new"/"reconfigure"); "keep" (существующий integrated,
+    # оставлен как есть) и "" (выключено/standalone обнаружен) сюда не
+    # попадают — TeleMT-процесс в этих случаях не трогается вообще.
+    if [ "$TELEMT_ENABLED" = "true" ] && { [ "$TELEMT_INSTALL_ACTION" = "new" ] || [ "$TELEMT_INSTALL_ACTION" = "reconfigure" ]; }; then
+        local _telemt_use_me="true" _telemt_socks_addr="" _telemt_socks_user="" _telemt_socks_pass=""
+        local -a _telemt_pairs=()
+        if [ "$TELEMT_INSTALL_ACTION" = "reconfigure" ]; then
+            # Меняем ТОЛЬКО domain/port (явный выбор оператора в cli.sh);
+            # upstream/ME/пользователи переносятся из текущего конфига
+            # без изменений.
+            local _telemt_existing_cfg; _telemt_existing_cfg=$(telemt_detect_config_path)
+            _telemt_use_me=$(telemt_detect_use_me "$_telemt_existing_cfg")
+            [ -z "$_telemt_use_me" ] && _telemt_use_me="true"
+            _telemt_socks_addr=$(telemt_detect_socks5_addr "$_telemt_existing_cfg")
+            _telemt_socks_user=$(telemt_detect_socks5_user "$_telemt_existing_cfg")
+            _telemt_socks_pass=$(telemt_detect_socks5_pass "$_telemt_existing_cfg")
+            while IFS= read -r _pair; do
+                [ -n "$_pair" ] && _telemt_pairs+=("$_pair")
+            done < <(telemt_detect_user_pairs "$_telemt_existing_cfg")
+        fi
+        telemt_install_noninteractive "$TELEMT_PORT" "$TELEMT_DOMAIN" "$TELEMT_INSTALL_MODE" \
+            "$_telemt_use_me" "$_telemt_socks_addr" "$_telemt_socks_user" "$_telemt_socks_pass" \
+            "${_telemt_pairs[@]}"
+        ok "TeleMT: integrated (${TELEMT_INSTALL_MODE}, домен=${TELEMT_DOMAIN}, loopback :${TELEMT_PORT})"
+    fi
 
     # Маскировочный сайт
     panel_generate_selfsteal_site
