@@ -83,13 +83,14 @@ panel_reality_accept_proxy_protocol() {
     fi
 }
 
-# panel_reality_xhttp_inbound_port — MODE=J only (public
-# :$J_XHTTP_PUBLIC_PORT is only meaningful in Variant J's dual-public-port
-# topology; MODE=1/2/F have no XHTTP story). Callers must still gate on
-# `[ "$MODE" = "J" ]` themselves before using this — this function is a
-# single source of truth for the port NUMBER, not for the MODE decision
-# itself, mirroring how panel_reality_inbound_port() already separates
-# "which port" from "should we even be here".
+# panel_reality_xhttp_inbound_port — meaningful only when XHTTP is
+# enabled for this profile (currently reachable via MODE=J; see
+# XHTTP_ENABLE normalization in panel_setup_api()). Callers must still
+# gate on the caller's own XHTTP_ENABLE/MODE decision themselves before
+# using this — this function is a single source of truth for the port
+# NUMBER, not for the enable decision itself, mirroring how
+# panel_reality_inbound_port() already separates "which port" from
+# "should we even be here".
 #
 # FIXED 2026-08-31: previously read $F_XRAY_XHTTP_PORT (a variable that,
 # like F_XRAY_VISION_PORT above, was never defined anywhere — XHTTP was
@@ -104,6 +105,23 @@ panel_setup_api() {
     local SUPERADMIN_PASS="$2"
     local SELFSTEAL_DOMAIN="$3"
     local MODE="$4"
+
+    # XHTTP_ENABLE (XHTTP_ENABLE/TELEMT_COLOCATE architecture, Phase A):
+    # single normalization point for "does this install get a StealXHTTP
+    # inbound", computed once here instead of re-checking
+    # `[ "$MODE" = "J" ]` at every one of the four places below that
+    # actually depend on it. panel_setup_api()'s own external signature
+    # is unchanged (still just MODE, no new 5th arg) — nothing calling
+    # this function needs to change yet; this is purely an internal
+    # normalization step, same MODE=J-implies-XHTTP-on behavior as
+    # before, just computed in one place. lib/panel/xray/templates/
+    # render.sh's own MODE-normalization fallback (used when
+    # XHTTP_ENABLE is omitted) does the exact same MODE=J->1 mapping
+    # independently, so passing it explicitly here and letting render.sh
+    # normalize on its own for other callers agree by construction, not
+    # by coincidence — see that file's header comment.
+    local XHTTP_ENABLE="0"
+    [ "$MODE" = "J" ] && XHTTP_ENABLE="1"
 
     cd /opt/remnawave
     panel_reality_needs_2222_ufw_rule "$MODE" && \
@@ -197,8 +215,8 @@ panel_setup_api() {
     SHORT_ID=$(openssl rand -hex 8)
     DEST_VAL=$(panel_reality_dest_val "$MODE" "$SELFSTEAL_DOMAIN")
 
-    # MODE=J gets a second inbound (StealXHTTP, network:xhttp) in the
-    # SAME config-profile as Vision — confirmed against official
+    # XHTTP_ENABLE=1 gets a second inbound (StealXHTTP, network:xhttp) in
+    # the SAME config-profile as Vision — confirmed against official
     # Remnawave docs (docs.rw, Config Profiles page) that multiple
     # inbounds per profile is the standard, documented way to do this,
     # not an unusual composition. Both inbounds intentionally share
@@ -217,35 +235,15 @@ panel_setup_api() {
     # each other. Replaced with a single call to
     # panel_xray_render_inbounds() (lib/panel/xray/templates/render.sh,
     # now wired into lib/panel.sh's loader — it previously wasn't
-    # sourced anywhere and did not exist at runtime), whose own MODE
-    # dispatch (MODE=J -> j.json dual-inbound, anything else -> f.json
-    # single-inbound) is the corrected gating. f.json/j.json were
-    # confirmed semantically identical to the old inline blocks for
-    # their respective shapes before this switch (see xray/templates/
-    # header comments for the $-variable contract).
-    # MODE=J gets a second inbound (StealXHTTP, network:xhttp) in the
-    # SAME config-profile as Vision — confirmed against official
-    # Remnawave docs (docs.rw, Config Profiles page) that multiple
-    # inbounds per profile is the standard, documented way to do this,
-    # not an unusual composition. Both inbounds intentionally share
-    # privateKey/serverNames/shortIds (same REALITY identity — this is
-    # what makes both reachable under the same domain on two different
-    # public ports); only tag/port/network/xhttpSettings differ.
-    #
-    # CHANGED 2026-08-31 (F/J -> F + independent XHTTP_ENABLE capability):
-    # XHTTP_ENABLE is now computed explicitly here and passed to the
-    # renderer as its own argument, instead of relying on
-    # panel_xray_render_inbounds()'s internal MODE="J" legacy-fallback.
-    # Still derived from MODE (nothing upstream of this function produces
-    # a real XHTTP_ENABLE yet — lib/panel/cli.sh only ever emits a MODE
-    # letter, adding a real prompt for this is a separate, later UX
-    # decision), so every existing MODE value produces byte-identical
-    # INBOUNDS_JSON to before this change — this only makes the actual
-    # discriminator explicit at the call site rather than implicit inside
-    # the renderer.
-    local XHTTP_ENABLE="0"
-    [ "$MODE" = "J" ] && XHTTP_ENABLE="1"
-
+    # sourced anywhere and did not exist at runtime), whose own dispatch
+    # (XHTTP_ENABLE=1 -> j.json dual-inbound, XHTTP_ENABLE=0 -> f.json
+    # single-inbound) is the corrected gating. XHTTP_ENABLE=1 is
+    # currently only reachable via MODE=J (normalized once above, in
+    # panel_setup_api()) — see render.sh's own header comment for the
+    # full XHTTP_ENABLE/TELEMT_COLOCATE architecture this is Phase A of.
+    # f.json/j.json were confirmed semantically identical to the old
+    # inline blocks for their respective shapes before this switch (see
+    # xray/templates/ header comments for the $-variable contract).
     local XHTTP_PATH="/$(openssl rand -hex 8)"
     local INBOUNDS_JSON
     INBOUNDS_JSON=$(panel_xray_render_inbounds "$MODE" "$PRIV_KEY" "$SHORT_ID" "$DEST_VAL" "$SELFSTEAL_DOMAIN" \
@@ -283,7 +281,7 @@ panel_setup_api() {
     if [ -n "$EXISTING_PROFILE" ]; then
         CFG_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
-        [ "$MODE" = "J" ] && XHTTP_IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
+        [ "$XHTTP_ENABLE" = "1" ] && XHTTP_IBD_UUID=$(echo "$EXISTING_PROFILE" | jq -r '.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
         # Известный, намеренно не автоматизируемый пробел: если профиль
         # StealConfig существует ЕЩЁ ДО Variant J (т.е. был создан до
         # появления StealXHTTP), IBD_UUID найдётся, а XHTTP_IBD_UUID —
@@ -295,8 +293,8 @@ panel_setup_api() {
         # предположения. Пользователь увидит warn ниже и должен будет
         # пересоздать профиль вручную (удалить старый StealConfig и
         # перезапустить установку), если хочет получить XHTTP.
-        if [ "$MODE" = "J" ] && [ -z "$XHTTP_IBD_UUID" ]; then
-            warn "StealConfig существует без StealXHTTP inbound (профиль создан до Variant J) — XHTTP не будет доступен, пока профиль не пересоздан вручную"
+        if [ "$XHTTP_ENABLE" = "1" ] && [ -z "$XHTTP_IBD_UUID" ]; then
+            warn "StealConfig существует без StealXHTTP inbound (профиль создан до включения XHTTP) — XHTTP не будет доступен, пока профиль не пересоздан вручную"
         fi
     fi
 
@@ -310,13 +308,13 @@ panel_setup_api() {
 
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
-        [ "$MODE" = "J" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
+        [ "$XHTTP_ENABLE" = "1" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
         [ -z "$CFG_UUID" ] && err "Ошибка создания конфиг-профиля"
         ok "Конфиг-профиль создан"
     fi
 
-    # Variant J: activeInbounds/Squad must carry BOTH uuids when MODE=J
-    # has a real XHTTP_IBD_UUID, or the new inbound exists in the
+    # Variant J / XHTTP_ENABLE=1: activeInbounds/Squad must carry BOTH
+    # uuids when XHTTP_ENABLE=1 has a real XHTTP_IBD_UUID, or the new inbound exists in the
     # profile but stays unreachable by users (confirmed against
     # official Remnawave docs — a new inbound must be added to both the
     # Node's activeInbounds and the Internal Squad to actually be
@@ -343,8 +341,8 @@ panel_setup_api() {
         '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
         && ok "Хост создан" || warn "Ошибка создания хоста"
 
-    # Variant J: second Host for XHTTP, only when MODE=J actually
-    # produced an XHTTP inbound. Unlike the Vision Host above (unchanged,
+    # Variant J / XHTTP_ENABLE=1: second Host for XHTTP, only when
+    # XHTTP_ENABLE=1 actually produced an XHTTP inbound. Unlike the Vision Host above (unchanged,
     # pre-existing, no lookup-before-create — out of scope to retrofit
     # here), this new path DOES look up an existing Host first: this is
     # new code being added under an explicit idempotency requirement, so
@@ -365,7 +363,7 @@ panel_setup_api() {
     # for it to get wrong. `port` references J_XHTTP_PUBLIC_PORT
     # (lib/panel/nginx/variant_j.sh, currently 8443) rather than a bare
     # literal, so this stays correct if that constant is ever changed.
-    if [ "$MODE" = "J" ] && [ -n "$XHTTP_IBD_UUID" ]; then
+    if [ "$XHTTP_ENABLE" = "1" ] && [ -n "$XHTTP_IBD_UUID" ]; then
         local EXISTING_XHTTP_HOST
         EXISTING_XHTTP_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
             jq -r --arg iu "$XHTTP_IBD_UUID" \
