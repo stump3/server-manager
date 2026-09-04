@@ -29,7 +29,7 @@
                 "realitySettings": {
                     "show": false,
                     "xver": 1,
-                    "target": $dest,
+                    "dest": $dest,
                     "spiderX": "",
                     "shortIds": [$sid],
                     "privateKey": $pk,
