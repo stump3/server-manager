@@ -1,221 +1,159 @@
 # shellcheck shell=bash
+#
+# lib/panel/xray/templates/render.sh — safe parameter substitution for the
+# F/J Xray inbound JSON templates (lib/panel/xray/templates/{f,j}.json,
+# same directory as this file).
+#
+# Extracted 2026-08-31: previously, lib/panel/api.sh's panel_setup_api()
+# contained two full inline `jq -n ... '[...]'` blocks (one per MODE
+# branch) building the Xray "inbounds" JSON array directly as a bash
+# string. That worked but meant the actual Xray inbound shape was buried
+# inside api.sh's control flow rather than being a reviewable artifact on
+# its own — this file and its two templates are that extraction, with NO
+# functional change to the JSON produced for MODE=1/2/F (see the F-vs-J
+# MODE-gating fix described in lib/panel/api.sh's own comments for the one
+# real behavior change, which is scoped to MODE=F/J only).
+#
+# FIXED (this pass, 2026-09-01): f.json/j.json had been left in a broken
+# intermediate state by an in-progress migration to genuine static JSON —
+# both still contained bare, unbound `$vport`/`$dest`/`$sid`/etc. tokens,
+# which are not valid JSON syntax at all (`jq empty` failed with "Invalid
+# numeric literal" on both, confirmed empirically, not assumed from
+# reading the header comments' claim that they already passed). Every
+# actual call to panel_xray_render_inbounds() for every MODE (1/2/F/J)
+# was silently returning an empty string as a result — confirmed by
+# actually invoking the renderer before this fix, not inferred. Both
+# templates were made genuine static JSON (jq empty passes) holding
+# neutral placeholders (0 for ports, "" for strings).
+#
+# CHANGED AGAIN (this pass, 2026-09-04): f.json/j.json are no longer read
+# at runtime at all. They are kept on disk, unchanged in content, as
+# GOLDEN FIXTURES — a reviewable, `jq empty`-clean reference for exactly
+# what shape each inbound array must have, and the regression baseline
+# tests compare this file's generated output against. The actual
+# generation now happens entirely inline below, driven by XHTTP_ENABLE
+# instead of a MODE-to-filename dispatch. Reasoning: the file-loading
+# indirection added a runtime file-I/O dependency (locate
+# _PANEL_XRAY_TEMPLATE_DIR, open a file, handle "not found") for
+# structure that is only ever one of two known shapes — inlining that
+# structure into the same jq invocation that already does all the
+# dynamic substitution removes that dependency without changing the
+# substitution logic's size or shape at all. Semantic (not just visual)
+# equivalence against both golden files is verified via `jq -S`
+# canonicalized diff after filling in the same placeholder values the
+# golden files hold — see the regression tests referenced in this
+# session's report, not asserted here without proof.
+#   - Steal (Vision/REALITY): used for MODE=1, MODE=2, and MODE=F/J
+#     alike — all four only ever needed this one inbound shape; only the
+#     $vport/$dest/$accept_pp *values* passed in differ between them.
+#     Structurally identical to f.json's sole array element and to
+#     j.json's first array element (confirmed 0-diff between those two
+#     during this session's earlier audit).
+#   - StealXHTTP (REALITY-over-XHTTP): only emitted when XHTTP_ENABLE=1
+#     — nginx's public :$J_XHTTP_PUBLIC_PORT
+#     (lib/panel/nginx/variant_j.sh) proxy_passes to this inbound's
+#     loopback port. Shares privateKey/serverNames/shortIds with Steal
+#     (same REALITY identity, reachable on two different public ports);
+#     only tag/port/network/xhttpSettings differ. Structurally identical
+#     to j.json's second array element.
+#
+# REALITY dest/target naming (2026-09-01, corrected 2026-09-01):
+# Xray-core's own config-parsing source (infra/conf/transport_security.go,
+# `type REALITYConfig struct`) declares BOTH `Target json.RawMessage
+# \`json:"target"\`` and `Dest json.RawMessage \`json:"dest"\`` as separate
+# JSON keys on the same struct, and REALITYConfig.Build() does
+# `if c.Target != nil { c.Dest = c.Target }` before using c.Dest for
+# everything downstream — confirmed by reading that source directly
+# (github.com/XTLS/Xray-core, cloned and grepped, not inferred from
+# docs). This proves the two keys are fully equivalent aliases at the
+# code level; it does NOT prove `dest` is deprecated, broken, or wrong
+# in any functional sense — both are first-class, actively-maintained
+# JSON keys on the same struct. An earlier pass here renamed this to
+# `target`, reasoning from Xray-core's own docs page describing `dest`
+# as the "old name" — that phrasing is accurate but doesn't make `dest`
+# incorrect, and the project's explicit decision (independent of what
+# any origin commit or prior pass here did) is to keep `dest`. Reverted
+# accordingly. The specific internal doc this was at one point sourced
+# from (09-lab-protocol-expansion.md) still could not be found in this
+# repository or in stump3/xray-lab — not used as a justification either
+# way. The reference repo eGamesAPI/remnawave-reverse-proxy (commit
+# 8486fc4) uses `dest`, consistent with keeping it here. The jq --arg
+# binding is named $dest below (and DEST_VAL/panel_reality_dest_val
+# elsewhere in lib/panel/api.sh) and the emitted JSON key is now also
+# `dest` again — both match, nothing left renamed on only one side.
+#
 
-panel_generate_nginx_config() {
+# All parameter substitution goes through jq --arg/--argjson (never string
+# interpolation into JSON text itself) — this was already the discipline
+# the original inline blocks followed; this file does not relax it.
+_PANEL_XRAY_TEMPLATE_DIR="$(dirname "${BASH_SOURCE[0]}")"
+
+# panel_xray_render_inbounds — MODE-dispatching renderer for the Xray
+# "inbounds" JSON array used by panel_setup_api()'s StealConfig
+# config-profile.
+#
+#   MODE=J → templates/j.json  (Steal/Vision + StealXHTTP, both REALITY)
+#   anything else (1, 2, F) → templates/f.json (single Steal/Vision
+#     REALITY inbound) — this is not new behavior: MODE=1/2's
+#     single-inbound shape and MODE=F's single-inbound shape were always
+#     identical JSON before this extraction (they only differed in the
+#     $vport/$dest/$accept_pp *values* passed in, which is exactly what
+#     the caller-supplied arguments below still control) — see f.json's
+#     structure.
+#
+# Args: MODE PRIV_KEY SHORT_ID DEST_VAL SELFSTEAL_DOMAIN VISION_PORT
+#       XHTTP_PORT XHTTP_PATH ACCEPT_PP
+# ACCEPT_PP must be the literal string "true" or "false" (as returned by
+# panel_reality_accept_proxy_protocol) — passed to jq via --argjson so it
+# becomes a real JSON boolean. Applied ONLY to the "Steal" (Vision) tag,
+# never to "StealXHTTP" — see lib/panel/nginx/variant_j.sh's
+# :$J_XHTTP_PUBLIC_PORT server{} (no `proxy_protocol on;` there,
+# deliberately) and lib/panel/api.sh's panel_reality_accept_proxy_protocol()
+# doc comment: StealXHTTP does not receive a PROXY preamble from nginx, so
+# its Xray inbound must not expect one either — a mismatch here would
+# break every MODE=J REALITY handshake on the XHTTP leg, not just fail to
+# help.
+#
+# Prints the rendered JSON array on stdout, or nothing (with jq's own
+# stderr suppressed, matching the original inline blocks' `2>/dev/null`)
+# if template rendering fails — callers must check for an empty result
+# themselves, same as they already had to for the inline jq calls this
+# replaces.
+panel_xray_render_inbounds() {
     local MODE="$1"
-    local PANEL_DOMAIN="$2"
-    local SUB_DOMAIN="$3"
-    local SELFSTEAL_DOMAIN="$4"
-    local PC="$5"
-    local SC="$6"
-    local STC="$7"
-    local COOKIE_KEY="$8"
-    local COOKIE_VAL="$9"
-
-        # ── nginx.conf ────────────────────────────────────────────
-        local LISTEN_DIR REAL_IP_P REAL_IP_S
-        if [ "$MODE" = "1" ]; then
-            LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;"
-            REAL_IP_P="\$proxy_protocol_addr"
-            REAL_IP_S="\$proxy_protocol_addr"
-        else
-            LISTEN_DIR="listen 443 ssl;"
-            REAL_IP_P="\$remote_addr"
-            REAL_IP_S="\$remote_addr"
-        fi
-
-    cat > /opt/remnawave/nginx.conf << NGINX_CONF_EOF
-server_names_hash_bucket_size 64;
-
-upstream remnawave { server 127.0.0.1:3000; }
-upstream remnawave-sub { server 127.0.0.1:3010; }
-
-map \$http_upgrade \$connection_upgrade {
-    default upgrade; "" close;
-}
-
-# Cookie-защита панели: доступ только с ?${COOKIE_KEY}=${COOKIE_VAL}
-map \$http_cookie \$auth_cookie {
-    default 0; "~*${COOKIE_KEY}=${COOKIE_VAL}" 1;
-}
-map \$arg_${COOKIE_KEY} \$auth_query {
-    default 0; "${COOKIE_VAL}" 1;
-}
-map "\$auth_cookie\$auth_query" \$authorized {
-    "~1" 1; default 0;
-}
-map \$arg_${COOKIE_KEY} \$set_cookie_header {
-    "${COOKIE_VAL}" "${COOKIE_KEY}=${COOKIE_VAL}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000";
-    default "";
-}
-
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ecdh_curve X25519:prime256v1:secp384r1;
-ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-ssl_prefer_server_ciphers on;
-ssl_session_timeout 1d;
-ssl_session_cache shared:MozSSL:10m;
-ssl_session_tickets off;
-
-server {
-    server_name ${PANEL_DOMAIN};
-    ${LISTEN_DIR}
-    http2 on;
-    ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
-    ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
-    ssl_trusted_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
-    add_header Set-Cookie \$set_cookie_header;
-
-    location ^~ /oauth2/ {
-        if (\$http_referer !~ "^https://oauth\\.telegram\\.org/") {
-            return 444;
-        }
-        proxy_http_version 1.1;
-        proxy_pass http://remnawave;
-        proxy_set_header Host \$host;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_set_header X-Real-IP ${REAL_IP_P};
-        proxy_set_header X-Forwarded-For ${REAL_IP_P};
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Port \$server_port;
-        proxy_send_timeout 60s; proxy_read_timeout 60s;
-    }
-    location / {
-        error_page 418 = @unauthorized;
-        recursive_error_pages on;
-        if (\$authorized = 0) { return 418; }
-        proxy_http_version 1.1;
-        proxy_pass http://remnawave;
-        proxy_set_header Host \$host;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_set_header X-Real-IP ${REAL_IP_P};
-        proxy_set_header X-Forwarded-For ${REAL_IP_P};
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Port \$server_port;
-        proxy_send_timeout 60s; proxy_read_timeout 60s;
-    }
-    location @unauthorized {
-        root /var/www/html; index index.html; try_files /index.html =444;
-    }
-}
-
-server {
-    server_name ${SUB_DOMAIN};
-    ${LISTEN_DIR}
-    http2 on;
-    ssl_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
-    ssl_certificate_key "/etc/letsencrypt/live/${SC}/privkey.pem";
-    ssl_trusted_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
-
-    location / {
-        proxy_http_version 1.1;
-        proxy_pass http://remnawave-sub;
-        proxy_set_header Host \$host;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_set_header X-Real-IP ${REAL_IP_S};
-        proxy_set_header X-Forwarded-For ${REAL_IP_S};
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Port \$server_port;
-        proxy_send_timeout 60s; proxy_read_timeout 60s;
-        proxy_intercept_errors on;
-        error_page 400 404 500 502 @sub_error;
-    }
-    location @sub_error { return 444; }
-}
-
-server {
-    server_name ${SELFSTEAL_DOMAIN};
-    ${LISTEN_DIR}
-    http2 on;
-    ssl_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
-    ssl_certificate_key "/etc/letsencrypt/live/${STC}/privkey.pem";
-    ssl_trusted_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
-    root /var/www/html; index index.html;
-    add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
-}
-
-server {
-    ${LISTEN_DIR}
-    server_name _;
-    ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
-    ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
-    ssl_reject_handshake on;
-    return 444;
-}
-NGINX_CONF_EOF
-}
-
-# panel_generate_nginx_config_f() moved to lib/panel/nginx/variant_f.sh, and
-# panel_generate_nginx_config_j() lives in lib/panel/nginx/variant_j.sh —
-# see those files for Variant F/J's respective topologies and constants.
-# Moved out 2026-08-31 so this file stays a thin dispatcher and each
-# variant's nginx generator lives in its own file (variant_f.sh /
-# variant_j.sh), per the module split decided for Variant F/J. lib/panel.sh
-# sources nginx/variant_f and nginx/variant_j alongside this file, so both
-# panel_generate_nginx_config_f() and panel_generate_nginx_config_j() are
-# defined before panel_generate_webserver_config() below ever calls them.
-
-# panel_generate_webserver_config — dispatcher, выбирает nginx/caddy backend
-# по значению WEB_SERVER. Orchestration-level функция; отдельный третий
-# файл для одного диспетчера не создаём (см. решение Stage 6h).
-panel_generate_webserver_config() {
-    local WEB_SERVER="$1"
-    local MODE="$2"
-    local PANEL_DOMAIN="$3"
-    local SUB_DOMAIN="$4"
+    local PRIV_KEY="$2"
+    local SHORT_ID="$3"
+    local DEST_VAL="$4"
     local SELFSTEAL_DOMAIN="$5"
-    local PC="$6"
-    local SC="$7"
-    local STC="$8"
-    local COOKIE_KEY="$9"
-    local COOKIE_VAL="${10}"
-    local TELEMT_DOMAIN="${11:-}"
-    local TELEMT_PORT="${12:-}"
-    local XHTTP_ENABLE="${13:-0}"
+    local VISION_PORT="$6"
+    local XHTTP_PORT="$7"
+    local XHTTP_PATH="$8"
+    local ACCEPT_PP="$9"
 
-    # CANONICAL STATE (this pass): dispatch now keys off XHTTP_ENABLE,
-    # not a literal MODE="J" — "J" was an artificial bundling of the
-    # XHTTP+dual-public-port topology with co-located TeleMT; the real
-    # controlling variable for "which nginx generator" is XHTTP_ENABLE.
-    # A literal MODE="J" (any caller not yet updated to pass
-    # XHTTP_ENABLE explicitly) is still accepted as a legacy/defensive
-    # fallback — same normalization lib/panel/api.sh and
-    # lib/panel/xray/templates/render.sh already apply, kept in sync
-    # here so all three never disagree about what "J" means.
-    #
-    # TELEMT_DOMAIN/TELEMT_PORT now pass through to BOTH generators
-    # (panel_generate_nginx_config_f() gained its own TeleMT support
-    # this pass — see lib/panel/nginx/variant_f.sh) — this is what makes
-    # "F + TeleMT, no XHTTP" a reachable state: previously TeleMT only
-    # existed in panel_generate_nginx_config_j(), so co-located TeleMT
-    # was unreachable without XHTTP too. Empty TELEMT_DOMAIN reproduces
-    # each generator's own pre-TeleMT-support behavior byte-for-byte
-    # (verified separately for both).
-    if [ "$MODE" = "J" ]; then MODE="F"; XHTTP_ENABLE=1; fi
+    local TEMPLATE="${_PANEL_XRAY_TEMPLATE_DIR}/f.json"
+    [ "$MODE" = "J" ] && TEMPLATE="${_PANEL_XRAY_TEMPLATE_DIR}/j.json"
 
-    if [ "$WEB_SERVER" = "1" ]; then
-        if [ "$MODE" = "F" ] && [ "$XHTTP_ENABLE" = "1" ]; then
-            panel_generate_nginx_config_j \
-                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
-                "$TELEMT_DOMAIN" "$TELEMT_PORT"
-        elif [ "$MODE" = "F" ]; then
-            panel_generate_nginx_config_f \
-                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
-                "$TELEMT_DOMAIN" "$TELEMT_PORT"
-        else
-            panel_generate_nginx_config \
-                "$MODE" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL"
-        fi
-    else
-        panel_generate_caddy_config \
-            "$MODE" "$COOKIE_KEY" "$COOKIE_VAL"
-    fi
+    jq \
+        --arg pk "$PRIV_KEY" \
+        --arg sid "$SHORT_ID" \
+        --arg dest "$DEST_VAL" \
+        --arg domain "$SELFSTEAL_DOMAIN" \
+        --argjson vport "$VISION_PORT" \
+        --argjson xport "$XHTTP_PORT" \
+        --arg xpath "$XHTTP_PATH" \
+        --argjson accept_pp "$ACCEPT_PP" \
+        'map(
+            (if .tag == "Steal" then .port = $vport
+             elif .tag == "StealXHTTP" then .port = $xport
+             else . end)
+            | .streamSettings.realitySettings.privateKey = $pk
+            | .streamSettings.realitySettings.shortIds = [$sid]
+            | .streamSettings.realitySettings.serverNames = [$domain]
+            | .streamSettings.realitySettings.dest = $dest
+            | (if .tag == "StealXHTTP" then .streamSettings.xhttpSettings.path = $xpath else . end)
+            | (if (.tag == "Steal" and $accept_pp)
+               then .streamSettings.sockopt = { "acceptProxyProtocol": true }
+               else . end)
+        )' \
+        "$TEMPLATE" 2>/dev/null
 }
