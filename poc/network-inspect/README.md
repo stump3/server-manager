@@ -62,7 +62,257 @@ owning process couldn't be read will carry
 silently reported as unowned (verified in this PoC's own test run,
 see below).
 
+```bash
+./poc/network-inspect/network-inspect.sh --capabilities          # Capability Registry instead of Inventory
+./poc/network-inspect/network-inspect.sh --pretty --capabilities # same, indented
+```
+
+## Architecture
+
+### Current structure
+
+```
+poc/network-inspect/
+├── network-inspect.sh        CLI wrapper — locate python3, decide
+│                              whether interactive progress text can
+│                              be shown, exec Python, pass stdout
+│                              through byte-for-byte (Contract 9:
+│                              "Bash decides where/when, Python
+│                              decides what")
+├── inventory_build.py         orchestration + the socket/PID/process/
+│                              ownership/docker/systemd/firewall
+│                              CORRELATION PIPELINE, plus
+│                              detect_ingress() (ties nginx/caddy/
+│                              haproxy presence together using
+│                              correlation-pipeline data) and
+│                              build_inventory()/main() (final
+│                              assembly + CLI arg handling)
+├── run_command.py              shared subprocess-safety primitive
+│                              (RunResult/run()/which()) — used by
+│                              inventory_build.py's own pipeline AND
+│                              every module below
+├── net_facts.py                 public IPv4 counting — a host/network
+│                              fact, not tied to any specific proxy
+│                              software
+├── hysteria2_config.py           Hysteria2 obfs.type discovery — a
+│                              config-file fact about the protocol
+│                              BEING ROUTED, not about a candidate
+│                              router
+├── providers/
+│   ├── __init__.py             (empty beyond a docstring — no
+│   │                            plugin registry, see below)
+│   ├── nginx.py                 nginx capability probing — candidate
+│   │                            L4 router #1
+│   └── caddy.py                  Caddy/caddy-l4 capability probing —
+│                              candidate L4 router #2
+│                              (HAProxy stays inline in
+│                              inventory_build.py's detect_ingress() —
+│                              see "Why these boundaries" below for
+│                              why it did NOT get its own file this
+│                              round)
+├── capabilities.py            Capability Registry — a SEPARATE layer
+│                              that interprets Inventory facts into
+│                              named capabilities (FACT vs CAPABILITY,
+│                              see capabilities.py's own module
+│                              docstring). Never chooses a topology.
+└── tests/
+    ├── _loader.py               shared test bootstrap (sys.path
+    │                            setup only — not a framework)
+    ├── test_run_command.py
+    ├── test_net_facts.py
+    ├── test_hysteria2_config.py
+    ├── test_providers_nginx.py
+    ├── test_providers_caddy.py
+    ├── test_capabilities.py
+    └── test_inventory_build.py  correlation pipeline + orchestration
+                                 + regression suite
+```
+
+### Data flow
+
+```
+CLI (network-inspect.sh)
+        ↓
+main() (inventory_build.py) — arg parsing, root-check warning
+        ↓
+build_inventory() (inventory_build.py) — orchestration
+        │
+        ├─→ collect_interfaces() / collect_listeners() /
+        │   build_inode_to_pid_map() / process_info() /
+        │   classify_ownership() / docker_container_info() /
+        │   systemd_unit_info() / detect_firewall()
+        │       — the CORRELATION PIPELINE: port → socket → PID →
+        │         process → docker/systemd ownership. Stays as one
+        │         cohesive block in inventory_build.py (see "Why
+        │         these boundaries" below for why this did NOT get
+        │         split further).
+        │
+        ├─→ detect_ingress() (inventory_build.py)
+        │       ├─→ providers.nginx.stream_capabilities()
+        │       ├─→ providers.caddy.layer4_capabilities()
+        │       └─→ (haproxy handled inline)
+        │
+        ├─→ hysteria2_config.obfuscation()
+        │
+        └─→ net_facts.public_ipv4_summary()
+        ↓
+   Inventory (JSON, schema "poc-2", UNCHANGED by this round)
+        ↓
+   [default: printed to stdout]
+   [--capabilities: passed to...]
+        ↓
+capabilities.build_capability_registry(inventory)
+        ↓
+   Capability Registry (JSON, schema "capabilities-1", NEW artifact)
+        ↓
+   printed to stdout
+```
+
+Every arrow points strictly downward — no module below
+`inventory_build.py` ever imports it back, and `capabilities.py` never
+calls anything that makes a subprocess call or touches the filesystem
+(pure function of the Inventory dict it's handed). This is the
+dependency direction the task brief's own §27 asks for, and it now
+holds structurally, not just by convention: `providers/*.py`,
+`net_facts.py`, and `hysteria2_config.py` don't import
+`inventory_build`, don't import `capabilities`, and don't import each
+other.
+
+### Why these boundaries
+
+**Correlation pipeline stayed in `inventory_build.py`, not split
+further.** Socket discovery, PID resolution, process/ownership
+classification, Docker/systemd lookups, and firewall detection are
+tightly data-coupled — each step's output is the next step's input
+(inode → PID → process → owner), and every step shares the same
+`listeners`/`iface_block` working set. This is high cohesion by any
+definition: splitting it into five files would mean either passing
+five small objects between them for no benefit, or introducing an
+intermediate "correlation context" object purely to satisfy a file
+boundary — the "20 files × 70 lines" anti-pattern this round's task
+brief explicitly warns against (§26). This part of the file has also
+been essentially the same size since poc-1 (poc-1's version of this
+pipeline was ~700 of its ~855 lines; poc-2's equivalent portion is
+~700 of the current 987) — it is not where the growth this round's
+task brief flagged (1441 lines) actually came from.
+
+**Provider capability probing (nginx/caddy) DID get split out, into
+`providers/`.** This is where the actual growth was: poc-1's
+`detect_ingress()` was ~40 lines total for all three providers
+combined; by poc-2 it had grown to ~300 lines, almost entirely nginx
+and Caddy compiled-module parsing. This is also the part of the
+codebase with a clear, stated trajectory to keep growing (the "Shared
+UDP & TCP/UDP Topology Planner" research document names several more
+providers and facts a future round might add: HAProxy `-vv`
+feature-flag parsing, TeleMT config inspection, more Caddy matcher
+granularity). Splitting each provider into its own file means adding
+provider #4 is "add `providers/haproxy.py`, add one call in
+`detect_ingress()`" — not "find the right spot in an 1000+-line file
+and hope not to disturb the correlation pipeline above it."
+
+**`net_facts.py` and `hysteria2_config.py` got their own files, but
+are NOT under `providers/`.** Both are independent of the correlation
+pipeline (no data dependency on `listeners`/PID resolution) and
+independent of each other, so folding either into `inventory_build.py`
+would just be re-growing the same file for no cohesion benefit. But
+neither is a "provider" in the sense `providers/` means here
+(candidate L4 router software) — `net_facts.py` is a host/network-level
+fact with no software identity at all, and `hysteria2_config.py`
+describes the protocol BEING ROUTED, not a router being evaluated.
+This distinction matters concretely for `capabilities.py`: nginx/caddy
+get their own Capability Registry provider entries; Hysteria2's
+`obfs.type` instead feeds the Registry's future PLANNER consumer as an
+input *constraint*, never as a provider-capability row of its own (see
+`test_capabilities.py::test_hysteria2_obfs_state_ne_provider_capability`).
+Grouping it with the L4-router providers would have blurred that
+distinction in the file layout, not just in prose.
+
+**HAProxy stayed inline in `detect_ingress()`, did NOT get its own
+`providers/haproxy.py` this round.** Its entire detection is ~10 lines
+(binary/version/running/dataplaneapi_detected) with zero parsing
+complexity — extracting a 10-line block into its own file would be
+exactly the fragmentation the task brief warns against (§26). When
+HAProxy capability probing grows (e.g. `haproxy -vv` feature-flag
+parsing gets added in a future round, matching what nginx/caddy
+already have), it should move to `providers/haproxy.py` at that point,
+mirroring nginx.py/caddy.py's shape — not before there's real
+complexity to justify the file.
+
+**Capability Registry is a separate module (`capabilities.py`), not a
+function added to `inventory_build.py`.** This is the one boundary the
+task brief itself insists on architecturally, not just as a style
+preference: Inventory answers "what did I observe," Capability
+Registry answers "what does that mean" — different questions, +
+different update cadence (Inventory changes when a new discovery
+source is added; the Registry's static knowledge table changes when
+research about a provider's general behavior changes, which has
+nothing to do with what any given host looks like). Keeping them in
+one file would make it structurally easy to accidentally leak
+interpretation into discovery (e.g. writing `"stream": True` as if it
+were an observed fact when it's actually a capability judgment) —
+exactly the FACT vs CAPABILITY conflation the task brief's §4
+identifies as the most important invariant to protect.
+
+**No generic adapter framework was built**, per the task brief's
+explicit §8 instruction. `providers/__init__.py` has no base class, no
+registry, no plugin-discovery mechanism — `detect_ingress()` imports
+`providers.nginx` and `providers.caddy` by name and calls their one
+public function each, directly. Adding provider #4 means writing a new
+sibling module and one new explicit call — never "registering"
+anything with anything.
+
+### Public/internal boundaries
+
+| Module | Public API | Internal helpers | Input | Output |
+|---|---|---|---|---|
+| `run_command.py` | `run(cmd, timeout=...)`, `which(binname)`, `RunResult` | — | argv list | `RunResult` (ok/returncode/stdout/stderr/reason) |
+| `providers/nginx.py` | `stream_capabilities(nginx_bin)` | `_parse_configure_output(text)` (pure) | nginx binary path (unused directly — kept for signature symmetry, see docstring) | dict, `status ∈ {available, unresolved}` |
+| `providers/caddy.py` | `layer4_capabilities(caddy_bin)` | `_parse_module_list_output(text)` (pure) | caddy binary path | dict, `status ∈ {available, unresolved}` |
+| `hysteria2_config.py` | `obfuscation(config_path)` | `_parse_obfs_block(text)` (pure) | config file path | dict, `status ∈ {resolved, unresolved}` |
+| `net_facts.py` | `public_ipv4_summary(interfaces_block)` | `_is_globally_routable_ipv4(addr)` (pure) | `collect_interfaces()`'s output | dict, `status ∈ {available, unresolved}` |
+| `capabilities.py` | `build_capability_registry(inventory)` | `_nginx_entry`, `_caddy_entry`, `_haproxy_entry`, `_envoy_entry` (each pure) | the full Inventory dict | Capability Registry dict, per-dimension `status ∈ {available, unsupported, absent, unresolved}` |
+| `inventory_build.py` | `build_inventory()`, `main()`, plus the correlation-pipeline functions (`collect_listeners`, `process_info`, `classify_ownership`, `docker_container_info`, `systemd_unit_info`, `detect_firewall`, `detect_ingress`) | many small `_`-prefixed helpers | — | Inventory dict (schema `poc-2`) / exit code |
+
+No adapter or parser module imports `json`, writes to stdout, or knows
+anything about `sys.argv` — only `inventory_build.py`'s `main()` does
+CLI-facing I/O, preserving Contract 1 (stdout = pure machine-readable
+data) structurally, not just by convention.
+
+### Where to add things (the actual test of this section)
+
+- **New discovery source** (a new provider, or a new host/network
+  fact): add a new sibling module — `providers/<name>.py` if it's
+  candidate L4-router software, a new top-level `<name>.py` if it's a
+  host-level fact or a routed-protocol's own config (matching
+  `net_facts.py`/`hysteria2_config.py`'s precedent) — then one new call
+  in `inventory_build.py`'s `detect_ingress()` or `build_inventory()`.
+  Never touch the correlation pipeline for this.
+- **New/changed capability interpretation** (e.g. refining
+  `udp.quic_sni_routing`'s logic, or adding a new capability
+  dimension): edit `capabilities.py` only — its
+  `_STATIC_CAPABILITY_FACTS` table and the relevant `_<provider>_entry()`
+  override function. Never touch `inventory_build.py` or any
+  `providers/*.py` file for this — they only ever produce raw facts.
+- **New planner rule**: **not in `network-inspect` at all.** This PoC
+  stops at the Capability Registry, per this round's task brief §20 —
+  see "Next step" at the end of this README for the interface a future
+  Planner module will need from here.
+
 ## Schema changelog
+
+### capabilities-1 (new artifact, this round)
+
+The Inventory schema itself is **unchanged** — still `"poc-2"`, zero
+JSON impact from this round's architecture split or from adding the
+Capability Registry (see "Schema impact" further down, and
+`test_build_inventory_produces_valid_schema_poc2` /
+`test_public_ipv4_still_diverges_from_legacy_is_public_ip`, which
+assert this directly). What's new is a completely separate artifact,
+produced by `--capabilities`: the Capability Registry, `schema_version
+"capabilities-1"`. See `capabilities.py`'s own module docstring for
+the full model (provider/capabilities/status/confidence/evidence/
+module/module_version) and the Architecture section above for why
+this is a distinct layer rather than a new Inventory field.
 
 ### poc-2 (current)
 
@@ -241,18 +491,18 @@ Caddy admin-API reachability check.
 
 ## poc-2 verification
 
-Automated tests: `poc/network-inspect/tests/test_inventory_build.py`
-(stdlib `unittest`, no new dependency — run with `python3 -m unittest
-discover -s poc/network-inspect/tests -v`), covering every nginx/
-Caddy/Hysteria2/public-IPv4 scenario named in this round's task brief
-(nginx: absent/stream-absent/stream-present/stream+ssl_preread-present;
-Caddy: absent/stock/layer4/layer4+QUIC-matcher; Hysteria2:
-none/salamander/gecko/obfs-absent/config-missing/config-unreadable/
-malformed-YAML, plus flow-style and type-missing edge cases; public
-IPv4: 0/1/2/mixed/IPv6-only/Docker-bridge/CGNAT), all via mocked
-`run()`/`which()` and temp-file fixtures — **no real nginx/Caddy/
-HAProxy package was installed anywhere in this process**, per the
-task's explicit constraint.
+Automated tests, as of the previous round (nginx/Caddy/Hysteria2/
+public-IPv4 discovery): 38 tests, covering every scenario named in
+that round's task brief (nginx: absent/stream-absent/stream-present/
+stream+ssl_preread-present; Caddy: absent/stock/layer4/layer4+QUIC-
+matcher; Hysteria2: none/salamander/gecko/obfs-absent/config-missing/
+config-unreadable/malformed-YAML, plus flow-style and type-missing
+edge cases; public IPv4: 0/1/2/mixed/IPv6-only/Docker-bridge/CGNAT),
+all via mocked `run()`/`which()` and temp-file fixtures — **no real
+nginx/Caddy/HAProxy package was installed anywhere in this process**,
+per that round's explicit constraint. See "Architecture-split
+verification" below for the current, post-split test count and
+layout.
 
 Real-host verification (this same sandbox container, unchanged from
 the base PoC's own environment — `nginx`, `caddy`, and `ip` are all
@@ -271,6 +521,47 @@ genuinely absent here, and `/etc/hysteria` does not exist):
   explicit `obfs.type` value, any nonzero public IPv4 count) — this
   sandbox has none of the underlying tools installed and none were
   installed to test this, per the task's constraint.
+
+## Architecture-split verification (this round)
+
+**80 tests total** (up from 38 — 42 new: `test_run_command.py` (7),
+`test_net_facts.py` (13, unchanged in content from the previous
+round's `TestPublicIpv4Summary`, just relocated + a new
+`TestIsGloballyRoutableIpv4` group testing the pure helper directly),
+`test_hysteria2_config.py` (18, including 10 new pure-parser tests
+against `_parse_obfs_block()` directly — no tempfile — alongside the
+6 relocated I/O-wrapper tests), `test_providers_nginx.py` (9),
+`test_providers_caddy.py` (9), `test_capabilities.py` (16, new — see
+"Semantic invariants" below), all passing.
+
+**Zero-behavior-change verification**: before touching any code, the
+pre-refactor `inventory_build.py` (1441 lines) was run once and its
+full JSON output saved. After every extraction stage, the same command
+was re-run and the two JSON documents compared field-by-field
+(`generated_at` normalized, since that legitimately differs run to
+run) — confirmed byte-identical after every stage, including after
+fixing one real bug the extraction surfaced (see "Refactoring
+performed"). This is a stronger guarantee than "tests still pass": it
+confirms the split changed zero observable behavior, not just that the
+specific cases this suite happens to cover still work.
+
+**Semantic invariants** (task brief §18) — each directly asserted by a
+named test in `test_capabilities.py::TestSemanticInvariants`, against
+real registry output, not just inspected by hand:
+  - `test_nginx_udp_proxy_ne_quic_sni_routing`
+  - `test_so_reuseport_ne_multi_backend_same_port`
+  - `test_quic_sni_termination_ne_passthrough`
+  - `test_caddy_installed_ne_caddy_l4_available`
+  - `test_unresolved_ne_unsupported`
+  - `test_hysteria2_obfs_state_ne_provider_capability`
+  - `test_quic_sni_routing_ne_migration_safe`
+
+All seven pass. `TestNeverChoosesTopology` additionally does a
+structural check (§19) — the Registry's serialized JSON output is
+searched for topology/recommendation/installation language
+("recommend", "should use", "install ", "therefore use",
+"selected_topology", "topology") across every present/absent/
+available combination exercised by the suite, and none is found.
 
 ## Schema sufficiency review (for a future Planner)
 
@@ -338,3 +629,37 @@ against an actual caddy-l4 binary, not for any doubt about the parsing
 mechanism itself), 0 NO. No question this round could not at least
 honestly answer with either a real fact or an explicit `unresolved`
 state.
+
+## Next step: Desired State schema + Planner input contract
+
+Not implemented here, per this round's task brief §20/§29 — this
+section only names the interface shape a future Planner will need,
+matching the "Shared UDP & TCP/UDP Topology Planner" research
+document's own §13/§18 Desired State and Planner design.
+
+A future Planner module (living OUTSIDE `poc/network-inspect/`
+entirely — see "Where to add things" above) will need:
+
+1. **A Desired State parser/schema** — not part of this PoC's output
+   at all; a separate input the operator (or a future `sm` GUI layer)
+   provides, describing what they want (`services: [...]`,
+   `network.tcp.shared_443`, etc., per the research document's own
+   §13 sketch). `network-inspect` produces none of this.
+2. **This round's Capability Registry as one Planner input**, read via
+   `capabilities.build_capability_registry(inventory)` — a pure
+   function, already safe to call from a Planner module without any
+   subprocess/file-I/O surprises, since all the I/O already happened
+   when `inventory` was built.
+3. **The Inventory itself as a second Planner input** (for facts the
+   Registry doesn't carry — e.g. `public_ipv4.count` for the `SEPARATE_
+   IPS` topology preference, or `listeners[]` for the "unknown owner on
+   :443 → STOP" safety constraint) — both artifacts from one
+   `build_inventory()` call, so a Planner never needs to reconcile two
+   separately-timed snapshots of the host.
+4. **A scoring/candidate-generation function** that takes (Desired
+   State, Capability Registry, Inventory) and produces ranked
+   `(topology, provider)` candidates with named rejection reasons —
+   this is the Planner's own core logic, no part of which exists in
+   `network-inspect` today, and none of which should be added here.
+
+This PoC's job stops at step 2/3's inputs being available and honest.
