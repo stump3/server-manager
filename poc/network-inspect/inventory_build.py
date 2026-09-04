@@ -141,15 +141,19 @@ import ipaddress
 import json
 import os
 import re
-import shutil
 import socket as socket_module
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-DEFAULT_TIMEOUT = float(os.environ.get("SM_NETWORK_INSPECT_TIMEOUT", "5"))
+from run_command import DEFAULT_TIMEOUT, RunResult, run, which  # noqa: F401 - RunResult re-exported for tests/back-compat imports
+from net_facts import public_ipv4_summary
+from hysteria2_config import obfuscation as hysteria2_obfuscation
+from providers import nginx as nginx_provider
+from providers import caddy as caddy_provider
+import capabilities
+
 SKIP_DOCKER = os.environ.get("SM_NETWORK_INSPECT_NO_DOCKER") == "1"
 DOCKER_SOCK = "/var/run/docker.sock"
 
@@ -178,38 +182,11 @@ def warn(msg: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# subprocess helper — every external call in this file goes through
-# this, so the timeout policy (Contract 6) and the
-# "couldn't-run vs ran-and-said-no" distinction are enforced in one
-# place, not re-implemented ad hoc per call site.
+# subprocess helper — see run_command.py (Contract 6 timeout policy,
+# "couldn't-run vs ran-and-said-no" distinction, single implementation
+# shared by this file's own correlation pipeline and every
+# providers/*.py module).
 # ─────────────────────────────────────────────────────────────────────
-
-@dataclass
-class RunResult:
-    ok: bool               # did we get a completed process at all
-    returncode: Optional[int]
-    stdout: str
-    stderr: str
-    reason: Optional[str] = None   # "not_found" | "timeout" | None
-
-
-def run(cmd: list[str], timeout: float = DEFAULT_TIMEOUT) -> RunResult:
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return RunResult(True, proc.returncode, proc.stdout, proc.stderr)
-    except FileNotFoundError:
-        return RunResult(False, None, "", "", reason="not_found")
-    except subprocess.TimeoutExpired:
-        return RunResult(False, None, "", "", reason="timeout")
-
-
-def which(binname: str) -> Optional[str]:
-    return shutil.which(binname)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -742,196 +719,14 @@ def _version_of(cmd: list[str]) -> Optional[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 8a. nginx compiled-module capability facts (schema poc-2)
-#
-# Raw-fact only — this function records what `nginx -V` says was
-# compiled in. It does NOT decide whether that makes any topology
-# "possible"; that interpretation belongs to a future Capability
-# Registry, not to Discovery (research doc §7 principle, restated in
-# this file's own module docstring above).
+# 8a/8b. nginx / caddy compiled-module capability facts — moved to
+# providers/nginx.py and providers/caddy.py (see README.md
+# "Architecture" section). Only the orchestration (detect_ingress(),
+# below) and the shared `_version_of()` glue stay here, since they tie
+# multiple providers together (nginx + caddy + haproxy) using
+# correlation-pipeline data (`listener_comms`) that doesn't belong in
+# any single provider module.
 # ─────────────────────────────────────────────────────────────────────
-
-# Whole-token match: "--with-stream" must NOT match inside
-# "--with-stream_ssl_preread_module" (a real, easy-to-get-wrong
-# collision — the two flags share a common prefix). The (?<!\S)/(?!\S)
-# boundaries require actual whitespace (or string start/end) around
-# the token, which a naive substring check does not enforce.
-_NGINX_WITH_STREAM_RE = re.compile(r"(?<!\S)--with-stream(?:=\S+)?(?!\S)")
-_NGINX_WITH_STREAM_SSL_PREREAD_RE = re.compile(
-    r"(?<!\S)--with-stream_ssl_preread_module(?:=\S+)?(?!\S)"
-)
-_NGINX_CONFIGURE_ARGS_RE = re.compile(r"^configure arguments:\s*(.*)$", re.MULTILINE)
-
-
-def nginx_stream_capabilities(nginx_bin: str) -> dict:
-    """Reads `nginx -V` (note: capital -V, the flag that prints the
-    configure-time arguments; distinct from `nginx -v`, the
-    version-only flag already used above for `entry["version"]`).
-    nginx famously writes this to STDERR, not stdout — `_version_of()`
-    already concatenates both streams for exactly this reason, and
-    this function does the same rather than assuming one stream.
-
-    Returns a dict that always has a "status" of "available" or
-    "unresolved" (never a silent success-with-nulls) and, when
-    available, three independently-meaningful facts: whether
-    --with-stream was compiled in, whether
-    --with-stream_ssl_preread_module was compiled in, and whether
-    either was compiled as a *dynamic* module (in which case actually
-    being active at runtime additionally depends on a `load_module`
-    directive in nginx.conf — a fact this shallow-by-design PoC does
-    NOT check, per the module docstring's "no full AST parsing" scope;
-    recorded explicitly as `dynamic_module_caveat` rather than silently
-    assumed away).
-    """
-    res = run(["nginx", "-V"])
-    if not res.ok:
-        return {
-            "status": "unresolved",
-            "unresolved_reason": f"version_probe_failed:{res.reason}",
-            "compiled_with_stream": None,
-            "compiled_with_stream_ssl_preread": None,
-            "stream_module_type": None,
-            "dynamic_module_caveat": None,
-            "configure_arguments_raw": None,
-        }
-    if res.returncode not in (0, 1):
-        # nginx -V exits 0 on most builds but some distro wrappers
-        # return 1 while still printing the expected text — matches
-        # the existing _version_of() tolerance above, kept consistent
-        # rather than inventing a stricter rule for this new call site.
-        return {
-            "status": "unresolved",
-            "unresolved_reason": f"version_probe_failed:returncode_{res.returncode}",
-            "compiled_with_stream": None,
-            "compiled_with_stream_ssl_preread": None,
-            "stream_module_type": None,
-            "dynamic_module_caveat": None,
-            "configure_arguments_raw": None,
-        }
-
-    combined = res.stdout + res.stderr
-    m = _NGINX_CONFIGURE_ARGS_RE.search(combined)
-    if not m:
-        # Binary ran and returned successfully, but the expected
-        # "configure arguments:" line wasn't found — an unexpected
-        # output format (very old nginx, or a distro fork with a
-        # different -V layout) is a real "couldn't check" case, not
-        # evidence stream is absent.
-        return {
-            "status": "unresolved",
-            "unresolved_reason": "configure_arguments_not_found",
-            "compiled_with_stream": None,
-            "compiled_with_stream_ssl_preread": None,
-            "stream_module_type": None,
-            "dynamic_module_caveat": None,
-            "configure_arguments_raw": combined.strip() or None,
-        }
-
-    configure_args = m.group(1).strip()
-    has_stream = bool(_NGINX_WITH_STREAM_RE.search(configure_args))
-    has_stream_ssl_preread = bool(
-        _NGINX_WITH_STREAM_SSL_PREREAD_RE.search(configure_args)
-    )
-    # --with-X=dynamic is the documented nginx configure-time syntax
-    # for building a module as a loadable .so instead of statically
-    # linking it in.
-    is_dynamic = bool(re.search(r"(?<!\S)--with-stream(?:_ssl_preread_module)?=dynamic(?!\S)", configure_args))
-
-    return {
-        "status": "available",
-        "unresolved_reason": None,
-        "compiled_with_stream": has_stream,
-        "compiled_with_stream_ssl_preread": has_stream_ssl_preread,
-        "stream_module_type": ("dynamic" if is_dynamic else "static") if has_stream else None,
-        "dynamic_module_caveat": (
-            "compiled as a dynamic module — actually being active at "
-            "runtime additionally requires a `load_module` directive "
-            "in nginx.conf, which this PoC does NOT check (shallow by "
-            "design, see module docstring)"
-        ) if is_dynamic else None,
-        "configure_arguments_raw": configure_args,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────
-# 8b. Caddy / caddy-l4 module-list capability facts (schema poc-2)
-#
-# Raw-fact only, per the same principle as 8a — this records the
-# module list `caddy list-modules --versions` reports; it does not
-# decide what that implies for any topology (research doc §7/§20).
-#
-# Critical invariant (research doc §7, this repo's own task brief
-# §3): "Caddy installed" != "caddy-l4 available" != "QUIC matcher
-# available". These are three independently-recorded facts below,
-# never collapsed into one boolean.
-# ─────────────────────────────────────────────────────────────────────
-
-def caddy_layer4_capabilities(caddy_bin: str) -> dict:
-    res = run(["caddy", "list-modules", "--versions"])
-    if not res.ok:
-        return {
-            "status": "unresolved",
-            "unresolved_reason": f"list_modules_failed:{res.reason}",
-            "layer4_present": None,
-            "layer4_matchers_quic_present": None,
-            "layer4_matchers_tls_present": None,
-            "raw_module_list": None,
-        }
-    if res.returncode != 0:
-        return {
-            "status": "unresolved",
-            "unresolved_reason": f"list_modules_failed:returncode_{res.returncode}",
-            "layer4_present": None,
-            "layer4_matchers_quic_present": None,
-            "layer4_matchers_tls_present": None,
-            "raw_module_list": None,
-        }
-
-    modules: list[str] = []
-    for line in res.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        # Each line is "module.name" or "module.name  vX.Y.Z-..."; the
-        # module name is always the first whitespace-separated token.
-        # Caddy's own output also includes non-module header/footer
-        # lines in some versions (e.g. "Standard modules:") — anything
-        # that isn't a dotted-or-bare identifier-looking token is kept
-        # in raw_module_list for transparency but not used for the
-        # boolean facts below, since a false positive there would be
-        # exactly the kind of invented capability this PoC must not
-        # produce.
-        token = line.split()[0]
-        modules.append(token)
-
-    if not modules:
-        # Binary ran, exited 0, produced no parseable module lines at
-        # all — this is unusual enough (a genuinely module-less Caddy
-        # build is very rare) that treating it as a confirmed "no
-        # layer4" would risk masking a parsing problem as a capability
-        # fact. Recorded as unresolved instead.
-        return {
-            "status": "unresolved",
-            "unresolved_reason": "empty_module_list",
-            "layer4_present": None,
-            "layer4_matchers_quic_present": None,
-            "layer4_matchers_tls_present": None,
-            "raw_module_list": [],
-        }
-
-    module_set = set(modules)
-    layer4_present = ("layer4" in module_set) or any(
-        m == "layer4" or m.startswith("layer4.") for m in module_set
-    )
-    return {
-        "status": "available",
-        "unresolved_reason": None,
-        "layer4_present": layer4_present,
-        "layer4_matchers_quic_present": "layer4.matchers.quic" in module_set,
-        "layer4_matchers_tls_present": "layer4.matchers.tls" in module_set,
-        "raw_module_list": modules,
-    }
-
 
 def detect_ingress(listener_comms: set[str]) -> dict:
     """Per schema poc-2: nginx/caddy/haproxy entries are now ALWAYS
@@ -950,7 +745,7 @@ def detect_ingress(listener_comms: set[str]) -> dict:
             "version": _version_of(["nginx", "-v"]),
             "running": "nginx" in listener_comms,
             "stream_block_count": None,
-            "stream_capabilities": nginx_stream_capabilities(nginx_bin),
+            "stream_capabilities": nginx_provider.stream_capabilities(nginx_bin),
         }
         res = run(["nginx", "-T"])
         if res.ok and res.returncode == 0:
@@ -976,7 +771,7 @@ def detect_ingress(listener_comms: set[str]) -> dict:
             "running": "caddy" in listener_comms,
             "layer4_module_compiled_in": None,
             "admin_api_reachable": None,
-            "layer4_capabilities": caddy_layer4_capabilities(caddy_bin),
+            "layer4_capabilities": caddy_provider.layer4_capabilities(caddy_bin),
         }
         # Kept for backward-shape continuity with poc-1's boolean
         # field, now correctly derived from the same parsed module
@@ -1031,262 +826,14 @@ def detect_ingress(listener_comms: set[str]) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 8c. Hysteria2 obfuscation discovery (schema poc-2)
-#
-# The single most safety-critical new discovery fact per the research
-# document (§13/§19): a shared-UDP-QUIC-SNI planner decision can only
-# ever be safe if this value is actually known, not assumed. This is
-# a deliberately MINIMAL, TARGETED extractor for exactly the two-level
-# `obfs: / type: <value>` block Hysteria2's own docs show (see
-# module docstring / README for the upstream examples this was
-# verified against) — it is NOT a general YAML parser, and does not
-# try to be one. No PyYAML (or any other new) dependency is
-# introduced: this project's existing Hysteria2 config-editing code
-# (lib/hy2/install.sh, lib/hy2/integration.sh) already edits this same
-# file with regex/line-oriented `re.sub`-style logic rather than a
-# full YAML round-trip, and this function follows that same, already-
-# established project convention rather than introducing a new one.
+# 8c/8d. Hysteria2 obfuscation + public IPv4 — moved to
+# hysteria2_config.py and net_facts.py respectively (see README.md
+# "Architecture" section). Neither participates in the socket/PID
+# correlation pipeline above, and neither is a "provider" in the
+# providers/ sense (candidate L4 router) — see each module's own
+# docstring for why it was given its own home instead of being
+# folded into inventory_build.py or providers/.
 # ─────────────────────────────────────────────────────────────────────
-
-_OBFS_TOP_KEY_RE = re.compile(r"^obfs:\s*(#.*)?$")
-_OBFS_TOP_KEY_INLINE_RE = re.compile(r"^obfs:\s*(\S.*)$")
-_OBFS_TYPE_LINE_RE = re.compile(r"^(?P<indent>[ ]+)type:\s*(?P<value>.*)$")
-
-
-def _strip_yaml_comment(value: str) -> str:
-    """Best-effort trailing-comment strip for a scalar value on one
-    line — good enough for the specific `type: <bareword>` shape this
-    extractor targets (Hysteria2's obfs.type is always a short
-    unquoted identifier: none/salamander/gecko in every example this
-    research found), not a general YAML scalar parser."""
-    # A '#' preceded by whitespace (or at start) begins a comment in
-    # block-style YAML scalars, as long as we're not inside quotes —
-    # this function is only ever called on values already known not
-    # to start with a quote character (checked by the caller).
-    m = re.search(r"\s#", value)
-    return (value[: m.start()] if m else value).strip()
-
-
-def _hysteria2_obfs_unresolved(
-    config_path: str, reason: str, field_present_in_config: Optional[bool] = None
-) -> dict:
-    return {
-        "config_path": config_path,
-        "status": "unresolved",
-        "unresolved_reason": reason,
-        "field_present_in_config": field_present_in_config,
-        "raw_type_value": None,
-        "effective_value": None,
-        "effective_value_basis": None,
-        "confidence": None,
-    }
-
-
-def hysteria2_obfuscation(config_path: str) -> dict:
-    def unresolved(reason: str, field_present_in_config: Optional[bool] = None) -> dict:
-        return _hysteria2_obfs_unresolved(config_path, reason, field_present_in_config)
-
-    if not os.path.exists(config_path):
-        return unresolved("config_missing")
-
-    try:
-        with open(config_path, "r", encoding="utf-8") as fh:
-            raw_bytes_ok = True
-            try:
-                text = fh.read()
-            except UnicodeDecodeError:
-                raw_bytes_ok = False
-                text = ""
-        if not raw_bytes_ok:
-            return unresolved("decode_error")
-    except PermissionError:
-        return unresolved("config_unreadable")
-    except OSError as exc:
-        return unresolved(f"config_unreadable:{exc.__class__.__name__}")
-
-    lines = text.splitlines()
-
-    # YAML forbids tab characters for indentation — a tab anywhere in
-    # a line's leading whitespace is an unambiguous, cheaply-detected
-    # structural error worth flagging as malformed rather than risking
-    # a misparse of the block below.
-    for line in lines:
-        stripped_leading = line[: len(line) - len(line.lstrip(" \t"))]
-        if "\t" in stripped_leading:
-            return unresolved("malformed_yaml:tab_indentation")
-
-    top_key_idx = None
-    for i, line in enumerate(lines):
-        if _OBFS_TOP_KEY_RE.match(line):
-            top_key_idx = i
-            break
-        if _OBFS_TOP_KEY_INLINE_RE.match(line):
-            # `obfs: {type: salamander}` (flow style) or some other
-            # non-block-mapping form on the same line — explicitly
-            # out of scope for this minimal extractor, per its own
-            # docstring. Do not guess; report the real limitation.
-            return unresolved("flow_style_not_supported", field_present_in_config=True)
-
-    if top_key_idx is None:
-        # No top-level `obfs:` key anywhere in the file at all.
-        # Per upstream Hysteria2/sing-box documentation ("Configs that
-        # omit obfs use the unobfuscated path"), this is a real,
-        # positively-resolvable fact, not an unknown — but the
-        # PHYSICAL absence of the field is still recorded separately
-        # from the EFFECTIVE value, per the task's own explicit
-        # requirement.
-        return {
-            "config_path": config_path,
-            "status": "resolved",
-            "unresolved_reason": None,
-            "field_present_in_config": False,
-            "raw_type_value": None,
-            "effective_value": "none",
-            "effective_value_basis": "default_when_absent",
-            "confidence": "high",
-        }
-
-    # Walk the indented block following `obfs:` looking for the first
-    # `type:` line at the block's own (shallowest) indentation level.
-    block_indent = None
-    type_value_raw = None
-    j = top_key_idx + 1
-    while j < len(lines):
-        line = lines[j]
-        if line.strip() == "" or line.lstrip().startswith("#"):
-            j += 1
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        if indent == 0:
-            break  # dedented back to top level — obfs block has ended
-        if block_indent is None:
-            block_indent = indent
-        if indent == block_indent:
-            m = _OBFS_TYPE_LINE_RE.match(line)
-            if m and len(m.group("indent")) == block_indent:
-                candidate = m.group("value").strip()
-                if candidate.startswith(("'", '"')):
-                    # Quoted scalar — this minimal extractor does not
-                    # attempt quote-aware unescaping; report the
-                    # literal quoted form rather than guessing.
-                    type_value_raw = candidate
-                else:
-                    type_value_raw = _strip_yaml_comment(candidate)
-                break
-        j += 1
-
-    if type_value_raw is None:
-        # `obfs:` block exists but no `type:` sub-key was found in it
-        # before the block ended — malformed relative to Hysteria2's
-        # own schema (type is the required selector field).
-        return unresolved("obfs_block_present_but_type_missing", field_present_in_config=True)
-
-    if not type_value_raw:
-        return unresolved("obfs_type_value_empty", field_present_in_config=True)
-
-    # Detect an obviously unbalanced quote as a light malformed-YAML
-    # signal (e.g. `type: "salamander`), without attempting to be a
-    # real YAML scalar validator.
-    if type_value_raw.count('"') % 2 == 1 or type_value_raw.count("'") % 2 == 1:
-        return unresolved("malformed_yaml:unbalanced_quote", field_present_in_config=True)
-
-    normalized = type_value_raw.strip("'\"").strip().lower()
-    effective = normalized if normalized in ("none", "salamander", "gecko") else "unknown"
-
-    return {
-        "config_path": config_path,
-        "status": "resolved",
-        "unresolved_reason": None,
-        "field_present_in_config": True,
-        "raw_type_value": type_value_raw,
-        "effective_value": effective,
-        "effective_value_basis": "explicit_in_config",
-        "confidence": "high" if effective != "unknown" else "medium",
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────
-# 8d. Public IPv4 count (schema poc-2)
-#
-# Reuses collect_interfaces()'s already-gathered `ip -j addr` data —
-# no new network call. Deliberately uses a STRICTER globally-routable
-# test than the existing _is_public_ip()/classify_bind_address() pair
-# (see _is_globally_routable_ipv4() docstring immediately below for
-# the concrete discrepancy this surfaced — RFC 6598 CGNAT space).
-# ─────────────────────────────────────────────────────────────────────
-
-def _is_globally_routable_ipv4(addr: Optional[str]) -> Optional[bool]:
-    """Stricter than the existing _is_public_ip() used for per-listener
-    public_exposure classification. `ipaddress.IPv4Address.is_private`
-    (used by _is_public_ip) does NOT cover RFC 6598 Carrier-Grade NAT
-    shared address space (100.64.0.0/10) — verified directly against
-    Python's own ipaddress module (100.64.0.1: is_private=False,
-    is_global=False). A host whose only "public-looking" interface
-    address is actually CGNAT space is NOT reachable from the public
-    internet on that address, so counting it as a public IPv4 would be
-    exactly the false-precision the research document and this task
-    both warn against. `ipaddress`'s own `is_global` property is used
-    instead, since it is the stdlib's own maintained answer to "is
-    this IANA-globally-routable" and already correctly excludes
-    loopback, link-local, RFC1918, CGNAT, and the various
-    documentation/benchmarking ranges (verified: 198.18.0.1 and
-    203.0.113.5 both come back is_private=True in this Python version,
-    so those are already excluded by the pre-existing helper too —
-    the CGNAT range was the one confirmed gap).
-
-    Returns None (not True/False) if `addr` doesn't parse as an IPv4
-    address at all — an unparseable address is an unresolved fact, not
-    a confirmed non-public one.
-    """
-    if not addr:
-        return None
-    try:
-        ip_obj = ipaddress.ip_address(addr)
-    except ValueError:
-        return None
-    if not isinstance(ip_obj, ipaddress.IPv4Address):
-        return None
-    return bool(ip_obj.is_global)
-
-
-def public_ipv4_summary(interfaces_block: dict) -> dict:
-    if not interfaces_block.get("available"):
-        return {
-            "status": "unresolved",
-            "unresolved_reason": interfaces_block.get("reason") or "interfaces_unavailable",
-            "count": None,
-            "addresses": [],
-            "routability_verified": False,
-        }
-
-    addresses = []
-    for iface in interfaces_block.get("interfaces", []):
-        for a in iface.get("addresses", []):
-            if a.get("family") != "inet":
-                continue
-            addr = a.get("address")
-            is_global = _is_globally_routable_ipv4(addr)
-            if is_global:
-                addresses.append({
-                    "interface": iface.get("name"),
-                    "address": addr,
-                    "prefixlen": a.get("prefixlen"),
-                })
-
-    return {
-        "status": "available",
-        "unresolved_reason": None,
-        "count": len(addresses),
-        "addresses": addresses,
-        # This counts addresses the ipaddress stdlib module classifies
-        # as globally-routable-per-IANA-registry. It does NOT verify
-        # actual internet reachability (no outbound probe is made by
-        # this read-only PoC) — a host could still be behind an
-        # upstream NAT/firewall that this offline check cannot see.
-        # Recorded explicitly so a consumer never mistakes this for a
-        # stronger guarantee than it is.
-        "routability_verified": False,
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1407,8 +954,9 @@ def build_inventory() -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] not in ("--pretty", "-h", "--help"):
-        print(f"usage: {sys.argv[0]} [--pretty]", file=sys.stderr)
+    valid_flags = ("--pretty", "--capabilities", "-h", "--help")
+    if any(arg not in valid_flags for arg in sys.argv[1:]):
+        print(f"usage: {sys.argv[0]} [--pretty] [--capabilities]", file=sys.stderr)
         return 2
     if "-h" in sys.argv or "--help" in sys.argv:
         print(__doc__, file=sys.stderr)
@@ -1425,6 +973,21 @@ def main() -> int:
 
     inventory = build_inventory()
     indent = 2 if "--pretty" in sys.argv else None
+
+    if "--capabilities" in sys.argv:
+        # The Inventory schema itself is UNCHANGED by this flag's
+        # existence — default invocation (no --capabilities) still
+        # prints exactly the same "poc-2" Inventory document as
+        # before this round's architecture split (see README.md
+        # "Schema impact"). This flag prints a SEPARATE artifact — the
+        # Capability Registry — computed FROM the Inventory just
+        # built, per the FACT vs CAPABILITY layering (capabilities.py
+        # module docstring). stdout still carries exactly one JSON
+        # document either way, honoring Contract 1.
+        registry = capabilities.build_capability_registry(inventory)
+        print(json.dumps(registry, indent=indent, sort_keys=False))
+        return 0
+
     print(json.dumps(inventory, indent=indent, sort_keys=False))
     return 0
 
