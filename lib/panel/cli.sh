@@ -110,69 +110,128 @@ panel_cli_select_cert() {
     fi
 }
 
-# panel_cli_collect_j_options — NEW, MODE=J only. Collects the optional
-# TeleMT SNI branch that lib/panel/nginx/variant_j.sh already accepts as
-# its 9th/10th positional args (TELEMT_DOMAIN/TELEMT_PORT — see that
-# file's header) but that nothing upstream has ever collected or passed
-# through until now. For MODE != J this function must not run at all
-# (TeleMT is J-specific — see docs/ARCHITECTURE.md's Variant J section);
-# panel_install() only calls it inside its own `if [ "$MODE" = "J" ]`
-# branch, and this function defensively no-ops otherwise as a second
-# guard against being called for the wrong MODE by mistake.
+# panel_cli_collect_j_options — MODE=F and MODE=J. Collects the optional
+# TeleMT SNI branch that lib/panel/nginx/variant_f.sh AND
+# lib/panel/nginx/variant_j.sh both already accept as their 9th/10th
+# positional args (TELEMT_DOMAIN/TELEMT_PORT — see those files' headers,
+# Phase C). Historically J-only (name kept for compatibility with the
+# existing test driver — lib/sripts/tests/cli_test_driver.sh — and with
+# panel_install()'s own call site); it is no longer J-specific.
+#
+# Extended (2026-09-05) to actually drive the TeleMT installer
+# (lib/telemt/install.sh:telemt_install_noninteractive) instead of only
+# collecting values that fed nginx.conf — see that function's own header
+# for why it's a separate, additive function rather than a reuse of
+# telemt_menu_install(). This function's job is narrower: figure out
+# WHETHER and WITH WHAT PARAMETERS the installer should run, and detect
+# pre-existing TeleMT state so a standalone install is never silently
+# touched and a reinstall never silently mutates an existing integrated
+# one — the actual installer call happens later, from panel_install()
+# itself, gated on TELEMT_INSTALL_ACTION set here.
+#
+# TELEMT_INSTALL_ACTION values set by this function:
+#   ""            — nothing to do (TeleMT disabled, or standalone found)
+#   "new"         — no existing TeleMT at all; install fresh (mode=docker)
+#   "reconfigure" — existing INTEGRATED TeleMT; operator explicitly chose
+#                   a new domain/port; other settings (users/upstream/ME)
+#                   are carried over unchanged from the existing config
+#   "keep"        — existing INTEGRATED TeleMT; operator chose to leave
+#                   it untouched — nginx wiring reuses its current
+#                   domain/port, telemt_install_noninteractive is NOT
+#                   called at all
 #
 # TELEMT_PORT here is TeleMT's own co-located loopback listener port
 # (nginx forwards decrypted SNI-matched traffic to
-# 127.0.0.1:$TELEMT_PORT — variant_j.sh's $TELEMT_UPSTREAM), NOT a public
-# port. It intentionally has no invented default: the co-located TeleMT
-# container wiring itself (network_mode, actual listener bind) is a
-# separate, not-yet-implemented stage (see docs/MULTI_PROTOCOL_L4_INGRESS.md
-# and the project's own TeleMT co-location notes) — inventing a default
-# here would silently paper over a port choice nobody has made yet, so
-# the operator must supply one explicitly. The check below only rejects
-# values that are provably wrong (colliding with J's own fixed ports,
-# hardcoded identically to lib/panel/nginx/variant_j.sh's
-# J_XRAY_VISION_PORT/J_XRAY_XHTTP_PORT/J_NGINX_HTTPS_PORT/
-# J_XHTTP_PUBLIC_PORT, plus 443 itself) — it does not and cannot validate
-# that the port is otherwise correct for whatever TeleMT deployment the
-# operator has in mind.
+# 127.0.0.1:$TELEMT_PORT), NOT a public port.
 panel_cli_collect_j_options() {
     TELEMT_ENABLED="false"
     TELEMT_DOMAIN=""
     TELEMT_PORT=""
+    TELEMT_INSTALL_ACTION=""
+    TELEMT_INSTALL_MODE=""
 
-    [ "$MODE" != "J" ] && return 0
+    [ "$MODE" != "F" ] && [ "$MODE" != "J" ] && return 0
+
+    # Зарезервированные порты — свои для F и для J (см.
+    # lib/panel/nginx/variant_f.sh: F_NGINX_HTTPS_PORT=7443,
+    # F_XRAY_VISION_PORT=8443; lib/panel/nginx/variant_j.sh:
+    # J_XRAY_VISION_PORT=18443, J_XRAY_XHTTP_PORT=18444,
+    # J_NGINX_HTTPS_PORT=7444, J_XHTTP_PUBLIC_PORT=8443), плюс
+    # публичный :443 в обоих случаях.
+    local -a _reserved_ports=(443)
+    if [ "$MODE" = "J" ]; then
+        _reserved_ports+=(18443 18444 7444 8443)
+    else
+        _reserved_ports+=(7443 8443)
+    fi
 
     echo ""
-    section "TeleMT (опционально, только Variant J)"
-    if confirm "Включить TeleMT (MTProto через отдельный SNI на :443)?" "n"; then
-        TELEMT_ENABLED="true"
-        while true; do
-            ask TELEMT_DOMAIN "Домен/SNI для TeleMT (mtproto.example.com)"
-            validate_domain "$TELEMT_DOMAIN" || { warn "Неверный формат"; continue; }
-            if [ "$TELEMT_DOMAIN" = "$PANEL_DOMAIN" ] || [ "$TELEMT_DOMAIN" = "$SUB_DOMAIN" ] || [ "$TELEMT_DOMAIN" = "$SELFSTEAL_DOMAIN" ]; then
-                warn "Домен TeleMT должен отличаться от доменов панели/подписок/selfsteal"
-                continue
-            fi
-            break
-        done
-        while true; do
-            read -p "  Loopback-порт TeleMT (куда nginx направляет TeleMT-трафик): " TELEMT_PORT < /dev/tty
-            if [[ ! "$TELEMT_PORT" =~ ^[0-9]+$ ]] || [ "$TELEMT_PORT" -lt 1 ] || [ "$TELEMT_PORT" -gt 65535 ]; then
-                warn "Порт должен быть числом 1-65535"
-                continue
-            fi
-            # Зарезервированные порты Variant J — см.
-            # lib/panel/nginx/variant_j.sh (J_XRAY_VISION_PORT=18443,
-            # J_XRAY_XHTTP_PORT=18444, J_NGINX_HTTPS_PORT=7444,
-            # J_XHTTP_PUBLIC_PORT=8443), плюс публичный :443.
-            case "$TELEMT_PORT" in
-                18443|18444|7444|8443|443)
-                    warn "Порт $TELEMT_PORT уже зарезервирован Variant J — выберите другой"
-                    continue ;;
-            esac
-            break
-        done
+    section "TeleMT (опционально, Variant $MODE)"
+
+    local _telemt_state; _telemt_state=$(telemt_detect_state)
+    local _telemt_mode; _telemt_mode=$(telemt_detect_installed_mode)
+
+    if [ "$_telemt_state" = "standalone" ]; then
+        warn "Обнаружена существующая standalone-установка TeleMT (${_telemt_mode}, конфиг: $(telemt_detect_config_path))."
+        warn "Panel не меняет её bind/domain/port/пользователей автоматически."
+        info "Чтобы интегрировать TeleMT в Nginx, сначала переустановите её через меню TeleMT (TeleMT → Удалить/Переустановить), затем запустите установку Panel заново."
+        return 0
     fi
+
+    if [ "$_telemt_state" = "integrated" ]; then
+        local _cfg; _cfg=$(telemt_detect_config_path)
+        local _cur_domain _cur_port
+        _cur_domain=$(telemt_get_tls_domain "$_cfg")
+        _cur_port=$(telemt_detect_port)
+        info "Обнаружена существующая integrated-установка TeleMT (${_telemt_mode}): домен=${_cur_domain}, loopback-порт=${_cur_port}"
+        if confirm "Оставить текущую интеграцию TeleMT без изменений?" "y"; then
+            TELEMT_ENABLED="true"
+            TELEMT_DOMAIN="$_cur_domain"
+            TELEMT_PORT="$_cur_port"
+            TELEMT_INSTALL_ACTION="keep"
+            return 0
+        fi
+        if confirm "Полностью отключить интеграцию TeleMT в Nginx (сам процесс TeleMT останется запущен как есть)?" "n"; then
+            TELEMT_ENABLED="false"
+            TELEMT_INSTALL_ACTION=""
+            return 0
+        fi
+        info "Изменятся только домен/порт — пользователи и upstream-настройки TeleMT будут сохранены."
+        TELEMT_INSTALL_ACTION="reconfigure"
+        TELEMT_INSTALL_MODE="$_telemt_mode"
+    elif confirm "Интегрировать TeleMT в Nginx (MTProto через отдельный SNI на :443)?" "n"; then
+        TELEMT_INSTALL_ACTION="new"
+        TELEMT_INSTALL_MODE="docker"
+    else
+        return 0
+    fi
+
+    TELEMT_ENABLED="true"
+    while true; do
+        ask TELEMT_DOMAIN "Домен/SNI для TeleMT (mtproto.example.com)"
+        validate_domain "$TELEMT_DOMAIN" || { warn "Неверный формат"; continue; }
+        if [ "$TELEMT_DOMAIN" = "$PANEL_DOMAIN" ] || [ "$TELEMT_DOMAIN" = "$SUB_DOMAIN" ] || [ "$TELEMT_DOMAIN" = "$SELFSTEAL_DOMAIN" ]; then
+            warn "Домен TeleMT должен отличаться от доменов панели/подписок/selfsteal"
+            continue
+        fi
+        break
+    done
+    while true; do
+        read -p "  Loopback-порт TeleMT (куда nginx направляет TeleMT-трафик): " TELEMT_PORT < /dev/tty
+        if [[ ! "$TELEMT_PORT" =~ ^[0-9]+$ ]] || [ "$TELEMT_PORT" -lt 1 ] || [ "$TELEMT_PORT" -gt 65535 ]; then
+            warn "Порт должен быть числом 1-65535"
+            continue
+        fi
+        local _collision=""
+        for _p in "${_reserved_ports[@]}"; do
+            [ "$TELEMT_PORT" = "$_p" ] && _collision="1"
+        done
+        if [ -n "$_collision" ]; then
+            warn "Порт $TELEMT_PORT уже зарезервирован Variant $MODE — выберите другой"
+            continue
+        fi
+        break
+    done
 }
 
 # panel_cli_show_summary — pre-flight recap of everything collected
@@ -201,7 +260,7 @@ panel_cli_show_summary() {
     echo "  Подписки:      $SUB_DOMAIN"
     echo "  Selfsteal:     $SELFSTEAL_DOMAIN"
     [ "$WEB_SERVER" = "1" ] && echo "  SSL метод:     $CERT_METHOD"
-    if [ "$MODE" = "J" ]; then
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
         if [ "$TELEMT_ENABLED" = "true" ]; then
             echo "  TeleMT:        включен ($TELEMT_DOMAIN, loopback :$TELEMT_PORT)"
         else
