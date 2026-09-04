@@ -176,27 +176,36 @@ panel_generate_webserver_config() {
     local COOKIE_VAL="${10}"
     local TELEMT_DOMAIN="${11:-}"
     local TELEMT_PORT="${12:-}"
+    local XHTTP_ENABLE="${13:-0}"
+
+    # CANONICAL STATE (this pass): dispatch now keys off XHTTP_ENABLE,
+    # not a literal MODE="J" — "J" was an artificial bundling of the
+    # XHTTP+dual-public-port topology with co-located TeleMT; the real
+    # controlling variable for "which nginx generator" is XHTTP_ENABLE.
+    # A literal MODE="J" (any caller not yet updated to pass
+    # XHTTP_ENABLE explicitly) is still accepted as a legacy/defensive
+    # fallback — same normalization lib/panel/api.sh and
+    # lib/panel/xray/templates/render.sh already apply, kept in sync
+    # here so all three never disagree about what "J" means.
+    #
+    # TELEMT_DOMAIN/TELEMT_PORT now pass through to BOTH generators
+    # (panel_generate_nginx_config_f() gained its own TeleMT support
+    # this pass — see lib/panel/nginx/variant_f.sh) — this is what makes
+    # "F + TeleMT, no XHTTP" a reachable state: previously TeleMT only
+    # existed in panel_generate_nginx_config_j(), so co-located TeleMT
+    # was unreachable without XHTTP too. Empty TELEMT_DOMAIN reproduces
+    # each generator's own pre-TeleMT-support behavior byte-for-byte
+    # (verified separately for both).
+    if [ "$MODE" = "J" ]; then MODE="F"; XHTTP_ENABLE=1; fi
 
     if [ "$WEB_SERVER" = "1" ]; then
-        # MODE=F/MODE=J each route to their own standalone generator
-        # instead of panel_generate_nginx_config()'s MODE=1/2 heredoc —
-        # dispatcher-level only, panel_generate_nginx_config()'s body is
-        # untouched (guarantees MODE=1/2 stay byte-identical). WEB_SERVER=2
-        # + MODE=F/MODE=J is already rejected upstream
-        # (lib/panel/cli.sh:panel_cli_select_webserver(), before this
-        # function is ever called). MODE=J is now selectable via
-        # lib/panel/cli.sh:panel_cli_select_mode(), and
-        # TELEMT_DOMAIN/TELEMT_PORT are now collected by
-        # lib/panel/cli.sh:panel_cli_collect_j_options() (11th/12th
-        # positional args here, empty for every MODE except J) — both
-        # pass straight through to panel_generate_nginx_config_j()'s own
-        # optional 9th/10th args unchanged.
-        if [ "$MODE" = "F" ]; then
-            panel_generate_nginx_config_f \
-                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL"
-        elif [ "$MODE" = "J" ]; then
+        if [ "$MODE" = "F" ] && [ "$XHTTP_ENABLE" = "1" ]; then
             panel_generate_nginx_config_j \
+                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
+                "$TELEMT_DOMAIN" "$TELEMT_PORT"
+        elif [ "$MODE" = "F" ]; then
+            panel_generate_nginx_config_f \
                 "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
                 "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
                 "$TELEMT_DOMAIN" "$TELEMT_PORT"
