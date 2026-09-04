@@ -64,21 +64,44 @@ panel_generate_nginx_config_f() {
     local TELEMT_DOMAIN="${9:-}"
     local TELEMT_PORT="${10:-}"
 
-    # Added for the F/XHTTP/TeleMT feature-flag split (canonical state:
-    # MODE=F + XHTTP_ENABLE + TELEMT_COLOCATE) — mirrors
-    # lib/panel/nginx/variant_j.sh's own TELEMT_DOMAIN/TELEMT_PORT
-    # handling exactly (same param positions, same empty-string-means-
-    # no-branch contract), so that "F + TeleMT, no XHTTP" is reachable
-    # without needing XHTTP at all. Before this, TeleMT support existed
-    # only in variant_j.sh — variant_f.sh had no TeleMT capability
-    # whatsoever, meaning that state was unreachable through either
-    # generator. This does NOT touch the plain-F case: every existing
-    # call site passes only 8 args, so TELEMT_DOMAIN defaults to empty
-    # and the map/upstream below render exactly as before (verified by
-    # byte-identity below, not assumed).
+    # TeleMT support added 2026-08-31 (Phase C, XHTTP_ENABLE/
+    # TELEMT_COLOCATE architecture): TELEMT_DOMAIN/TELEMT_PORT are
+    # OPTIONAL, added at the end of the original 8-arg signature —
+    # exactly the same contract lib/panel/nginx/variant_j.sh already
+    # uses for its own 9th/10th args, deliberately not reinvented here.
+    # When TELEMT_DOMAIN is empty (the default for every existing
+    # caller — nginx/config.sh's dispatcher did not pass a 9th/10th arg
+    # to this function before Phase C, and still only does so when it
+    # has a real value to pass), TELEMT_MAP_LINE/TELEMT_UPSTREAM below
+    # are both empty strings, so the header comment's "restored
+    # byte-for-byte from origin/variant-f" claim continues to hold —
+    # confirmed by SHA256 comparison against the pre-Phase-C baseline
+    # for identical PANEL_DOMAIN/SUB_DOMAIN/SELFSTEAL_DOMAIN/PC/SC/STC/
+    # COOKIE_KEY/COOKIE_VAL inputs (see regression report). This does
+    # NOT touch the Panel/Sub map entries, the default Vision branch, the
+    # Vision port, or proxy_protocol — TeleMT rides the SAME `:443`
+    # stream{} server{} block those already use, inheriting its existing
+    # blanket `proxy_protocol on;` exactly the way variant_j.sh's own
+    # telemt branch does (see that file's comment on why proxy_protocol
+    # cannot be scoped per-branch in nginx stream{} — same nginx
+    # limitation applies here unchanged).
     local TELEMT_MAP_LINE=""
     local TELEMT_UPSTREAM=""
     if [ -n "$TELEMT_DOMAIN" ]; then
+        # Appended to the END of the preceding heredoc line (not placed
+        # on a standalone line of its own) specifically so the DISABLED
+        # case leaves no trace at all — a bare `${TELEMT_MAP_LINE}` on
+        # its own heredoc source line still emits an empty output line
+        # even when the variable is empty (the newline is baked into the
+        # heredoc's literal source text, not contributed by the
+        # variable's content), which silently broke byte-identity
+        # against the pre-Phase-C baseline until caught by the required
+        # regression check. variant_j.sh has this same latent artifact
+        # (extra blank lines when TeleMT is disabled there too) — it was
+        # never surfaced there because nothing required J's disabled-
+        # TeleMT output to be byte-identical to a pre-existing baseline;
+        # F does have that requirement, so F needs the fix and J is left
+        # as-is (out of scope for this phase).
         TELEMT_MAP_LINE=$'\n'"        ${TELEMT_DOMAIN}   telemt;"
         TELEMT_UPSTREAM=$'\n'"    upstream telemt { server 127.0.0.1:${TELEMT_PORT}; }"
     fi
