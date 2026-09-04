@@ -281,7 +281,7 @@ def _static_provider_capabilities(provider_key: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 
 _NGINX_STREAM_DEPENDENT_DIMS = (
-    "tcp.proxy", "tcp.tls_passthrough", "tcp.n_way_sni_routing",
+    "tcp.listen", "tcp.proxy", "tcp.tls_passthrough", "tcp.n_way_sni_routing",
     "udp.listen", "udp.proxy", "udp.reuseport", "udp.session_affinity",
 )
 _NGINX_SSL_PREREAD_DEPENDENT_DIMS = ("tcp.sni_inspection",)
@@ -382,12 +382,23 @@ def _caddy_entry(detected_caddy: dict) -> dict:
 
         if not layer4_present:
             # "Caddy installed" != "caddy-l4 available" (critical
-            # invariant, this round's task brief §18) — every
-            # layer4-dependent row becomes UNSUPPORTED, not unresolved:
-            # we DID check, and it's confirmed not there.
+            # invariant, this round's task brief §18) — this provider
+            # entry is literally named "caddy_l4" (the layer4 app's
+            # capabilities specifically, not generic Caddy), and every
+            # one of this provider's 17 static evidence strings cites
+            # a layer4-specific mechanism (layer4.handlers.proxy,
+            # layer4.handlers.tls, caddy-l4 docs/servers.md, etc. — see
+            # _STATIC_CAPABILITY_FACTS["caddy_l4"] above). So when the
+            # host-level probe confirms layer4 itself is NOT compiled
+            # in, ALL 17 dimensions become UNSUPPORTED, not just the
+            # udp.* ones — anything less would silently keep reporting
+            # e.g. tcp.proxy/tcp.tls_termination as "available" while
+            # their own cited evidence (layer4.handlers.proxy /
+            # layer4.handlers.tls) is confirmed absent on this exact
+            # host, which is precisely the FACT-vs-CAPABILITY
+            # inconsistency this Registry exists to prevent.
             for dim in CAPABILITY_DIMENSIONS:
-                if dim.startswith("udp.") or dim in ("tcp.sni_inspection", "tcp.tls_passthrough", "tcp.n_way_sni_routing"):
-                    capabilities[dim] = _row("unsupported", "verified_by_probe", f"this host's Caddy build does not have the layer4 app compiled in — {evidence_base}")
+                capabilities[dim] = _row("unsupported", "verified_by_probe", f"this host's Caddy build does not have the layer4 app compiled in — {evidence_base}")
         else:
             for dim in _CADDY_LAYER4_DEPENDENT_DIMS:
                 capabilities[dim] = _row("available", "verified_by_probe", f"this host's Caddy build has layer4 compiled in — {evidence_base}")
