@@ -50,6 +50,46 @@ telemt_write_config() {
     else
         mkdir -p "$TELEMT_WORK_DIR_DOCKER"; tls_front_dir="tlsfront"; api_listen="0.0.0.0:9091"; api_wl='["127.0.0.0/8"]'
     fi
+    # Co-located bind + PROXY protocol (2026-09-04): gated on TELEMT_COLOCATE,
+    # an environment variable read here — not a new positional argument,
+    # since no caller anywhere in lib/panel/ currently invokes any function
+    # in this file at all (confirmed: telemt_write_config/telemt_write_compose/
+    # telemt_menu_install are reachable only from this file's own
+    # menu.sh-driven interactive flow, never from lib/panel/install.sh or
+    # any MODE=F/J code path). Reading an env var here makes the capability
+    # available to a future orchestration layer (export TELEMT_COLOCATE=1
+    # before calling these functions non-interactively) without inventing
+    # that orchestration layer or its CLI prompts myself — see this
+    # session's report for that specific, still-open gap.
+    #
+    # Default ("${TELEMT_COLOCATE:-0}" unset or "0"): unchanged standalone
+    # behavior — ip = "0.0.0.0", no proxy_protocol line at all, reproducing
+    # today's config byte-for-byte (verified this session).
+    #
+    # TELEMT_COLOCATE=1: ip = "127.0.0.1" (Nginx becomes the only public
+    # ingress for this port — matches lib/panel/nginx/variant_j.sh's own
+    # existing TeleMT upstream, which already targets 127.0.0.1:$TELEMT_PORT)
+    # plus proxy_protocol = true on this SAME listener entry — using the
+    # per-listener override (docs/TELEMT_CONFIG.md's `[[server.listeners]]
+    # .proxy_protocol` field) rather than the global `[server].proxy_protocol`
+    # switch, per instruction to prefer the narrower, already-documented
+    # override when it can fully express the requirement (it can: there is
+    # only ever one listener here either way).
+    #
+    # NOT PERSISTED: this flag is read fresh every time telemt_write_config()
+    # runs and is not written to any state file. telemt_menu_update() (see
+    # menu.sh) never calls telemt_write_config() again, so an update alone
+    # cannot silently flip a co-located install back to standalone — but a
+    # future *reinstall* through telemt_menu_install() would need
+    # TELEMT_COLOCATE=1 re-exported, or it silently regenerates the
+    # standalone config. Flagging this as a real, open architectural gap
+    # (no persistent state mechanism exists for this install's mode) rather
+    # than inventing a new state file to close it without being asked.
+    local listener_ip="0.0.0.0" listener_pp_line=""
+    if [ "${TELEMT_COLOCATE:-0}" = "1" ]; then
+        listener_ip="127.0.0.1"
+        listener_pp_line=$'\nproxy_protocol = true'
+    fi
     { cat <<EOF
 [general]
 use_middle_proxy = ${TELEMT_USE_ME:-true}
@@ -72,7 +112,7 @@ listen    = "$api_listen"
 whitelist = $api_wl
 
 [[server.listeners]]
-ip = "0.0.0.0"
+ip = "$listener_ip"${listener_pp_line}
 
 [censorship]
 tls_domain    = "$domain"
@@ -124,6 +164,16 @@ EOF
 
 telemt_write_compose() {
     local port="$1"
+    # Same TELEMT_COLOCATE contract as telemt_write_config() above — default
+    # (unset/"0") publishes on all interfaces exactly as before; "1" binds
+    # the host-side publish to loopback only, so Docker's own userland-proxy
+    # never listens on 0.0.0.0:$port regardless of what the TOML says (the
+    # TOML and this compose file are two independent places the public bind
+    # would otherwise leak from — the API port (9091) already got this right
+    # in this file's untouched line below, this only extends the same
+    # pattern to the proxy port itself).
+    local port_bind="$port"
+    [ "${TELEMT_COLOCATE:-0}" = "1" ] && port_bind="127.0.0.1:${port}"
     cat > "$TELEMT_COMPOSE_FILE" <<EOF
 services:
   telemt:
@@ -138,7 +188,7 @@ services:
     tmpfs:
       - /run/telemt:rw,mode=1777,size=1m
     ports:
-      - "${port}:${port}/tcp"
+      - "${port_bind}:${port}/tcp"
       - "127.0.0.1:9091:9091/tcp"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
@@ -175,7 +225,11 @@ telemt_menu_install() {
         docker compose pull -q; docker compose up -d
         ok "Контейнер запущен"
     fi
-    command -v ufw &>/dev/null && ufw allow "${port}/tcp" &>/dev/null && ok "ufw: порт $port открыт"
+    if [ "${TELEMT_COLOCATE:-0}" = "1" ]; then
+        info "TELEMT_COLOCATE=1: порт $port не публикуется через ufw — единственным public ingress является Nginx"
+    else
+        command -v ufw &>/dev/null && ufw allow "${port}/tcp" &>/dev/null && ok "ufw: порт $port открыт"
+    fi
     sleep 3; header "Ссылки"
     echo -e "${BOLD}IP:${RESET} $(get_public_ip)"
     telemt_fetch_links
