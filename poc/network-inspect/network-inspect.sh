@@ -54,12 +54,20 @@ else
 fi
 
 PRETTY=0
+CAPABILITIES=0
 for arg in "$@"; do
     case "$arg" in
         --pretty) PRETTY=1 ;;
+        --capabilities) CAPABILITIES=1 ;;
         -h|--help)
-            echo "usage: $(basename "$0") [--pretty]" >&2
+            echo "usage: $(basename "$0") [--pretty] [--capabilities]" >&2
             echo "Read-only network/ingress inventory PoC. Prints one JSON document to stdout." >&2
+            echo "  --pretty        indent the JSON output" >&2
+            echo "  --capabilities  print the Capability Registry (derived FROM the Inventory" >&2
+            echo "                  this same run builds) instead of the Inventory itself — see" >&2
+            echo "                  capabilities.py's module docstring for the FACT vs CAPABILITY" >&2
+            echo "                  distinction. Default (no flag): prints the Inventory, unchanged" >&2
+            echo "                  in schema from before this flag existed." >&2
             exit 0
             ;;
         *)
@@ -78,6 +86,7 @@ info "Building network inventory (read-only: ss/ip/docker-inspect/systemctl-show
 
 _PY_ARGS=()
 [ "$PRETTY" -eq 1 ] && _PY_ARGS+=(--pretty)
+[ "$CAPABILITIES" -eq 1 ] && _PY_ARGS+=(--capabilities)
 
 # Exec, not `$(...)`+echo: keeps this a pure passthrough of Python's
 # stdout (Contract 1) and its exit code (Contract 2), with zero
