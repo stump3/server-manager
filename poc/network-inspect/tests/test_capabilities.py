@@ -218,8 +218,121 @@ class TestNginxEntry(unittest.TestCase):
         self.assertEqual(caps["tcp.sni_inspection"]["status"], "unresolved")
         self.assertEqual(caps["udp.proxy"]["status"], "unresolved")
 
+    def test_evidence_vs_status_consistency_tcp_listen(self):
+        """Architecture-gate regression: this provider's own static
+        evidence for tcp.listen explicitly cites
+        ngx_stream_core_module (a stream-module mechanism) — so when
+        this host's nginx is confirmed NOT compiled with --with-stream,
+        tcp.listen must be unsupported too, not silently left
+        'available' while its own cited evidence is confirmed absent.
+        (Found and fixed during the architecture gate: previously
+        tcp.listen was excluded from the stream-dependent override
+        list despite its evidence citing a stream-only mechanism.)"""
+        inv = _inventory(nginx={
+            "present": True, "version": "1.18.0",
+            "stream_capabilities": {
+                "status": "available",
+                "compiled_with_stream": False,
+                "compiled_with_stream_ssl_preread": False,
+                "configure_arguments_raw": "--prefix=/etc/nginx",
+            },
+        })
+        reg = capabilities.build_capability_registry(inv)
+        self.assertEqual(reg["providers"]["nginx"]["capabilities"]["tcp.listen"]["status"], "unsupported")
 
-class TestHaproxyEntry(unittest.TestCase):
+
+class TestCaddyEntry(unittest.TestCase):
+    def test_layer4_absent_marks_all_dimensions_unsupported(self):
+        """Architecture-gate regression: this provider is literally
+        named 'caddy_l4' — every one of its 17 static evidence strings
+        cites a layer4-specific mechanism (layer4.handlers.proxy,
+        layer4.handlers.tls, caddy-l4 docs/servers.md, etc). When the
+        host-level probe confirms layer4 itself is NOT compiled in,
+        ALL 17 dimensions must become unsupported — not just the
+        udp.* ones. (Found and fixed during the architecture gate:
+        previously tcp.listen/tcp.proxy/tcp.tls_termination were
+        excluded from this override, silently staying 'available'
+        while their own cited evidence — layer4.* mechanisms — was
+        confirmed absent on that exact host.)"""
+        inv = _inventory(caddy={
+            "present": True, "version": "v2.9.0",
+            "layer4_capabilities": {
+                "status": "available",
+                "layer4_present": False,
+                "layer4_matchers_quic_present": False,
+                "layer4_matchers_tls_present": False,
+                "raw_module_list": ["http.handlers.reverse_proxy"],
+            },
+        })
+        reg = capabilities.build_capability_registry(inv)
+        caps = reg["providers"]["caddy_l4"]["capabilities"]
+        for dim, row in caps.items():
+            self.assertEqual(row["status"], "unsupported", f"{dim} should be unsupported when layer4 is confirmed absent")
+
+
+class TestEvidenceStatusConsistency(unittest.TestCase):
+    """Structural audit, generalized from the two bugs found and fixed
+    during the architecture gate: for nginx and caddy_l4 specifically
+    (the two providers with host-level overrides), every dimension
+    whose STATIC evidence text cites a mechanism gated by the
+    host-level probe (nginx: --with-stream / --with-stream_ssl_preread_module;
+    caddy_l4: the layer4 app) must actually BE overridden when that
+    probe confirms the mechanism is absent — a dimension can never be
+    left 'available' while its own cited evidence is confirmed absent
+    on the exact host being described.
+    """
+
+    def test_nginx_no_available_dim_cites_stream_when_stream_absent(self):
+        inv = _inventory(nginx={
+            "present": True, "version": "1.18.0",
+            "stream_capabilities": {
+                "status": "available",
+                "compiled_with_stream": False,
+                "compiled_with_stream_ssl_preread": False,
+                "configure_arguments_raw": "--prefix=/etc/nginx",
+            },
+        })
+        reg = capabilities.build_capability_registry(inv)
+        for dim, row in reg["providers"]["nginx"]["capabilities"].items():
+            if row["status"] != "available":
+                continue
+            evidence_lower = row["evidence"].lower()
+            if " or " in evidence_lower:
+                # An evidence string phrased as "X or Y" documents an
+                # ALTERNATIVE, non-exclusive mechanism (e.g.
+                # tcp.tls_termination: "http{} ssl or stream{} ssl
+                # termination" — achievable via the http{} block alone,
+                # stream not required) — not a hard dependency, so this
+                # heuristic correctly does not flag it.
+                continue
+            self.assertNotIn(
+                "stream", evidence_lower,
+                f"{dim} is 'available' but its evidence cites stream as the ONLY "
+                f"mechanism, even though this host's nginx was confirmed NOT "
+                f"compiled with --with-stream: {row['evidence']!r}",
+            )
+
+    def test_caddy_no_available_dim_cites_layer4_when_layer4_absent(self):
+        inv = _inventory(caddy={
+            "present": True, "version": "v2.9.0",
+            "layer4_capabilities": {
+                "status": "available",
+                "layer4_present": False,
+                "layer4_matchers_quic_present": False,
+                "layer4_matchers_tls_present": False,
+                "raw_module_list": ["http.handlers.reverse_proxy"],
+            },
+        })
+        reg = capabilities.build_capability_registry(inv)
+        for dim, row in reg["providers"]["caddy_l4"]["capabilities"].items():
+            self.assertNotEqual(
+                row["status"], "available",
+                f"{dim} is 'available' but caddy_l4's every static fact depends on "
+                f"layer4, which was confirmed absent on this host: {row['evidence']!r}",
+            )
+
+
+
     def test_present_never_verified_by_probe(self):
         """HAProxy capability rows must never claim verified_by_probe,
         since Inventory has no compiled-feature probe for it."""
