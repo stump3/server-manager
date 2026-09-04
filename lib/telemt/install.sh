@@ -199,6 +199,115 @@ services:
 EOF
 }
 
+telemt_install_noninteractive() {
+    # ── Неинтерактивная установка/переконфигурация TeleMT ────────
+    # Единственный вызывающий — Panel (lib/panel/install.sh, MODE=F/J,
+    # integrated-сценарий, через lib/panel/cli.sh:panel_cli_collect_j_options()
+    # для сбора параметров и обнаружения существующего состояния).
+    # НИКОГДА не вызывается для standalone-установки — тот путь
+    # (telemt_menu_install(), меню TeleMT) полностью независим и не
+    # трогается этой функцией и вызывающей её стороной.
+    #
+    # Не переиспользует telemt_menu_install() напрямую: та функция
+    # читает /dev/tty на каждом шаге (порт, домен, пользователи,
+    # upstream, выбор версии) — условно отключать эти read() пришлось
+    # бы протаскивать флаг через каждый из них, то есть трогать рабочий
+    # standalone-путь ради Panel. Вместо этого здесь используются ТЕ ЖЕ
+    # низкоуровневые примитивы (telemt_download_binary/
+    # telemt_write_config/telemt_write_service/telemt_write_compose) —
+    # они не менялись и остаются единственным местом, которое реально
+    # пишет конфиг/сервис/compose и запускает процесс. Второго
+    # TeleMT-lifecycle здесь не создаётся.
+    #
+    # Аргументы: port domain mode use_me socks_addr socks_user socks_pass [user_pairs...]
+    #   - port/domain: co-located loopback-порт и tls_domain (одни и те
+    #     же значения одновременно идут и в Nginx routing, и сюда —
+    #     см. panel_cli_collect_j_options()).
+    #   - mode: "systemd" или "docker". Для НОВОЙ integrated-установки
+    #     Panel всегда передаёт "docker" (без интерактивного выбора —
+    #     не предусмотрено требованиями задачи). Для RECONFIGURE уже
+    #     существующей integrated-установки Panel передаёт её
+    #     фактический обнаруженный режим (telemt_detect_installed_mode),
+    #     чтобы не переключать рантайм без причины.
+    #   - use_me/socks_*: сохраняются как есть при reconfigure
+    #     (telemt_detect_use_me/telemt_detect_socks5_*), либо "true"/""
+    #     по умолчанию для новой установки — Panel не имеет собственного
+    #     мнения об upstream-настройках TeleMT.
+    #   - user_pairs: при reconfigure — существующие пользователи
+    #     (telemt_detect_user_pairs), чтобы не удалить их. При новой
+    #     установке, если не передано ни одного, генерируется один
+    #     пользователь по умолчанию (иначе TeleMT остался бы без единого
+    #     клиента — управление пользователями остаётся за отдельным
+    #     меню TeleMT, Panel лишь обеспечивает нерабочий процесс не
+    #     стартует с пустым access.users).
+    local port="$1" domain="$2" mode="$3"
+    local use_me="${4:-true}" socks_addr="${5:-}" socks_user="${6:-}" socks_pass="${7:-}"
+    shift 7
+    local -a pairs=("$@")
+    [ ${#pairs[@]} -eq 0 ] && pairs=("panel-$(openssl rand -hex 4) $(gen_secret)")
+
+    # TELEMT_COLOCATE читается telemt_write_config()/telemt_write_compose()
+    # как обычная переменная окружения/контекста (см. их собственные
+    # комментарии) — здесь она объявлена `local`, что в bash видно
+    # дочерним функциям, вызванным из этой же функции (динамическая
+    # область видимости), но не «протекает» наружу в остальной процесс
+    # Panel после возврата. То же самое для TELEMT_USE_ME/TELEMT_SOCKS5_*
+    # ниже — они используются telemt_write_config() точно так же, как в
+    # интерактивном пути (telemt_ask_upstream), просто не через
+    # интерактивный запрос, а установлены явно вызывающей стороной.
+    local TELEMT_COLOCATE="1"
+    local TELEMT_USE_ME="$use_me"
+    local TELEMT_SOCKS5_ADDR="$socks_addr"
+    local TELEMT_SOCKS5_USER="$socks_user"
+    local TELEMT_SOCKS5_PASS="$socks_pass"
+
+    TELEMT_MODE="$mode"
+    if [ "$TELEMT_MODE" = "systemd" ]; then
+        TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"; TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD"
+    else
+        TELEMT_MODE="docker"
+        TELEMT_CONFIG_FILE="$TELEMT_CONFIG_DOCKER"; TELEMT_WORK_DIR="$TELEMT_WORK_DIR_DOCKER"
+    fi
+    telemt_check_deps
+
+    if [ "$TELEMT_MODE" = "systemd" ]; then
+        need_root
+        TELEMT_CHOSEN_VERSION="latest"
+        telemt_download_binary "$TELEMT_CHOSEN_VERSION"
+        id telemt &>/dev/null || useradd -d "$TELEMT_WORK_DIR" -m -r -U telemt
+        # `|| true`: see the docker branch's comment below for why this
+        # is required (harmless no-op here since the condition is true
+        # for systemd, kept for symmetry / in case that ever changes).
+        telemt_write_config "$port" "$domain" "${pairs[@]}" || true
+        mkdir -p "$TELEMT_TLSFRONT_DIR"
+        chown -R telemt:telemt "$TELEMT_CONFIG_DIR" "$TELEMT_WORK_DIR"
+        telemt_write_service
+        systemctl daemon-reload; systemctl enable telemt; systemctl restart telemt
+    else
+        # `|| true` REQUIRED (pre-existing behavior of
+        # telemt_write_config(), not introduced by this function): its
+        # own last statement is `[ "$TELEMT_MODE" = "systemd" ] && chmod
+        # ...`, which is FALSE for docker mode, so the function's return
+        # code is 1 even though nothing went wrong. Every existing
+        # interactive call site tolerates this via an outer `|| true`
+        # (menu.sh: `1) telemt_menu_install || true ;;`). This function
+        # has no such outer guard — it runs under panel_install()'s
+        # `set -euo pipefail` — so without `|| true` here, every
+        # docker-mode integrated install would silently abort
+        # panel_install() right after writing a perfectly valid config
+        # (confirmed by reproduction this session). Not fixing
+        # telemt_write_config() itself — shared with the untouched
+        # standalone path.
+        telemt_write_config "$port" "$domain" "${pairs[@]}" || true
+        telemt_write_compose "$port"
+        ( cd "$TELEMT_WORK_DIR_DOCKER" && docker compose pull -q && docker compose up -d )
+    fi
+    # Публичный порт/ufw НЕ трогается — TELEMT_COLOCATE=1 всегда здесь,
+    # единственный public ingress для этого порта — Nginx (см.
+    # telemt_write_config()/telemt_write_compose() для симметричной
+    # логики в интерактивном telemt_menu_install()).
+}
+
 telemt_menu_install() {
     header "Установка MTProxy (${TELEMT_MODE})"
     [ "$TELEMT_MODE" = "systemd" ] && need_root
