@@ -189,20 +189,30 @@ panel_generate_webserver_config() {
     local COOKIE_VAL="${10}"
     local TELEMT_DOMAIN="${11:-}"
     local TELEMT_PORT="${12:-}"
-
-    # XHTTP_ENABLE (XHTTP_ENABLE/TELEMT_COLOCATE architecture, Phase B):
-    # mirrors the exact same normalization lib/panel/api.sh's
-    # panel_setup_api() computes independently (MODE=J -> "1", else
-    # "0") — the two agree by construction, not by coincidence, same as
-    # that function's own comment explains for render.sh. This is used
-    # ONLY to choose which of the two existing, unmodified co-located
-    # generators to call (panel_generate_nginx_config_f vs
-    # panel_generate_nginx_config_j) — it does not decide whether we're
-    # in "co-located F/J territory" at all (that's still MODE=F/MODE=J,
-    # checked below); it only replaces the F-vs-J-shape branch that used
-    # to be a second, separate `[ "$MODE" = "J" ]` check.
-    local XHTTP_ENABLE="0"
-    [ "$MODE" = "J" ] && XHTTP_ENABLE="1"
+    # F_XHTTP_ENABLE (2026-09-05, F+XHTTP) — OPTIONAL 13th arg, "0"/"1".
+    # Backward compatible: every existing 10/11/12-arg call site keeps
+    # working unchanged (omitted => "0" => F's single-Vision-leg output,
+    # byte-identical to before this arg existed).
+    #
+    # FIXED 2026-09-05 (F+XHTTP audit): this dispatcher previously
+    # decided F-shape vs J-shape purely from a local `[ "$MODE" = "J" ]`
+    # -derived XHTTP_ENABLE, which is WRONG for F+XHTTP: it would have
+    # routed a MODE=F + "XHTTP wanted" install to
+    # panel_generate_nginx_config_j() — Variant J's generator, with
+    # Variant J's OWN ports (J_XRAY_VISION_PORT=18443,
+    # J_XHTTP_PUBLIC_PORT=8443, J_NGINX_HTTPS_PORT=7444) — silently
+    # replacing Variant F's topology and ports (F_XRAY_VISION_PORT=8443,
+    # F_NGINX_HTTPS_PORT=7443) entirely, not adding an XHTTP leg to F as
+    # intended. MODE and "does this profile carry an XHTTP leg" are now
+    # kept as two separate questions: MODE alone selects WHICH generator
+    # runs (F always uses panel_generate_nginx_config_f(), J always uses
+    # panel_generate_nginx_config_j() — J already always had its XHTTP
+    # leg built in, unconditionally, so it takes no such flag), and
+    # F_XHTTP_ENABLE only ever reaches panel_generate_nginx_config_f()'s
+    # own optional 11th arg, controlling whether F's generator adds its
+    # OWN, F-specific XHTTP public leg (F_XHTTP_PUBLIC_PORT=9443 ->
+    # F_XRAY_XHTTP_PORT=19444, see variant_f.sh) — never J's.
+    local F_XHTTP_ENABLE="${13:-0}"
 
     if [ "$WEB_SERVER" = "1" ]; then
         # MODE=F/MODE=J together route to the co-located nginx generators
@@ -214,34 +224,23 @@ panel_generate_webserver_config() {
         # lib/panel/compose/colocated.sh, before this function is ever
         # reached with such a combination) — no guard needed here too.
         #
-        # Inside that co-located branch, WHICH generator runs (F-shape,
-        # single Steal inbound vs J-shape, Steal+StealXHTTP) is now
-        # decided by XHTTP_ENABLE, not by re-testing MODE a second time —
-        # this is the Phase B change. Both generator functions themselves
-        # (variant_f.sh / variant_j.sh) are untouched: this is
-        # deliberately the smallest safe step ("if XHTTP_ENABLE=1: use
-        # the existing J generator; else: use the existing F generator"),
-        # not a merge of the two files and not a new unified topology.
-        # TELEMT_DOMAIN/TELEMT_PORT are forwarded to BOTH calls below —
-        # Phase C gave panel_generate_nginx_config_f() the same optional
-        # 9th/10th TeleMT args panel_generate_nginx_config_j() already
-        # had (both empty = no TeleMT branch, byte-identical to before
-        # Phase C for F — see variant_f.sh's own comment). Passing them
-        # unconditionally to both here is safe and correct for the same
-        # reason it always was for the J-only call: each generator treats
-        # an empty TELEMT_DOMAIN as "disabled" on its own.
-        if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
-            if [ "$XHTTP_ENABLE" = "1" ]; then
-                panel_generate_nginx_config_j \
-                    "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                    "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
-                    "$TELEMT_DOMAIN" "$TELEMT_PORT"
-            else
-                panel_generate_nginx_config_f \
-                    "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                    "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
-                    "$TELEMT_DOMAIN" "$TELEMT_PORT"
-            fi
+        # WHICH generator runs is decided by MODE alone (restored to a
+        # direct MODE check — see FIXED comment above for why the old
+        # XHTTP_ENABLE-derived branch was wrong). TELEMT_DOMAIN/TELEMT_PORT
+        # are forwarded to both; each generator treats an empty
+        # TELEMT_DOMAIN as "disabled" on its own. F_XHTTP_ENABLE is
+        # forwarded ONLY to panel_generate_nginx_config_f() — J's call has
+        # no such arg, it is not applicable to J's already-fixed topology.
+        if [ "$MODE" = "J" ]; then
+            panel_generate_nginx_config_j \
+                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
+                "$TELEMT_DOMAIN" "$TELEMT_PORT"
+        elif [ "$MODE" = "F" ]; then
+            panel_generate_nginx_config_f \
+                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
+                "$TELEMT_DOMAIN" "$TELEMT_PORT" "$F_XHTTP_ENABLE"
         else
             panel_generate_nginx_config \
                 "$MODE" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
