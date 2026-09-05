@@ -158,13 +158,33 @@ panel_reinstall_mgmt() {
     # own generated markers instead of guessing: F/J's nginx.conf is a
     # full top-level config with its own `stream {` block (MODE=1's
     # nginx.conf -- lib/panel/nginx/config.sh's panel_generate_nginx_config()
-    # -- has no stream{} at all, Xray binds public 443 directly), and only
-    # J additionally defines an `xray_xhttp` upstream for its second
-    # (XHTTP) inbound (lib/panel/nginx/variant_j.sh) -- F has no XHTTP
-    # inbound and so no such upstream. Confirmed empirically against real
-    # generator output for all three MODEs, not assumed.
+    # -- has no stream{} at all, Xray binds public 443 directly).
+    #
+    # FIXED 2026-09-05 (F+XHTTP audit, Commit 2.G): the old heuristic
+    # ("has an `xray_xhttp` upstream" => J) broke the moment F itself
+    # could also carry an XHTTP leg (F+XHTTP) -- F's own generator uses a
+    # deliberately different upstream name (xray_xhttp_f, see
+    # variant_f.sh) specifically to avoid colliding with this grep, but
+    # relying on upstream-naming-as-a-contract is fragile by construction,
+    # not a real fix. variant_f.sh/variant_j.sh now both emit explicit,
+    # stable machine-readable markers
+    # ("# SERVER_MANAGER_TOPOLOGY=F|J", "# SERVER_MANAGER_XHTTP=0|1") at
+    # the very top of the generated nginx.conf specifically so detection
+    # here never again has to infer topology from an incidental upstream
+    # name. Markers are checked FIRST; any nginx.conf generated before
+    # 2026-09-05 (this fix) has no such marker line and falls through to
+    # the original legacy heuristic unchanged, so already-deployed F/J
+    # installs remain correctly detected without redeploying anything.
+    local _topology_marker
+    _topology_marker=$(grep -m1 "^# SERVER_MANAGER_TOPOLOGY=" "$nc" 2>/dev/null | cut -d= -f2)
+
     if [ -f /opt/remnawave/docker-compose.yml ] && grep -q "remnanode" /opt/remnawave/docker-compose.yml; then
-        if [ "$web_server" = "1" ] && grep -q "xray_xhttp" "$nc" 2>/dev/null; then
+        if [ "$web_server" = "1" ] && [ -n "$_topology_marker" ]; then
+            mode="$_topology_marker"
+        elif [ "$web_server" = "1" ] && grep -q "xray_xhttp" "$nc" 2>/dev/null; then
+            # Legacy heuristic (pre-marker configs only, see FIXED above):
+            # F+XHTTP could not have existed before this fix, so an
+            # unmarked config with an `xray_xhttp` upstream can only be J.
             mode="J"
         elif [ "$web_server" = "1" ] && grep -q "^stream {" "$nc" 2>/dev/null; then
             mode="F"
