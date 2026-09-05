@@ -169,17 +169,46 @@ telemt_detect_listener_ip() {
     ' "$cfg" 2>/dev/null
 }
 
-# absent | standalone | integrated. "integrated" == слушатель на
-# 127.0.0.1 (тот же признак, который telemt_write_config() сама
-# использует для co-located bind при TELEMT_COLOCATE=1) — любой
-# другой ip (включая 0.0.0.0) считается публичным, т.е. standalone.
+# true|false — proxy_protocol в той же секции [[server.listeners]] (см.
+# telemt_write_config(): всегда пишется ПАРОЙ с ip="127.0.0.1", никогда
+# по отдельности — используется как второе, более строгое условие в
+# telemt_detect_state(), см. её комментарий.
+telemt_detect_listener_proxy_protocol() {
+    local cfg="$1"
+    [ -f "$cfg" ] || return 1
+    awk '
+        /^\[\[server\.listeners\]\]/ { insec=1; next }
+        insec && /^\[/               { insec=0 }
+        insec && /^[[:space:]]*proxy_protocol[[:space:]]*=[[:space:]]*true/ {
+            print "true"; exit
+        }
+    ' "$cfg" 2>/dev/null
+}
+
+# absent | standalone | integrated. "integrated" требует ОБА признака —
+# слушатель на 127.0.0.1 И proxy_protocol=true в этой же секции —
+# именно так telemt_write_config() всегда пишет co-located конфиг (см.
+# TELEMT_COLOCATE=1 в этой же функции, install.sh): эти два поля
+# устанавливаются вместе, никогда по отдельности. Проверка только по ip
+# была бы недостаточной: если оператор вручную завёл TeleMT на
+# 127.0.0.1 без proxy_protocol (например, за собственным stunnel/haproxy
+# независимо от Panel), классификация "integrated" заставила бы Panel
+# считать его совместимым с co-located Nginx-роутингом и подключить
+# PROXY protocol от Nginx к слушателю, который его не ожидает — заново
+# сломав ровно то, от чего должен защищать standalone-safety (см. п.9
+# аудита: "может ли существующий standalone случайно быть воспринят как
+# integrated"). Любая иная комбинация (включая 127.0.0.1 без
+# proxy_protocol) классифицируется как standalone — безопасный дефолт:
+# Panel её не трогает и не подключает к ней proxy_protocol-трафик.
 telemt_detect_state() {
     local cfg; cfg=$(telemt_detect_config_path)
     if [ -z "$cfg" ]; then
         echo "absent"; return 0
     fi
-    local ip; ip=$(telemt_detect_listener_ip "$cfg")
-    if [ "$ip" = "127.0.0.1" ]; then
+    local ip pp
+    ip=$(telemt_detect_listener_ip "$cfg")
+    pp=$(telemt_detect_listener_proxy_protocol "$cfg")
+    if [ "$ip" = "127.0.0.1" ] && [ "$pp" = "true" ]; then
         echo "integrated"
     else
         echo "standalone"
