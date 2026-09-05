@@ -85,6 +85,28 @@ panel_cli_select_webserver() {
     fi
 }
 
+# panel_cli_select_f_xhttp — MODE=F only (2026-09-05, F+XHTTP, Variant
+# A). J is unaffected: it always has XHTTP built in, unconditionally,
+# and this function returns immediately for it. F stays single-inbound
+# (Vision only) unless the operator explicitly opts in here — F's
+# existing single-leg behavior is the default in every sense (CLI
+# default "n", and lib/panel/nginx/variant_f.sh's own F_XHTTP_ENABLE
+# arg defaults to "0" if this function is never called at all).
+# Must run BEFORE panel_cli_collect_j_options() (TeleMT), which needs to
+# know whether F_XHTTP_PUBLIC_PORT/F_XRAY_XHTTP_PORT are actually in use
+# for this install before it can correctly compute TeleMT's reserved-port
+# collision list.
+panel_cli_select_f_xhttp() {
+    F_XHTTP_ENABLE="0"
+    [ "$MODE" != "F" ] && return 0
+
+    echo ""
+    section "XHTTP для Variant F"
+    if confirm "Включить XHTTP для Variant F (доп. публичный порт :${F_XHTTP_PUBLIC_PORT}, backend 127.0.0.1:${F_XRAY_XHTTP_PORT})?" "n"; then
+        F_XHTTP_ENABLE="1"
+    fi
+}
+
 # panel_cli_select_cert — unchanged from the original inline prompt.
 panel_cli_select_cert() {
     CERT_METHOD="" PANEL_CF_EMAIL="" PANEL_CF_KEY="" PANEL_LE_EMAIL="" GCORE_TOKEN=""
@@ -154,15 +176,25 @@ panel_cli_collect_j_options() {
 
     # Зарезервированные порты — свои для F и для J (см.
     # lib/panel/nginx/variant_f.sh: F_NGINX_HTTPS_PORT=7443,
-    # F_XRAY_VISION_PORT=8443; lib/panel/nginx/variant_j.sh:
+    # F_XRAY_VISION_PORT=8443, F_XHTTP_PUBLIC_PORT=9443,
+    # F_XRAY_XHTTP_PORT=19444; lib/panel/nginx/variant_j.sh:
     # J_XRAY_VISION_PORT=18443, J_XRAY_XHTTP_PORT=18444,
     # J_NGINX_HTTPS_PORT=7444, J_XHTTP_PUBLIC_PORT=8443), плюс
     # публичный :443 в обоих случаях.
+    #
+    # FIXED 2026-09-05 (F+XHTTP audit, Commit 2.F): F's reserved set is
+    # now capability-driven — F_XHTTP_ENABLE (set by
+    # panel_cli_select_f_xhttp(), which MUST run before this function)
+    # adds F's own XHTTP ports (9443, 19444) to F's reserved list when
+    # actually in use for this install, so TeleMT cannot collide with
+    # them. When F_XHTTP_ENABLE="0" (the default), F's reserved set is
+    # unchanged from before this fix.
     local -a _reserved_ports=(443)
     if [ "$MODE" = "J" ]; then
         _reserved_ports+=(18443 18444 7444 8443)
     else
         _reserved_ports+=(7443 8443)
+        [ "${F_XHTTP_ENABLE:-0}" = "1" ] && _reserved_ports+=(9443 19444)
     fi
 
     echo ""
