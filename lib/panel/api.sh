@@ -84,20 +84,29 @@ panel_reality_accept_proxy_protocol() {
 }
 
 # panel_reality_xhttp_inbound_port — meaningful only when XHTTP is
-# enabled for this profile (currently reachable via MODE=J; see
-# XHTTP_ENABLE normalization in panel_setup_api()). Callers must still
-# gate on the caller's own XHTTP_ENABLE/MODE decision themselves before
+# enabled for this profile (MODE=J always; MODE=F when F_XHTTP_ENABLE=1;
+# see XHTTP_ENABLE normalization in panel_setup_api()). Callers must
+# still gate on the caller's own XHTTP_ENABLE decision themselves before
 # using this — this function is a single source of truth for the port
 # NUMBER, not for the enable decision itself, mirroring how
 # panel_reality_inbound_port() already separates "which port" from
 # "should we even be here".
 #
-# FIXED 2026-08-31: previously read $F_XRAY_XHTTP_PORT (a variable that,
-# like F_XRAY_VISION_PORT above, was never defined anywhere — XHTTP was
-# still wrongly wired to MODE=F at the time). Now reads
-# $J_XRAY_XHTTP_PORT, which variant_j.sh actually defines (18444).
+# FIXED 2026-09-05 (F+XHTTP): made MODE-aware. Previously always
+# returned $J_XRAY_XHTTP_PORT (18444) unconditionally — correct for
+# MODE=J, but wrong for MODE=F+XHTTP_ENABLE=1, which needs its own,
+# independent port (F_XRAY_XHTTP_PORT=19444, lib/panel/nginx/
+# variant_f.sh) — silently reusing 18444 there would have made F+XHTTP's
+# Xray inbound listen on a port nginx's own F+XHTTP upstream
+# (xray_xhttp_f -> 127.0.0.1:19444) never forwards to, a total port
+# mismatch of exactly the kind panel_reality_inbound_port()'s own FIXED
+# comment above already warns about for Vision.
 panel_reality_xhttp_inbound_port() {
-    echo "${J_XRAY_XHTTP_PORT:-18444}"
+    local MODE="$1"
+    case "$MODE" in
+        F) echo "${F_XRAY_XHTTP_PORT:-19444}" ;;
+        *) echo "${J_XRAY_XHTTP_PORT:-18444}" ;;
+    esac
 }
 
 # panel_reality_listen_addr — PRE-EXISTING BUG FIX (bind-correctness pass,
@@ -143,23 +152,24 @@ panel_setup_api() {
     local SUPERADMIN_PASS="$2"
     local SELFSTEAL_DOMAIN="$3"
     local MODE="$4"
-
-    # XHTTP_ENABLE (XHTTP_ENABLE/TELEMT_COLOCATE architecture, Phase A):
-    # single normalization point for "does this install get a StealXHTTP
-    # inbound", computed once here instead of re-checking
-    # `[ "$MODE" = "J" ]` at every one of the four places below that
-    # actually depend on it. panel_setup_api()'s own external signature
-    # is unchanged (still just MODE, no new 5th arg) — nothing calling
-    # this function needs to change yet; this is purely an internal
-    # normalization step, same MODE=J-implies-XHTTP-on behavior as
-    # before, just computed in one place. lib/panel/xray/templates/
-    # render.sh's own MODE-normalization fallback (used when
-    # XHTTP_ENABLE is omitted) does the exact same MODE=J->1 mapping
-    # independently, so passing it explicitly here and letting render.sh
-    # normalize on its own for other callers agree by construction, not
-    # by coincidence — see that file's header comment.
-    local XHTTP_ENABLE="0"
-    [ "$MODE" = "J" ] && XHTTP_ENABLE="1"
+    # XHTTP_ENABLE — OPTIONAL 5th arg, "0"/"1". Backward compatible: any
+    # existing 4-arg call site keeps the original MODE=J-implies-1
+    # normalization below unchanged.
+    #
+    # FIXED 2026-09-05 (F+XHTTP): previously always self-derived purely
+    # from `[ "$MODE" = "J" ]`, which made MODE=F + "XHTTP wanted" from
+    # lib/panel/cli.sh's new F+XHTTP prompt unreachable here — the caller
+    # (panel_install()) could set F_XHTTP_ENABLE=1 all it wanted, this
+    # function would still only ever produce a single-inbound (Steal-only)
+    # profile for MODE=F, since it never looked at anything but MODE.
+    # Explicit arg takes precedence when the caller supplies one; when
+    # omitted, the exact original MODE=J->1 normalization applies, so
+    # every pre-existing 4-arg caller sees byte-identical behavior.
+    local XHTTP_ENABLE="${5:-}"
+    if [ -z "$XHTTP_ENABLE" ]; then
+        XHTTP_ENABLE="0"
+        [ "$MODE" = "J" ] && XHTTP_ENABLE="1"
+    fi
 
     cd /opt/remnawave
     panel_reality_needs_2222_ufw_rule "$MODE" && \
@@ -286,7 +296,7 @@ panel_setup_api() {
     local INBOUNDS_JSON
     INBOUNDS_JSON=$(panel_xray_render_inbounds "$MODE" "$PRIV_KEY" "$SHORT_ID" "$DEST_VAL" "$SELFSTEAL_DOMAIN" \
         "$(panel_reality_inbound_port "$MODE")" \
-        "$(panel_reality_xhttp_inbound_port)" \
+        "$(panel_reality_xhttp_inbound_port "$MODE")" \
         "$XHTTP_PATH" \
         "$(panel_reality_accept_proxy_protocol "$MODE")" \
         "$XHTTP_ENABLE" \
@@ -399,9 +409,19 @@ panel_setup_api() {
     # "the Host inherits its configuration from the selected Inbound,
     # including... transport" — transport comes entirely from
     # configProfileInboundUuid, there is no separate Host-level field
-    # for it to get wrong. `port` references J_XHTTP_PUBLIC_PORT
-    # (lib/panel/nginx/variant_j.sh, currently 8443) rather than a bare
-    # literal, so this stays correct if that constant is ever changed.
+    # for it to get wrong. `port` is now MODE-aware (FIXED 2026-09-05,
+    # F+XHTTP): previously always read $J_XHTTP_PUBLIC_PORT — correct
+    # for MODE=J, but would have advertised the wrong public port (8443)
+    # for a MODE=F+XHTTP install, whose actual public XHTTP port is
+    # $F_XHTTP_PUBLIC_PORT (9443, lib/panel/nginx/variant_f.sh) — clients
+    # would have been handed a Host pointing at a port nginx never listens
+    # on for F+XHTTP at all.
+    local XHTTP_PUBLIC_PORT_VAL
+    if [ "$MODE" = "F" ]; then
+        XHTTP_PUBLIC_PORT_VAL="${F_XHTTP_PUBLIC_PORT:-9443}"
+    else
+        XHTTP_PUBLIC_PORT_VAL="${J_XHTTP_PUBLIC_PORT:-8443}"
+    fi
     if [ "$XHTTP_ENABLE" = "1" ] && [ -n "$XHTTP_IBD_UUID" ]; then
         local EXISTING_XHTTP_HOST
         EXISTING_XHTTP_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
@@ -418,7 +438,7 @@ panel_setup_api() {
         else
             panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
                 --arg cu "$CFG_UUID" --arg iu "$XHTTP_IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" --arg xpath "$XHTTP_PATH" \
-                --argjson port "${J_XHTTP_PUBLIC_PORT:-8443}" \
+                --argjson port "$XHTTP_PUBLIC_PORT_VAL" \
                 '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"StealXHTTP",address:$addr,port:$port,path:$xpath,sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
                 && ok "Хост для XHTTP создан" || warn "Ошибка создания хоста для XHTTP"
         fi
