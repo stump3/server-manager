@@ -237,11 +237,28 @@ panel_install() {
             # upstream/ME/пользователи переносятся из текущего конфига
             # без изменений.
             local _telemt_existing_cfg; _telemt_existing_cfg=$(telemt_detect_config_path)
-            _telemt_use_me=$(telemt_detect_use_me "$_telemt_existing_cfg")
+            # `|| true` REQUIRED on each of these: absence of a match
+            # (no use_middle_proxy line / no [[upstreams]] block at all
+            # — the common case, since SOCKS5 upstream is optional) is a
+            # legitimate, expected outcome from these detectors, not an
+            # error — but under this codebase's global `set -euo
+            # pipefail`, `var=$(cmd)` aborts the whole panel_install()
+            # the instant `cmd` returns non-zero, which `grep`/pipeline
+            # "no match" does. Confirmed by direct reproduction this
+            # session: reconfiguring an integrated TeleMT that has no
+            # SOCKS5 upstream configured (i.e. every install that hasn't
+            # explicitly set one) silently killed panel_install() right
+            # here, before telemt_install_noninteractive was ever
+            # called. The detection functions themselves (lib/telemt/
+            # core.sh) are left returning their real exit code — this is
+            # the right place to tolerate "not found", not their
+            # definition, since other future callers may legitimately
+            # want to distinguish "found empty" from "not present".
+            _telemt_use_me=$(telemt_detect_use_me "$_telemt_existing_cfg") || true
             [ -z "$_telemt_use_me" ] && _telemt_use_me="true"
-            _telemt_socks_addr=$(telemt_detect_socks5_addr "$_telemt_existing_cfg")
-            _telemt_socks_user=$(telemt_detect_socks5_user "$_telemt_existing_cfg")
-            _telemt_socks_pass=$(telemt_detect_socks5_pass "$_telemt_existing_cfg")
+            _telemt_socks_addr=$(telemt_detect_socks5_addr "$_telemt_existing_cfg") || true
+            _telemt_socks_user=$(telemt_detect_socks5_user "$_telemt_existing_cfg") || true
+            _telemt_socks_pass=$(telemt_detect_socks5_pass "$_telemt_existing_cfg") || true
             while IFS= read -r _pair; do
                 [ -n "$_pair" ] && _telemt_pairs+=("$_pair")
             done < <(telemt_detect_user_pairs "$_telemt_existing_cfg")
