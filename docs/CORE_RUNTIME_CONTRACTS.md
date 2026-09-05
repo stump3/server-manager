@@ -116,6 +116,69 @@ Where Edge already fully specifies something (Listener, PROXY invariant,
 Backend, Domain, Port allocation, Capability required/optional), this
 document does not restate it — it cites Edge by section name.
 
+**Explicit ownership split (review addition — answers directly, rather
+than leaving it implicit across §3's tree)**:
+
+| Belongs to Edge (`edge_contracts.md`, unchanged) | Belongs to Core/Runtime (this document) |
+|---|---|
+| `Topology` (id, public_ingress_owner, required_listeners, required/optional capabilities, domain_roles, port_allocation_profile, runtime_components) | `Deployment` (a Topology reference + actually-chosen capabilities + actual domain values + TeleMT config — §2.1, §3.1) |
+| `Listener`, `Route`, `Backend` | `RuntimeComponent` (§5 — the lifecycle-bearing unit a Listener's `runtime_owner`/`integration_owner` columns point at, not a redefinition of the Listener itself) |
+| `Domain` (roles + contract) | referenced by value inside `Deployment.domains` — no second Domain model |
+| `PortAllocation` (topology × capability × role → ports) | referenced, never duplicated — §4 explicitly forbids re-stating port values inside `Deployment` |
+| `Capability` (name, applies_to, required/optional, listeners_added, domain_role_added) | `LifecycleIntent`/Reconciler (§6-7) act *on* Capabilities' consequences (which Listeners/RuntimeComponents they imply) but do not redefine what a Capability is |
+| — | desired state / actual state / reconciliation / compatibility boundary — all new to this document, none exist in Edge |
+
+There is exactly one source of truth for each entity in the left column
+— Edge — and this document does not introduce a second, competing
+definition for any of them anywhere below.
+
+### 2.1 — Three distinct terms, disambiguated (review fix)
+
+A prior draft of this document used "topology" loosely enough that
+`Deployment.topology`'s exact relationship to Edge's own `Topology`
+contract was ambiguous — sometimes read as "a copy of the MODE string,"
+sometimes implicitly treated as "the full Edge Topology object." Fixed
+here, explicitly, as three distinct terms with one arrow between each:
+
+```text
+legacy input          the raw MODE string ("1"|"2"|"F"|"J") and the
+                       positional CLI/install-time values as they exist
+                       in cli.sh/install.sh today — nothing about this
+                       layer is modeled by Core at all
+        │
+        ▼  compatibility resolver (§8 — unchanged placement, today's
+        │  scattered [ "$MODE" = ... ] branches)
+        ▼
+Topology               Edge's own contract, entirely unchanged by this
+                       document, keyed by `id` = the MODE string
+                       (public_ingress_owner, required_listeners,
+                       required/optional capabilities, domain_roles,
+                       port_allocation_profile, runtime_components —
+                       see edge_contracts.md's own Topology contract).
+                       Core does not add fields to this object and does
+                       not define a second version of it.
+        │
+        ▼
+Deployment             Core's own, new (§3.1) — holds a *reference* to
+                       exactly one Topology (by `id`), plus the
+                       information that only exists once an install is
+                       actually being described: which optional
+                       capabilities were actually turned on, the actual
+                       domain values, and TeleMT's actual config (if
+                       any). Deployment is strictly narrower in scope
+                       than "everything Topology already says," and
+                       strictly additive to it — never a restatement.
+```
+
+`Deployment.topology` (§3.1) is this reference — the Topology `id`
+string — not a duplicate of Topology's own field set. Every other field
+already on Topology (`public_ingress_owner`, `required_listeners`,
+`required_capabilities`, ...) is read by looking that Topology up via
+`Deployment.topology`, never copied onto `Deployment` itself. This is
+the same resolution the task asked for
+(`MODE=F → resolver → Topology → Deployment`), made explicit rather than
+left implicit in field comments.
+
 ---
 
 ## 3. Core model
@@ -128,7 +191,7 @@ Core
   ├── Domain               (= Edge's Domain contract, unchanged)
   ├── PortAllocation       (= Edge's PortAllocation contract, unchanged)
   ├── RuntimeComponent     (new — §5)
-  └── LifecycleIntent      (new — §8)
+  └── LifecycleIntent      (new — §7; not a separate field-list, see below)
 ```
 
 **Naming finding, not silently applied**: the task's own outline names
@@ -147,7 +210,9 @@ decision layered on top of it — it does not replace or widen Edge's
 
 ```text
 Deployment
-  - topology              (Edge Topology.id: "1" | "2" | "F" | "J")
+  - topology              (reference to one Edge Topology, by its `id` —
+                            "1" | "2" | "F" | "J". Not a copy of that
+                            Topology's own fields — see §2.1)
   - capabilities           (Capability[] — which optional capabilities
                             are actually turned on for this install;
                             required capabilities are implied by topology,
@@ -196,7 +261,17 @@ subsystem, not a description of TeleMT's own internals.
 ## 4. Desired State — minimal representation
 
 Pseudodata, not a schema. Four examples, exactly the four the task asked
-for, each traced against real current behavior:
+for, each traced against real current behavior. `domains` keys below
+(`panel`/`sub`/`selfsteal`) are shorthand for Edge's own Domain contract
+roles one-to-one — `panel`→"Panel UI" (`PANEL_DOMAIN`), `sub`→
+"Subscription" (`SUB_DOMAIN`), `selfsteal`→"Self-steal / REALITY
+identity" (`SELFSTEAL_DOMAIN`) — not a new naming scheme; Panel/Sub and
+SELFSTEAL are kept as separate keys specifically because Edge's own
+Domain contract already treats them as separate roles with different
+routing behavior (Panel/Sub is an SNI-routed edge domain; SELFSTEAL is
+consumed directly by Xray's REALITY identity and "never appears in any
+SNI map" — Edge's own wording). Collapsing them into one key here would
+misrepresent that distinction Edge went out of its way to state.
 
 **F** (XHTTP off, no TeleMT — the default/most common F install):
 ```text
@@ -413,6 +488,36 @@ generic `identity` beyond the one justified above, no speculative
 
 ---
 
+### 5.4 — Explicit non-claims (review addition)
+
+Stated once, plainly, so no individual field's careful "future
+requirement" wording upstream can be misread in isolation: **none of the
+following exist anywhere in `variant-f-j` today**, and nothing in this
+document should be read as claiming otherwise —
+
+- a generic `health` check for any component other than TeleMT
+  (TeleMT's own `telemt_menu_status()` is real; nginx/Xray/Panel have no
+  equivalent);
+- a `config_hash`/config-drift-detection mechanism, for any component;
+- a **desired-state or actual-state store** — no database, file, or
+  cache anywhere holds either "what should be running" or "what is
+  actually running" outside of the generated config files themselves
+  (`nginx.conf`, Xray's rendered JSON) and the Panel API's own live
+  state. §6 below describes a conceptual ownership split between Core
+  and Runtime; it does not imply a storage layer implementing that split
+  exists;
+- a reconciliation engine — no code compares desired vs. actual state
+  and decides an action for anything except Remote Node's narrow
+  lookup-before-create (§7);
+- a `repair` operation, for any component;
+- a `reinstall` abstraction distinct from a fresh install, for any
+  component.
+
+Every one of these is either `Target` or `Future requirement` per §11's
+table — this section exists only to collect them in one place so the
+distinction can't be missed by reading a single field's entry out of
+context.
+
 ## 6. Reconciliation boundary
 
 ```text
@@ -466,6 +571,19 @@ extends the same placement to the newer `F_XHTTP_ENABLE`/
 ---
 
 ## 7. Lifecycle contract
+
+**`LifecycleIntent`, defined (review fix — was listed in §3's Core model
+tree but never actually given a definition; the cross-reference there
+pointed at the wrong section)**: it is not a separately-fielded object
+with its own schema. `LifecycleIntent` is simply *one of the verbs below
+(`create|install|reconcile|repair|reinstall|remove|health`) applied to
+one `RuntimeComponent` identity* — the pairing of "which operation" and
+"which component," nothing more. It is named as its own term in the Core
+model tree only because the Reconciler (§6) needs to hand *something*
+concrete to an adapter/generator, and "a lifecycle verb + a target
+identity" is the minimal shape of that something. No new field list is
+introduced beyond what §7's vocabulary and §5.2's `identity` field
+already provide.
 
 **Currently exists** in `variant-f-j` (verified this session, not
 assumed):
@@ -548,8 +666,18 @@ Compatibility resolver
    fallback, config.sh's positional `${13:-0}` default for F_XHTTP_ENABLE)
         │
         ▼
-Deployment (§3.1) + Capabilities + TeleMtIntegration
+Topology (Edge, looked up by id = the resolved MODE letter — §2.1;
+          unchanged, not re-defined here)
+        │
+        ▼
+Deployment (§3.1 — a Topology reference + the actually-chosen
+            Capabilities + actual Domain values + TeleMtIntegration)
 ```
+
+This is the exact three-stage chain the task asked for
+(`MODE=F → resolver → Topology → Deployment`) — §2.1's disambiguation
+made explicit as this diagram's middle step, which an earlier draft of
+this section collapsed directly from resolver to Deployment.
 
 This is Edge's own "Legacy MODE compatibility" section, extended to cover
 every positional-argument chain confirmed this session (not just MODE):
