@@ -45,6 +45,18 @@
 F_NGINX_HTTPS_PORT=7443
 F_XRAY_VISION_PORT=8443
 
+# F+XHTTP (2026-09-05, Variant A — approved): F Vision stays permanently
+# on 8443 (never renumbered); XHTTP, when explicitly opted into via
+# XHTTP_ENABLE=1 (see panel_generate_nginx_config_f()'s 11th arg), gets
+# its OWN dedicated public port and OWN loopback backend port, entirely
+# separate from Variant J's port numbers (J is a distinct, unchanged
+# topology — F+XHTTP is NOT "F reusing J's generator", it is F's own
+# generator gaining an optional second public leg). Do not confuse
+# F_XHTTP_PUBLIC_PORT with J_XHTTP_PUBLIC_PORT — same role, different
+# topology, different value, defined independently here.
+F_XHTTP_PUBLIC_PORT=9443
+F_XRAY_XHTTP_PORT=19444
+
 # panel_generate_nginx_config_f — Variant F. Writes a FULL top-level
 # nginx.conf (mounted at /etc/nginx/nginx.conf, NOT conf.d/default.conf
 # — the `stream {}` directive is only valid at the top level, never
@@ -63,6 +75,15 @@ panel_generate_nginx_config_f() {
     local COOKIE_VAL="$8"
     local TELEMT_DOMAIN="${9:-}"
     local TELEMT_PORT="${10:-}"
+    # XHTTP_ENABLE (2026-09-05, F+XHTTP): OPTIONAL 11th arg, same
+    # backward-compatibility contract as TELEMT_DOMAIN/PORT above — every
+    # existing 8/9/10-arg call site keeps working unchanged (omitted =>
+    # "0" => byte-identical single-Vision-leg F output, no second
+    # stream{} server{} block emitted at all). "1" adds the XHTTP public
+    # leg described by F_XHTTP_PUBLIC_PORT/F_XRAY_XHTTP_PORT above. Must
+    # be the literal string "0" or "1" (same convention as api.sh's
+    # XHTTP_ENABLE, chosen there to read as a capability flag).
+    local XHTTP_ENABLE="${11:-0}"
 
     # TeleMT support added 2026-08-31 (Phase C, XHTTP_ENABLE/
     # TELEMT_COLOCATE architecture): TELEMT_DOMAIN/TELEMT_PORT are
@@ -106,7 +127,38 @@ panel_generate_nginx_config_f() {
         TELEMT_UPSTREAM=$'\n'"    upstream telemt { server 127.0.0.1:${TELEMT_PORT}; }"
     fi
 
+    # F+XHTTP optional second public leg. Same "append to end of
+    # preceding line, not a standalone heredoc line" discipline as
+    # TELEMT_MAP_LINE above, for the same byte-identity reason (an empty
+    # XHTTP_UPSTREAM_F on its own heredoc line would still emit a blank
+    # line). Named xray_xhttp_f (not xray_xhttp) deliberately, distinct
+    # from variant_j.sh's own "xray_xhttp" upstream name — so a grep for
+    # "xray_xhttp" (management.sh's pre-marker legacy fingerprint) does
+    # not accidentally match F+XHTTP's nginx.conf too; see this file's
+    # SERVER_MANAGER_XHTTP marker comment below for the actual supported
+    # detection mechanism going forward.
+    local XHTTP_UPSTREAM_F=""
+    local XHTTP_SERVER_BLOCK_F=""
+    if [ "$XHTTP_ENABLE" = "1" ]; then
+        XHTTP_UPSTREAM_F=$'\n'"    upstream xray_xhttp_f { server 127.0.0.1:${F_XRAY_XHTTP_PORT}; }"
+        XHTTP_SERVER_BLOCK_F="
+    server {
+        listen ${F_XHTTP_PUBLIC_PORT};
+        proxy_pass xray_xhttp_f;
+        # No proxy_protocol here, same reasoning as variant_j.sh's own
+        # :\$J_XHTTP_PUBLIC_PORT server{}: StealXHTTP's Xray inbound does
+        # not set sockopt.acceptProxyProtocol (see j.json/lib/panel/api.sh
+        # panel_reality_accept_proxy_protocol(), which only ever applies
+        # accept_pp to the Steal/Vision inbound, never to StealXHTTP,
+        # regardless of MODE) — a PROXY v1 preamble here would break the
+        # REALITY handshake instead of fixing anything. Single
+        # destination, no ssl_preread map needed.
+    }"
+    fi
+
     cat > /opt/remnawave/nginx.conf << NGINX_CONF_EOF
+# SERVER_MANAGER_TOPOLOGY=F
+# SERVER_MANAGER_XHTTP=${XHTTP_ENABLE}
 user nginx;
 worker_processes auto;
 pid /run/nginx.pid;
@@ -270,7 +322,7 @@ stream {
         default         xray_reality;
     }
     upstream panel_and_sub { server 127.0.0.1:${F_NGINX_HTTPS_PORT}; }
-    upstream xray_reality  { server 127.0.0.1:${F_XRAY_VISION_PORT}; }${TELEMT_UPSTREAM}
+    upstream xray_reality  { server 127.0.0.1:${F_XRAY_VISION_PORT}; }${TELEMT_UPSTREAM}${XHTTP_UPSTREAM_F}
 
     server {
         listen 443;
@@ -296,7 +348,7 @@ stream {
         # for a REALITY inbound as for a plain TLS one. Real client IPs
         # now propagate correctly on both legs.
         proxy_protocol on;
-    }
+    }${XHTTP_SERVER_BLOCK_F}
 }
 NGINX_CONF_EOF
 }
