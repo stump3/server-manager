@@ -421,26 +421,42 @@ RuntimeComponent
 Each field checked against whether current code actually needs it,
 per the task's own instruction not to accept the outline automatically:
 
-- **`identity`**: justified concretely by `docs/ARCHITECTURE.md`'s
-  Remote Node identity decision (§4.2 there) — `SELFSTEAL_DOMAIN` is
-  already used as the naming key for both the Panel-side config profile
-  and the node object (`RemoteNode-${SELFSTEAL_DOMAIN}`, per that
-  document's own citation of `panel_node_register()`). **NOT VERIFIED
-  (beta-branch precedent)** — that citation is against `beta`'s
-  `panel_node_register()`, and this session did not re-derive the same
-  naming convention from `variant-f-j`'s own `lib/panel/node/api.sh`
-  independently (only its lookup-before-create *mechanism* was
-  re-verified directly, in Finding 3 above — the specific *naming key*
-  used for that lookup was not re-read this session). Kept as a field
-  because *some* stable identity is unavoidable for any lookup-before-
-  create operation to exist at all — Edge's own citation of this exact
-  mechanism (`edge_contracts.md`'s reference to
-  `panel_setup_api()`'s `Default-Profile` lookup, which *is*
-  `variant-f-j` code, confirmed present at `api.sh:50-53` region in
-  prior sessions) is what justifies the field's existence; the specific
-  value used for Remote Node identity is flagged `NOT VERIFIED` pending
-  a direct re-read of `variant-f-j`'s own node registration code for its
-  exact lookup key.
+- **`identity`** — **now confirmed directly against `variant-f-j`'s own
+  `lib/panel/node/api.sh`** (code audit complete; this replaces the
+  earlier `NOT VERIFIED (beta-branch precedent)` wording, which is now
+  stale). Remote Node identity is `Nodes.name`, and its value is exactly
+  `RemoteNode-${SELFSTEAL_DOMAIN}` — confirmed at `api.sh:275`
+  (`--arg name "RemoteNode-${SELFSTEAL_DOMAIN}"`). Lookup is
+  `GET /api/nodes` followed by `select(.name==$name)`
+  (`api.sh:268-276`) — a plain name-equality filter, nothing else.
+  Directly confirmed **not** part of this identity, because none of
+  them appear in the lookup filter: address/IP (`NODE_ADDR`, only used
+  at creation time, never re-applied to an already-matched Node —
+  a changed IP silently leaves the old value in Panel), SSH endpoint
+  (`_SSH_IP`/`_SSH_USER`, used only to reach the remote host, never sent
+  to the Panel API at all), credentials (`SUPERADMIN_USER`/`PASS`, used
+  only to obtain a login token), and hostname (no such field exists
+  anywhere in the Node creation payload, `api.sh:283-286`). The
+  config-profile that backs this Node uses the identical `name`
+  convention (`RemoteNode-${SELFSTEAL_DOMAIN}`, `api.sh:217,235`), so
+  both share one identity source: `SELFSTEAL_DOMAIN`.
+
+  **Host identity is a separate, weaker mechanism, not the same as
+  Node's** — confirmed at `api.sh:313-315`: a Host is matched by
+  `inbound.configProfileInboundUuid == IBD_UUID`, where `IBD_UUID` comes
+  from the config-profile step, not from any field on the Host object
+  itself. This is convention-level identity, not a DB-enforced unique
+  key — the file's own comment (`api.sh:65-72`, `296-304`) states
+  neither `remark` nor `address` is unique on the Host model upstream,
+  so nothing stops two Hosts pointing at the same inbound except this
+  code's own discipline. In this create path, Node and Host are **not**
+  linked by a direct foreign key — the relationship is indirect, through
+  the shared config-profile inbound UUID (`api.sh:62-64`'s own comment
+  confirms the `HostsToNodes` join table is never populated by this
+  code). `RuntimeComponent.identity`, as a single field, is therefore
+  Node-shaped by default; a Host-typed `RuntimeComponent` would need to
+  document this weaker, indirect identity explicitly rather than
+  assuming Node's identity strength transfers to it.
 - **`type`**: five values, one per row in Edge's Runtime ownership table.
   No sixth value added speculatively (no `hysteria2`, no future
   protocol) — matching Edge's own non-goals section.
@@ -479,7 +495,7 @@ system fields with no basis here:
 | `config_present` | `management.sh`'s marker read (§5.1) is exactly this — "does a config exist, and what does it claim about itself" | **current**, directly cited above |
 | `config_hash` | Not found anywhere in current code (no `sha256sum`/`md5sum` of any generated config located this session) | future requirement — not invented as "typical for config-drift systems"; no current consumer would use it |
 | `health` | `telemt_menu_status()` (`lib/telemt/menu.sh`) is a real, working, interactive health read for TeleMT specifically — confirmed present in Edge's own citation and independently in this session's `docs/CONTRACTS.md` contract-14 citation of the same function/lines | **current, but TeleMT-only** — no equivalent exists for nginx/Xray/Panel today |
-| `identity` | Same status as §5.2's `identity` field — needed for any lookup, `NOT VERIFIED` for the exact value used by Remote Node specifically |
+| `identity` | Confirmed, per §5.2's now-verified rewrite — `Nodes.name = "RemoteNode-${SELFSTEAL_DOMAIN}"`, read back via the same `GET /api/nodes` + name-filter lookup used for creation | **current, Node-only** — Host's own identity read (`inbound.configProfileInboundUuid`) is separate and weaker, per §5.2 |
 | `running` / `stopped` | Not found as an explicit state read anywhere — `docker compose up -d` calls exist (`api.sh:130`) but nothing polls container state back into a decision | future requirement |
 
 Fields from the task's own example list that are **not** added: no
@@ -587,8 +603,10 @@ already provide.
 
 **Currently exists** in `variant-f-j` (verified this session, not
 assumed):
-- CREATE-with-lookup-before-create-and-rollback, for Remote Node only
-  (`lib/panel/node/api.sh`, Finding 3).
+- CREATE-with-lookup-before-create-and-rollback, for Remote Node —
+  **now fully verified, not just the mechanism's existence**: identity,
+  lookup query, and rollback scoping are all confirmed directly against
+  `lib/panel/node/api.sh` (see §5.2's rewrite and the bullets below).
 - CREATE-with-lookup-before-create (no rollback needed — single resource),
   for the Xray config profile (`panel_setup_api()`'s `Default-Profile`
   lookup).
@@ -602,7 +620,9 @@ assumed):
 `docs/ARCHITECTURE.md` §4's Remote Node state machine — marked
 `NOT VERIFIED (beta-branch precedent)` as a whole, since no code in
 `variant-f-j` implements this full shape today, only the CREATE slice
-above):
+above — **this status is unchanged by the completed identity audit**:
+confirming *identity* does not confirm *reconcile/repair*, which remain
+separately and independently absent, per below):
 ```
 create    — first-time provisioning of a component for a given Deployment
 install   — apply configuration + bring runtime up
@@ -627,26 +647,58 @@ CREATE path, and even that is CREATE-only (no RECONCILE/REPAIR
 distinction actually implemented, per §5.2's `lifecycle_state`
 justification above).
 
-**Specific answers to the task's Node questions**, each graded honestly:
+**Specific answers to the task's Node questions — code audit now
+complete, statuses updated accordingly**:
 - *What happens to an already-existing Node, how is its identity kept*:
-  `NOT VERIFIED` for `variant-f-j` specifically — the lookup mechanism is
-  confirmed real (Finding 3), the exact identity key it looks up by was
-  not re-read this session (see §5.2).
-- *How are duplicate Panel resources avoided*: **current, verified** —
-  the same lookup-before-create mechanism (Finding 3) is what prevents
-  it, for both the config-profile and the Node/Host pair.
-- *What does reinstall mean*: `NOT VERIFIED` — no `reinstall` operation
-  distinct from a fresh CREATE was located for Remote Node in
-  `variant-f-j` this session.
-- *What does repair mean*: `NOT VERIFIED` — no repair operation located.
-- *What does remove mean*: partially verified — `panel_remove()`
-  (`lib/panel/management.sh`, cited by Edge) is confirmed to never touch
-  TeleMT's paths, which answers "does remove correctly scope to
-  integration_owner, not runtime_owner, for TeleMT" — but Remote Node's
-  own remove path was not independently re-read this session.
+  **CURRENT / VERIFIED** — identity is `Nodes.name =
+  "RemoteNode-${SELFSTEAL_DOMAIN}"`, looked up via `GET /api/nodes` +
+  `select(.name==...)` (`api.sh:268-276`). A re-run with the same
+  `SELFSTEAL_DOMAIN` matches the existing Node and reuses its `uuid`;
+  address/IP, SSH endpoint, credentials, and hostname play no part in
+  this lookup, per §5.2.
+- *How are duplicate Panel resources avoided*: **CURRENT / VERIFIED** —
+  the same name-based lookup-before-create is what prevents it, for the
+  config-profile, the Node, and (via the weaker inbound-UUID match) the
+  Host, checked independently in sequence (`api.sh:234-241`,
+  `258-280`, `313-318`) — a Node that exists with no matching Host is
+  handled correctly: a new Host is created without re-touching the Node.
+- *What does reinstall mean*: `NOT FOUND` — no `reinstall` operation
+  distinct from a fresh CREATE exists for the Panel-side Node/Host
+  objects. Separately: the *remote-host deployment* half of
+  `panel_install_remote_node()` (file copy, `docker compose up -d`)
+  unconditionally re-executes on every invocation regardless of whether
+  the Panel objects already exist — this is real, but it is not a Panel
+  lifecycle abstraction; it's simply the absence of any state check on
+  that side, and is called out separately below as a documentation/code
+  inconsistency, not modeled here as a "reinstall" operation.
+- *What does repair mean*: `NOT FOUND` — no repair operation exists;
+  confirmed by the code's own comment (`api.sh:222-225`) that
+  diff/repair against a mismatched existing profile "is RECONCILE's
+  job... not defined here and not invented here."
+- *What does remove mean*: `panel_remove()` (`lib/panel/management.sh`,
+  cited by Edge) is confirmed to never touch TeleMT's paths, which
+  answers "does remove correctly scope to integration_owner, not
+  runtime_owner, for TeleMT" — Remote Node's own remove path was not
+  independently re-read even in the completed identity audit, and stays
+  open (see Open Questions).
 - *Who owns stable identity*: for TeleMT, `lib/telemt/*` unambiguously
-  (Edge's structural proof). For Remote Node, `NOT VERIFIED` pending the
-  identity-key re-read noted above.
+  (Edge's structural proof). For Remote Node, **now CURRENT / VERIFIED**
+  — `lib/panel/node/api.sh` itself owns it (the `name` convention is
+  defined and consumed entirely within that one file; nothing external
+  computes or stores it).
+
+**Implementation/documentation debt found during the identity audit
+(observation only — source code is unchanged, this is not a contract
+change)**: `lib/panel/node/install.sh:28` unconditionally warns the
+operator on every run: *"Повторный запуск создаст новую ноду/хост в
+Panel (операция не идемпотентна)"* ("re-running will create a new
+node/host in Panel — the operation is not idempotent"). This
+contradicts the lookup-before-create behavior confirmed above — a
+re-run with the same `SELFSTEAL_DOMAIN` reuses the existing Node/Host,
+it does not duplicate them. The warning text appears to predate the
+lookup-before-create hardening pass and was not updated alongside it.
+Recorded here as known debt; fixing the string is out of scope for this
+document (per this task's constraints, no source file is touched).
 
 ---
 
@@ -821,18 +873,26 @@ debt, so it is not listed here).
 
 ## 14. Open questions
 
-1. **Remote Node identity key** — is it actually `SELFSTEAL_DOMAIN` in
-   `variant-f-j`'s own `lib/panel/node/api.sh`, matching `beta`'s
-   `ARCHITECTURE.md` §4.2 decision, or something else? Not re-read this
-   session (§5.2, §7). Blocks finalizing `RuntimeComponent.identity`'s
-   exact semantics for Remote Node specifically (TeleMT's and Xray's own
-   identity/lookup keys are separately confirmed real, per §7's bullet
-   list — only Remote Node's is open).
-2. **Does any RECONCILE/REPAIR/REINSTALL distinction exist anywhere in
-   `variant-f-j` beyond the CREATE-with-lookup pattern?** Not found this
-   session; assumed absent, but a targeted grep for
-   `reconcile|repair|reinstall` across `lib/panel/node/*.sh` specifically
-   was not performed this round.
+1. **~~Remote Node identity key~~ — CLOSED.** Directly confirmed this
+   session against `variant-f-j`'s own `lib/panel/node/api.sh`:
+   `Nodes.name = "RemoteNode-${SELFSTEAL_DOMAIN}"`, looked up via
+   `GET /api/nodes` + name-equality filter. See §5.2, §7. No longer an
+   open question; not replaced by a new one, since nothing about the
+   answer left a further gap (address/SSH/credentials/hostname were all
+   directly ruled out as identity components in the same pass, not left
+   ambiguous).
+2. **RECONCILE/REPAIR/REINSTALL for Remote Node — now confirmed absent,
+   not merely assumed.** A full read of both `lib/panel/node/api.sh` and
+   `lib/panel/node/install.sh` (this session's identity audit) found no
+   such operations, and the code's own comment at `api.sh:222-225`
+   explicitly disclaims reconcile ("not defined here and not invented
+   here"). This is narrower than the general future-requirement already
+   named in §7 — it's now a confirmed fact about Remote Node
+   specifically, not just an assumption. What remains genuinely open:
+   whether the same is true for nginx/Xray/TeleMT's own lifecycles
+   (never audited at this level of detail) — that broader question is
+   still exactly what §7's "Future requirement" paragraph already
+   covers, unchanged.
 3. **Should `WEB_SERVER` be folded into Edge's `Topology` model
    explicitly** (as §3.1 suggests it should, structurally), or does it
    deserve its own top-level Core entity? This document takes the
