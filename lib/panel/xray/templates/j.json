@@ -49,16 +49,52 @@
 #                 a PROXY preamble, so it must not expect one either — a
 #                 mismatch here would break every MODE=J REALITY handshake
 #                 on the XHTTP leg, not just fail to help).
+#   $listen     — optional inbound "listen" bind address (panel_reality_listen_addr).
+#                 J always passes "127.0.0.1" (both inbounds sit behind
+#                 nginx's stream{} router — see variant_j.sh's header
+#                 comment — and were always meant to be loopback-only;
+#                 this field is what actually enforces that, previously
+#                 unenforced). Applied to BOTH Steal and StealXHTTP —
+#                 unlike $accept_pp, which is Steal-only, the loopback-bind
+#                 requirement applies equally to both inbounds, since both
+#                 are reached exclusively via nginx's own loopback
+#                 proxy_pass/upstream (xray_vision and xray_xhttp).
 [
-    {
-        "tag": "Steal",
-        "port": $vport,
-        "protocol": "vless",
-        "settings": { "clients": [], "decryption": "none" },
-        "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
-        "streamSettings": (
-            {
-                "network": "tcp",
+    (
+        {
+            "tag": "Steal",
+            "port": $vport,
+            "protocol": "vless",
+            "settings": { "clients": [], "decryption": "none" },
+            "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
+            "streamSettings": (
+                {
+                    "network": "tcp",
+                    "security": "reality",
+                    "realitySettings": {
+                        "show": false,
+                        "xver": 1,
+                        "dest": $dest,
+                        "spiderX": "",
+                        "shortIds": [$sid],
+                        "privateKey": $pk,
+                        "serverNames": [$domain]
+                    }
+                }
+                + (if $accept_pp then { "sockopt": { "acceptProxyProtocol": true } } else {} end)
+            )
+        }
+        + (if ($listen // "") != "" then { "listen": $listen } else {} end)
+    ),
+    (
+        {
+            "tag": "StealXHTTP",
+            "port": $xport,
+            "protocol": "vless",
+            "settings": { "clients": [], "decryption": "none" },
+            "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
+            "streamSettings": {
+                "network": "xhttp",
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
@@ -68,30 +104,10 @@
                     "shortIds": [$sid],
                     "privateKey": $pk,
                     "serverNames": [$domain]
-                }
+                },
+                "xhttpSettings": { "path": $xpath }
             }
-            + (if $accept_pp then { "sockopt": { "acceptProxyProtocol": true } } else {} end)
-        )
-    },
-    {
-        "tag": "StealXHTTP",
-        "port": $xport,
-        "protocol": "vless",
-        "settings": { "clients": [], "decryption": "none" },
-        "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
-        "streamSettings": {
-            "network": "xhttp",
-            "security": "reality",
-            "realitySettings": {
-                "show": false,
-                "xver": 1,
-                "dest": $dest,
-                "spiderX": "",
-                "shortIds": [$sid],
-                "privateKey": $pk,
-                "serverNames": [$domain]
-            },
-            "xhttpSettings": { "path": $xpath }
         }
-    }
+        + (if ($listen // "") != "" then { "listen": $listen } else {} end)
+    )
 ]
