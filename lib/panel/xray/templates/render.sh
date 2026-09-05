@@ -52,7 +52,7 @@ _PANEL_XRAY_TEMPLATE_DIR="$(dirname "${BASH_SOURCE[0]}")"
 #     arguments below still control) — see f.json's header comment.
 #
 # Args: MODE PRIV_KEY SHORT_ID DEST_VAL SELFSTEAL_DOMAIN VISION_PORT
-#       XHTTP_PORT XHTTP_PATH ACCEPT_PP [XHTTP_ENABLE]
+#       XHTTP_PORT XHTTP_PATH ACCEPT_PP [XHTTP_ENABLE] [LISTEN_ADDR]
 # ACCEPT_PP must be the literal string "true" or "false" (as returned by
 # panel_reality_accept_proxy_protocol) — passed to jq via --argjson so it
 # becomes a real JSON boolean, not a string, for the templates' `if
@@ -61,6 +61,22 @@ _PANEL_XRAY_TEMPLATE_DIR="$(dirname "${BASH_SOURCE[0]}")"
 # match TELEMT_COLOCATE's planned shape and to read unambiguously as a
 # capability flag rather than a JSON-bound boolean, since it is consumed
 # entirely in bash here and never reaches jq).
+#
+# LISTEN_ADDR added (bind-correctness fix, independent of the
+# XHTTP_ENABLE/MODE decoupling work above): the 11th, OPTIONAL positional
+# arg, appended at the end for the same backward-compatibility reason
+# XHTTP_ENABLE was — every existing 9-arg or 10-arg call site keeps
+# working unchanged (an omitted LISTEN_ADDR renders no "listen" key at
+# all, byte-identical to today's output). When non-empty (expected value:
+# "127.0.0.1", from panel_reality_listen_addr()), every inbound emitted
+# by the selected template (Steal, and StealXHTTP when present) gets an
+# explicit "listen" key set to that address — see f.json's/j.json's own
+# header comments for why MODE=1/2 must keep passing an empty string here
+# (their Steal inbound listens directly on public :443 with no nginx in
+# front of it) while MODE=F/J pass "127.0.0.1" (their inbounds sit behind
+# nginx's stream{} router and were always meant to be loopback-only, per
+# variant_f.sh's/variant_j.sh's own comments — this was previously
+# unenforced, see panel_reality_listen_addr()'s doc comment in api.sh).
 #
 # Prints the rendered JSON array on stdout, or nothing (with jq's own
 # stderr suppressed, matching the original inline blocks' `2>/dev/null`)
@@ -78,6 +94,7 @@ panel_xray_render_inbounds() {
     local XHTTP_PATH="$8"
     local ACCEPT_PP="$9"
     local XHTTP_ENABLE="${10:-}"
+    local LISTEN_ADDR="${11:-}"
 
     # Normalize only when the caller didn't say — an explicit "0" from a
     # MODE=J caller (or an explicit "1" from a MODE=F caller) is honored
@@ -104,5 +121,6 @@ panel_xray_render_inbounds() {
         --argjson xport "$XHTTP_PORT" \
         --arg xpath "$XHTTP_PATH" \
         --argjson accept_pp "$ACCEPT_PP" \
+        --arg listen "$LISTEN_ADDR" \
         -f "$TEMPLATE" 2>/dev/null
 }
