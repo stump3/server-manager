@@ -100,6 +100,44 @@ panel_reality_xhttp_inbound_port() {
     echo "${J_XRAY_XHTTP_PORT:-18444}"
 }
 
+# panel_reality_listen_addr — PRE-EXISTING BUG FIX (bind-correctness pass,
+# separate from and prior to any XHTTP_ENABLE/MODE decoupling work): the
+# Steal/StealXHTTP inbound JSON templates (f.json/j.json) never set a
+# "listen" key at all, so Xray binds the wildcard address (0.0.0.0/::) —
+# confirmed against Xray-core's own docs ("::" is equivalent to "0.0.0.0";
+# both listen on IPv4 and IPv6 simultaneously when no listen address is
+# given). variant_f.sh's and variant_j.sh's own header comments both
+# describe these inbounds as "loopback-only, reached only via nginx's
+# stream{} proxy_pass" — that description was aspirational, not enforced:
+# nginx's upstream blocks only ever *connect* to 127.0.0.1, but nothing
+# stopped Xray from also accepting a direct connection from the public
+# internet on the same port, bypassing nginx (and its proxy_protocol
+# wrapping) entirely. A raw external connection there still can't
+# complete a REALITY handshake without the PROXY v1 preamble Xray expects
+# first, so this was not an exploitable bypass, but the port was
+# genuinely reachable at the OS/socket level, which is a real
+# fingerprinting exposure the "loopback-only" comment didn't actually
+# deliver on.
+#
+# Scope: MODE=1/2's Steal inbound is deliberately DIFFERENT — it listens
+# directly on public :443 with no nginx in front of it at all (see
+# panel_reality_dest_val()'s own doc comment), so it must keep binding
+# the wildcard address; giving it "127.0.0.1" would break every MODE=1/2
+# REALITY handshake, not fix anything. Only MODE=F/J's Steal/StealXHTTP
+# inbounds sit behind nginx's stream{} router and are meant to be
+# loopback-only, so only those get an explicit "listen" value here.
+# Echoes an empty string for MODE=1/2 (meaning render.sh emits no
+# "listen" key at all — exact current behavior, unchanged) and
+# "127.0.0.1" for MODE=F/J.
+panel_reality_listen_addr() {
+    local MODE="$1"
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+        echo "127.0.0.1"
+    else
+        echo ""
+    fi
+}
+
 panel_setup_api() {
     local SUPERADMIN_USER="$1"
     local SUPERADMIN_PASS="$2"
@@ -251,7 +289,8 @@ panel_setup_api() {
         "$(panel_reality_xhttp_inbound_port)" \
         "$XHTTP_PATH" \
         "$(panel_reality_accept_proxy_protocol "$MODE")" \
-        "$XHTTP_ENABLE")
+        "$XHTTP_ENABLE" \
+        "$(panel_reality_listen_addr "$MODE")")
     [ -z "$INBOUNDS_JSON" ] && err "Ошибка генерации Xray inbounds JSON (panel_xray_render_inbounds)"
 
     # Contract 13 (lookup-before-create, not always-create): reuse an
