@@ -13,30 +13,41 @@
 #   $dest       — REALITY fallback dest (panel_reality_dest_val)
 #   $domain     — REALITY serverName (SELFSTEAL_DOMAIN)
 #   $accept_pp  — sockopt.acceptProxyProtocol toggle (panel_reality_accept_proxy_protocol)
+#   $listen     — optional inbound "listen" bind address (panel_reality_listen_addr).
+#                 Empty string ("") for MODE=1/2 (Steal listens directly on
+#                 public :443, no nginx in front — omitting "listen" keeps
+#                 Xray's default wildcard bind, unchanged from before this
+#                 field existed). "127.0.0.1" for MODE=F (Steal sits behind
+#                 nginx's stream{} router and is meant to be loopback-only —
+#                 see variant_f.sh's header comment; this field is what
+#                 actually enforces that, previously unenforced).
 # ($xport/$xpath are also bound by render.sh for j.json's sake, but this
 # template does not reference them — jq does not error on unused bindings.)
 [
-    {
-        "tag": "Steal",
-        "port": $vport,
-        "protocol": "vless",
-        "settings": { "clients": [], "decryption": "none" },
-        "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
-        "streamSettings": (
-            {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "show": false,
-                    "xver": 1,
-                    "dest": $dest,
-                    "spiderX": "",
-                    "shortIds": [$sid],
-                    "privateKey": $pk,
-                    "serverNames": [$domain]
+    (
+        {
+            "tag": "Steal",
+            "port": $vport,
+            "protocol": "vless",
+            "settings": { "clients": [], "decryption": "none" },
+            "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] },
+            "streamSettings": (
+                {
+                    "network": "tcp",
+                    "security": "reality",
+                    "realitySettings": {
+                        "show": false,
+                        "xver": 1,
+                        "dest": $dest,
+                        "spiderX": "",
+                        "shortIds": [$sid],
+                        "privateKey": $pk,
+                        "serverNames": [$domain]
+                    }
                 }
-            }
-            + (if $accept_pp then { "sockopt": { "acceptProxyProtocol": true } } else {} end)
-        )
-    }
+                + (if $accept_pp then { "sockopt": { "acceptProxyProtocol": true } } else {} end)
+            )
+        }
+        + (if ($listen // "") != "" then { "listen": $listen } else {} end)
+    )
 ]
