@@ -105,6 +105,8 @@ panel_generate_nginx_config_j() {
     fi
 
     cat > /opt/remnawave/nginx.conf << NGINX_CONF_EOF
+# SERVER_MANAGER_TOPOLOGY=J
+# SERVER_MANAGER_XHTTP=1
 user nginx;
 worker_processes auto;
 pid /run/nginx.pid;
