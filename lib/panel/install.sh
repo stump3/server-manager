@@ -167,11 +167,13 @@ panel_install() {
     local CERT_METHOD PANEL_CF_EMAIL PANEL_CF_KEY PANEL_LE_EMAIL GCORE_TOKEN
     local TELEMT_ENABLED TELEMT_DOMAIN TELEMT_PORT
     local TELEMT_INSTALL_ACTION TELEMT_INSTALL_MODE
+    local F_XHTTP_ENABLE
 
     panel_cli_select_mode
     panel_cli_collect_domains
     panel_cli_select_webserver
     panel_cli_select_cert
+    panel_cli_select_f_xhttp
     panel_cli_collect_j_options
     panel_cli_show_summary "$MODE" "$WEB_SERVER" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
         "$CERT_METHOD" "$TELEMT_ENABLED" "$TELEMT_DOMAIN" "$TELEMT_PORT"
@@ -217,9 +219,25 @@ panel_install() {
         "$COOKIE_KEY" \
         "$COOKIE_VAL" \
         "$TELEMT_DOMAIN" \
-        "$TELEMT_PORT"
+        "$TELEMT_PORT" \
+        "$F_XHTTP_ENABLE"
 
     ok "Конфигурация сгенерирована"
+
+    # F+XHTTP / J public XHTTP firewall (2026-09-05, Commit 2.H): neither
+    # port was ever opened by panel_install_prerequisites() (which only
+    # opens 22/tcp and 443/tcp, unconditionally, before MODE-specific
+    # config even exists) — confirmed by direct read of that function.
+    # For MODE=J this was a pre-existing gap (J_XHTTP_PUBLIC_PORT=8443 has
+    # always been part of J's topology, nginx has always listened there,
+    # ufw never permitted it), fixed here since it's in the exact same
+    # code path being touched for F+XHTTP and the fix is a single,
+    # low-risk `ufw allow` line — not a broader firewall refactor.
+    if [ "$MODE" = "J" ]; then
+        ufw allow "${J_XHTTP_PUBLIC_PORT:-8443}/tcp" comment 'Variant J XHTTP' >/dev/null 2>&1
+    elif [ "$MODE" = "F" ] && [ "$F_XHTTP_ENABLE" = "1" ]; then
+        ufw allow "${F_XHTTP_PUBLIC_PORT:-9443}/tcp" comment 'Variant F XHTTP' >/dev/null 2>&1
+    fi
 
     # ── TeleMT integrated (MODE=F/J, опционально) ──────────────────
     # Nginx routing для TeleMT уже сгенерирован выше (внутри
@@ -277,7 +295,14 @@ panel_install() {
     # ── Запуск и автоконфигурация ────────────────────────────────
     STEP_NUM=$(( STEP_NUM + 1 ))
     step "Запуск и автоконфигурация"
-    panel_setup_api "$SUPERADMIN_USER" "$SUPERADMIN_PASS" "$SELFSTEAL_DOMAIN" "$MODE"
+    # XHTTP_ENABLE for panel_setup_api(): J always "1" (unconditional,
+    # unchanged); F follows the operator's own F_XHTTP_ENABLE choice
+    # (panel_cli_select_f_xhttp()) instead of the old MODE=J-only
+    # derivation — see panel_setup_api()'s own FIXED comment.
+    local _api_xhttp_enable="0"
+    [ "$MODE" = "J" ] && _api_xhttp_enable="1"
+    [ "$MODE" = "F" ] && _api_xhttp_enable="$F_XHTTP_ENABLE"
+    panel_setup_api "$SUPERADMIN_USER" "$SUPERADMIN_PASS" "$SELFSTEAL_DOMAIN" "$MODE" "$_api_xhttp_enable"
 
     # ── Команда управления ───────────────────────────────────────
     panel_install_mgmt_script "$PANEL_DOMAIN" "$COOKIE_KEY" "$COOKIE_VAL" "$MODE" "$WEB_SERVER"
