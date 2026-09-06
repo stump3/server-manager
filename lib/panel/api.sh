@@ -153,22 +153,27 @@ panel_setup_api() {
     local SELFSTEAL_DOMAIN="$3"
     local MODE="$4"
     # XHTTP_ENABLE — OPTIONAL 5th arg, "0"/"1". Backward compatible: any
-    # existing 4-arg call site keeps the original MODE=J-implies-1
-    # normalization below unchanged.
+    # existing 4-arg call site keeps working.
     #
-    # FIXED 2026-09-05 (F+XHTTP): previously always self-derived purely
-    # from `[ "$MODE" = "J" ]`, which made MODE=F + "XHTTP wanted" from
-    # lib/panel/cli.sh's new F+XHTTP prompt unreachable here — the caller
-    # (panel_install()) could set F_XHTTP_ENABLE=1 all it wanted, this
-    # function would still only ever produce a single-inbound (Steal-only)
-    # profile for MODE=F, since it never looked at anything but MODE.
-    # Explicit arg takes precedence when the caller supplies one; when
-    # omitted, the exact original MODE=J->1 normalization applies, so
-    # every pre-existing 4-arg caller sees byte-identical behavior.
+    # FIXED (Adapter #4, 2026-09-06): the fallback (when the 5th arg is
+    # omitted) previously re-derived this from raw MODE
+    # (`[ "$MODE" = "J" ] && XHTTP_ENABLE="1"`). This project's single
+    # production call site (lib/panel/install.sh) always supplies the
+    # 5th argument explicitly, so that raw-MODE fallback was already dead
+    # code there — but it was still a second, independent place a future
+    # 4-arg caller (or a test) would silently get a MODE-based answer
+    # instead of the Core-resolved one. Now queries the already-resolved
+    # Deployment via lib/core/deployment.sh's
+    # core_deployment_has_capability("XHTTP") — the same single Core
+    # query lib/panel/install.sh's own production call site now uses —
+    # instead of reading MODE/F_XHTTP_ENABLE here a second time. Explicit
+    # arg still takes precedence when the caller supplies one; the
+    # compatibility contract (4-arg calls still work) is unchanged, only
+    # what answers the fallback changed.
     local XHTTP_ENABLE="${5:-}"
     if [ -z "$XHTTP_ENABLE" ]; then
         XHTTP_ENABLE="0"
-        [ "$MODE" = "J" ] && XHTTP_ENABLE="1"
+        core_deployment_has_capability "XHTTP" && XHTTP_ENABLE="1"
     fi
 
     cd /opt/remnawave
