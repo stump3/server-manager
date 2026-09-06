@@ -172,7 +172,10 @@ panel_setup_api() {
     fi
 
     cd /opt/remnawave
-    panel_reality_needs_2222_ufw_rule "$MODE" && \
+    # lib/core/adapter_reality.sh:panel_core_reality_needs_2222_ufw_rule()
+    # — same decision, now sourced from the already-resolved Deployment's
+    # RuntimeComponent inventory instead of a raw MODE comparison.
+    panel_core_reality_needs_2222_ufw_rule && \
         ufw allow from 172.30.0.0/16 to any port 2222 proto tcp >/dev/null 2>&1
 
     docker compose up -d >/dev/null 2>&1 & spinner $! "Запуск контейнеров..."
@@ -261,7 +264,10 @@ panel_setup_api() {
 
     local SHORT_ID DEST_VAL
     SHORT_ID=$(openssl rand -hex 8)
-    DEST_VAL=$(panel_reality_dest_val "$MODE" "$SELFSTEAL_DOMAIN")
+    # lib/core/adapter_reality.sh:panel_core_reality_dest_val() — same
+    # decision, now sourced from the already-resolved Deployment's
+    # RuntimeComponent inventory instead of a raw MODE comparison.
+    DEST_VAL=$(panel_core_reality_dest_val "$SELFSTEAL_DOMAIN")
 
     # XHTTP_ENABLE=1 gets a second inbound (StealXHTTP, network:xhttp) in
     # the SAME config-profile as Vision — confirmed against official
