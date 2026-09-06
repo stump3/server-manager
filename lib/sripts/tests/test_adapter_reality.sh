@@ -256,8 +256,18 @@ assert "panel_reality_dest_val still defined (unmodified body)" \
     "$(grep -c '^panel_reality_dest_val()' lib/panel/api.sh)" "1"
 assert "both legacy function bodies still contain their original MODE logic, untouched (2 matches)" \
     "$(grep -c 'MODE.*=.*"1".*||.*MODE.*=.*"F".*||.*MODE.*=.*"J"' lib/panel/api.sh)" "2"
+# FIXED: the previous check anchored the function name to end-of-line
+# (`...ufw_rule$`), which assumed the call sat alone on its own line.
+# The actual production call site (lib/panel/api.sh) chains it with
+# `&& \` to run the ufw command only when true — an entirely ordinary
+# bash idiom, not a regression — so the old anchor undercounted it (0
+# instead of 1) even though the Core adapter genuinely is the call path
+# with zero raw MODE decision here. The corrected pattern matches the
+# real invocation (bare call, optionally followed by `&&` or end of
+# line) while still excluding the doc-comment two lines above it that
+# merely references the function name followed by `()`.
 assert "panel_setup_api() call site now uses the Core adapter for needs_2222_ufw_rule, not raw MODE" \
-    "$(grep -c 'panel_core_reality_needs_2222_ufw_rule$' lib/panel/api.sh)" "1"
+    "$(grep -cE '^[[:space:]]*panel_core_reality_needs_2222_ufw_rule([[:space:]]*&&|[[:space:]]*$)' lib/panel/api.sh)" "1"
 assert "panel_setup_api() call site now uses the Core adapter for dest_val, not raw MODE" \
     "$(grep -c 'panel_core_reality_dest_val "\$SELFSTEAL_DOMAIN"' lib/panel/api.sh)" "1"
 assert "legacy panel_reality_needs_2222_ufw_rule \"\$MODE\" is no longer called anywhere in api.sh" \
