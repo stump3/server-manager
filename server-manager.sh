@@ -80,6 +80,7 @@ fi
 declare -A _MODULE_SHA256=(
     ["core/config"]=""
     ["core/deployment"]=""
+    ["core/runtime_component"]=""
     ["core/adapter_webserver"]=""
     ["core/adapter_reality"]=""
     ["ui/output"]=""
@@ -132,6 +133,7 @@ _sm_source_file() {
 
 _load_module core/config
 _load_module core/deployment
+_load_module core/runtime_component
 _load_module core/adapter_webserver
 _load_module core/adapter_reality
 _load_module ui/output
