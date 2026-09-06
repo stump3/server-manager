@@ -294,13 +294,25 @@ panel_setup_api() {
     # xray/templates/ header comments for the $-variable contract).
     local XHTTP_PATH="/$(openssl rand -hex 8)"
     local INBOUNDS_JSON
+    # accept_proxy_protocol/listen_addr now come from the Core adapter
+    # (lib/core/adapter_reality.sh:panel_core_reality_accept_proxy_protocol/
+    # panel_core_reality_listen_addr) instead of the legacy
+    # panel_reality_accept_proxy_protocol("$MODE")/panel_reality_listen_addr("$MODE")
+    # calls -- both derive the identical value from
+    # core_topology_requires_nginx_stream("$DEPLOYMENT_TOPOLOGY"), already
+    # resolved earlier in this same panel_install() run (see
+    # lib/panel/install.sh's core_resolve_deployment() call, same
+    # precondition adapter_webserver.sh already relies on). The legacy
+    # functions themselves are unchanged and still used elsewhere in this
+    # call (panel_reality_inbound_port, panel_reality_xhttp_inbound_port)
+    # and by lib/sripts/tests/test_f_xhttp_commit2.sh's own unit tests.
     INBOUNDS_JSON=$(panel_xray_render_inbounds "$MODE" "$PRIV_KEY" "$SHORT_ID" "$DEST_VAL" "$SELFSTEAL_DOMAIN" \
         "$(panel_reality_inbound_port "$MODE")" \
         "$(panel_reality_xhttp_inbound_port "$MODE")" \
         "$XHTTP_PATH" \
-        "$(panel_reality_accept_proxy_protocol "$MODE")" \
+        "$(panel_core_reality_accept_proxy_protocol)" \
         "$XHTTP_ENABLE" \
-        "$(panel_reality_listen_addr "$MODE")")
+        "$(panel_core_reality_listen_addr)")
     [ -z "$INBOUNDS_JSON" ] && err "Ошибка генерации Xray inbounds JSON (panel_xray_render_inbounds)"
 
     # Contract 13 (lookup-before-create, not always-create): reuse an
