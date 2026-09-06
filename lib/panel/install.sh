@@ -207,20 +207,27 @@ panel_install() {
 
     panel_generate_compose "$WEB_SERVER" "$MODE" "$CERT_VOLUMES" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN"
 
-    panel_generate_webserver_config \
-        "$WEB_SERVER" \
-        "$MODE" \
-        "$PANEL_DOMAIN" \
-        "$SUB_DOMAIN" \
-        "$SELFSTEAL_DOMAIN" \
+    # Core/Runtime adapter seam (docs/CORE_RUNTIME_CONTRACTS.md,
+    # lib/core/deployment.sh, lib/core/adapter_webserver.sh): resolve the
+    # already-collected legacy values into a Deployment once, then let
+    # panel_core_generate_webserver_config() forward it to the existing,
+    # UNCHANGED panel_generate_webserver_config() dispatcher. This is a
+    # round trip, not a behavior change — proven byte-identical across
+    # MODE=1/2/F/J, WEB_SERVER=1/2, F+XHTTP, and F/J+TeleMT combinations
+    # by lib/sripts/tests/test_adapter_webserver.sh's diff assertions.
+    # core_resolve_deployment()'s own inputs are exactly the same locals
+    # this call site already had in scope for the direct call it
+    # replaces — no new value is invented, nothing read twice from two
+    # sources.
+    core_resolve_deployment "$MODE" "$F_XHTTP_ENABLE" "$WEB_SERVER" \
+        "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+        "$TELEMT_DOMAIN" "$TELEMT_PORT"
+    panel_core_generate_webserver_config \
         "$PC" \
         "$SC" \
         "$STC" \
         "$COOKIE_KEY" \
-        "$COOKIE_VAL" \
-        "$TELEMT_DOMAIN" \
-        "$TELEMT_PORT" \
-        "$F_XHTTP_ENABLE"
+        "$COOKIE_VAL"
 
     ok "Конфигурация сгенерирована"
 
