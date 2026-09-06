@@ -81,6 +81,7 @@ declare -A _MODULE_SHA256=(
     ["core/config"]=""
     ["core/deployment"]=""
     ["core/adapter_webserver"]=""
+    ["core/adapter_reality"]=""
     ["ui/output"]=""
     ["common"]=""
     ["panel"]=""
@@ -132,6 +133,7 @@ _sm_source_file() {
 _load_module core/config
 _load_module core/deployment
 _load_module core/adapter_webserver
+_load_module core/adapter_reality
 _load_module ui/output
 _load_module common
 _load_module panel
