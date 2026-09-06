@@ -244,3 +244,23 @@ core_runtime_component_dump() {
         echo "    dependencies: [${_deps}]"
     done
 }
+
+# core_runtime_component_exists <type> — 0 if <type> is present in the
+# currently-resolved Deployment's inventory, 1 otherwise. Added as a
+# small, natural predicate alongside the existing
+# core_runtime_component_types_for_deployment() list accessor (same
+# pattern as topology.sh's core_topology_capability_is_optional()
+# sitting next to core_topology_optional_capabilities()) — not a new
+# field, not a new type, not a redesign of this file's model. Exists
+# because callers that only need a yes/no answer for one type (e.g. "is
+# xray present") would otherwise have to re-implement this exact
+# string-membership loop themselves at every call site — first real
+# consumer: lib/core/adapter_reality.sh.
+core_runtime_component_exists() {
+    local _want="${1:-}" _types _t
+    _types="$(core_runtime_component_types_for_deployment)" || return 1
+    for _t in $_types; do
+        [ "$_t" = "$_want" ] && return 0
+    done
+    return 1
+}
