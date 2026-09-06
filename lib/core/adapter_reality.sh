@@ -38,15 +38,17 @@
 #     topology.sh; none was needed -- proven by the byte-identical
 #     truth table in lib/sripts/tests/test_adapter_reality.sh.
 #   - Contains no MODE branching, no "F"/"J" literal, no port logic, no
-#     TeleMT logic, no RuntimeComponent reference, and no topology table
-#     of its own.
-#   - Does not touch panel_reality_needs_2222_ufw_rule(),
-#     panel_reality_dest_val(), panel_reality_inbound_port(), or
-#     panel_reality_xhttp_inbound_port() -- those remain legacy
-#     intentionally (see docs/CORE_RUNTIME_CONTRACTS.md-adjacent forensic
-#     scan: their MODE split needs either a not-yet-modeled "colocated"
-#     concept or the not-yet-implemented PortAllocation contract, neither
-#     of which this file introduces).
+#     TeleMT logic, and no topology/component table of its own — both new
+#     functions below (panel_core_reality_needs_2222_ufw_rule/_dest_val)
+#     delegate entirely to the existing, unmodified
+#     core_runtime_component_exists() rather than re-deriving membership.
+#   - Does not touch panel_reality_inbound_port() or
+#     panel_reality_xhttp_inbound_port() — those return PORT NUMBERS per
+#     topology (8443/18443/443, 19444/18444), which is squarely
+#     PortAllocation-contract territory, not yet implemented as a Core
+#     concept. Migrating them is a distinct, larger seam this session
+#     deliberately did not start (see this session's own forensic
+#     report).
 #
 # Expected semantics (must remain byte-identical to the legacy
 # functions this replaces at the call site, for every one of the four
@@ -66,5 +68,44 @@ panel_core_reality_listen_addr() {
         echo "127.0.0.1"
     else
         echo ""
+    fi
+}
+
+# --- Added in this session: two more panel_setup_api() decision points ---
+#
+# Forensic scan (this session) found panel_reality_needs_2222_ufw_rule()
+# and panel_reality_dest_val() share ONE underlying fact with each other
+# — "does this Deployment have a co-located (local) Xray, or not" — and,
+# critically, that this exact fact is already answerable through the
+# EXISTING, unmodified lib/core/runtime_component.sh: proven empirically
+# for all four current topologies (1, 2, F, J) that
+# `core_runtime_component_exists xray` produces the identical true/false
+# result as each legacy function's own `[ "$MODE" = "1" ] || "F" || "J"`
+# condition. This is NOT a new "colocated" Topology concept — the task's
+# own Step 3 explicitly warned against inventing
+# core_topology_is_colocated() before checking whether an existing entity
+# already answers the question, and RuntimeComponent's xray-presence
+# already does, with no modification to that file's model, fields, or
+# types needed. No PortAllocation dependency either: neither function
+# below produces or consumes a port number.
+#
+# Precondition: identical to the two functions above — both legacy
+# targets have their sole production call site inside panel_setup_api()
+# (lib/panel/api.sh:175,264), which already guarantees
+# core_resolve_deployment() ran earlier in the same panel_install()
+# invocation. Requires lib/core/runtime_component.sh to be loaded (added
+# to server-manager.sh's module list in this same change — it was
+# previously deliberately unwired, per its own header, since it had no
+# production consumer until now).
+panel_core_reality_needs_2222_ufw_rule() {
+    core_runtime_component_exists "xray"
+}
+
+panel_core_reality_dest_val() {
+    local _selfsteal_domain="${1:?panel_core_reality_dest_val requires SELFSTEAL_DOMAIN}"
+    if core_runtime_component_exists "xray"; then
+        echo '/dev/shm/nginx.sock'
+    else
+        echo "${_selfsteal_domain}:443"
     fi
 }
