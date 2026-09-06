@@ -26,8 +26,17 @@ unset _CORE_DEPLOYMENT_DIR
 #     legacy install-time values into an explicit `Deployment`
 #     representation. It does not call, wrap, or replace any existing
 #     generator (variant_f.sh/variant_j.sh/api.sh/render.sh/compose/
-#     TeleMT) and is not wired into lib/panel/install.sh's actual install
-#     flow — sourcing this file has zero effect on any existing behavior.
+#     TeleMT) directly. UPDATED (first adapter seam, see
+#     lib/core/adapter_webserver.sh): core_resolve_deployment() IS now
+#     called from lib/panel/install.sh's actual install flow — its output
+#     (the DEPLOYMENT_* globals set here) is what
+#     lib/core/adapter_webserver.sh's panel_core_generate_webserver_config()
+#     forwards to the still-unchanged panel_generate_webserver_config().
+#     This file's own resolver body is unchanged by that wiring — it is
+#     still read-only/descriptive with respect to every generator, and
+#     still does not itself call, wrap, or replace variant_f.sh/
+#     variant_j.sh/api.sh/render.sh/compose/TeleMT. Only the ADAPTER file
+#     added alongside it performs the forwarding call.
 #   - No RuntimeComponent, RuntimeObservation, LifecycleIntent, Reconciler,
 #     adapter execution, or desired/actual state store is implemented here.
 #     Those remain vocabulary-only per CORE_RUNTIME_CONTRACTS.md §11/§12.
