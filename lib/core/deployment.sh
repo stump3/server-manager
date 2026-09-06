@@ -1,5 +1,17 @@
 # lib/core/deployment.sh
 #
+# Sources lib/core/topology.sh (relative to this file, via BASH_SOURCE)
+# for the core_topology_* lookup functions this file calls. No existing
+# cross-sourcing convention exists yet among lib/core/*.sh files (each is
+# currently a standalone leaf loaded once by a central loader this seam
+# is explicitly not wired into) — self-sourcing by relative path keeps
+# `source lib/core/deployment.sh` alone sufficient for callers/tests,
+# rather than requiring them to know topology.sh must be sourced first.
+_CORE_DEPLOYMENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./topology.sh
+source "${_CORE_DEPLOYMENT_DIR}/topology.sh"
+unset _CORE_DEPLOYMENT_DIR
+#
 # Core/Runtime architecture, first implementation seam:
 #
 #     legacy CLI/input -> compatibility resolver -> Deployment
@@ -97,20 +109,19 @@
 #     re-stated on Deployment (this exact duplication is what Edge's
 #     "Current limitations" section already flags for 19444).
 #
-# CAVEAT (recorded once, applies throughout this file): Edge's own
-# `Topology` contract (id, public_ingress_owner, required_listeners,
-# required_capabilities, optional_capabilities, domain_roles,
-# port_allocation_profile, runtime_components) is fully specified in
-# docs/edge_contracts.md but is NOT implemented as a queryable code object
-# anywhere in variant-f-j today — it exists only as a markdown table. This
-# file's DEPLOYMENT_TOPOLOGY is therefore a reference to an id that
-# currently has no code-side object to dereference. Every place below that
-# would otherwise "look up the Topology" instead encodes the same small,
-# closed set of facts Edge's own table already states (4 topology ids,
-# fixed capability rules) directly — this is not a second Topology table
-# competing with Edge's; it is the minimum needed to make this seam
-# runnable before an actual Topology object exists in code. Flagged
-# explicitly rather than left implicit.
+# TOPOLOGY LOOKUP: lib/core/topology.sh now provides the Edge Topology
+# object this file's own CAVEAT used to say didn't exist yet
+# (core_topology_is_valid/public_ingress_owner/required_capabilities/
+# optional_capabilities/requires_nginx_stream). Every place below that
+# needs a semantic fact about a topology id calls one of those functions
+# instead of encoding the fact itself — this file no longer contains its
+# own `case "$_mode" in F|J)`-shaped tables. See topology.sh's own header
+# for why TeleMT and WEB_SERVER are deliberately not modeled as Topology
+# capabilities/fields there (same reasoning applies here, unchanged from
+# the original CAVEAT: WEB_SERVER is a §14 #3 open question, TeleMT stays
+# a separate Deployment field per §3.2 — this update does not reopen
+# either decision, it only removes the literal-string stand-in that used
+# to encode facts topology.sh now owns).
 core_resolve_deployment() {
     local _mode="${1:-}"
     local _f_xhttp_enable="${2:-0}"
@@ -139,20 +150,22 @@ core_resolve_deployment() {
 
     DEPLOYMENT_TOPOLOGY="$_mode"
 
-    # The one and only place in this file that switches on MODE for a
-    # semantic decision — the compatibility-resolver boundary itself.
-    # J's XHTTP is topology-required (Edge's Capability table: "required
-    # — topology-intrinsic — no toggle exists"), so it is never added to
-    # DEPLOYMENT_CAPABILITIES for MODE=J, matching
-    # CORE_RUNTIME_CONTRACTS.md §4's explicit worked example.
-    case "$_mode" in
-        F)
-            [ "$_f_xhttp_enable" = "1" ] && DEPLOYMENT_CAPABILITIES+=("XHTTP")
-            ;;
-        J|1|2)
-            :  # no optional capability currently modeled for these
-            ;;
-    esac
+    # The one and only place in this file that reads MODE for a semantic
+    # decision — the compatibility-resolver boundary itself. Note this is
+    # no longer a `case "$_mode" in F) ... esac`: XHTTP's admissibility as
+    # an OPTIONAL capability is now a topology.sh lookup
+    # (core_topology_capability_is_optional), not a literal "$_mode = F"
+    # branch. J's XHTTP is topology-required (topology.sh's
+    # required_capabilities for "J" already includes it), so it is never
+    # a candidate for DEPLOYMENT_CAPABILITIES here regardless of
+    # $_f_xhttp_enable — matching CORE_RUNTIME_CONTRACTS.md §4's explicit
+    # worked example ("F_XHTTP_ENABLE must not change semantic topology
+    # J"), now enforced structurally (J's optional-capability set is
+    # simply empty) rather than by this function remembering not to add
+    # it for J.
+    if [ "$_f_xhttp_enable" = "1" ] && core_topology_capability_is_optional "$_mode" "XHTTP"; then
+        DEPLOYMENT_CAPABILITIES+=("XHTTP")
+    fi
 
     DEPLOYMENT_DOMAIN_PANEL="$_panel_domain"
     DEPLOYMENT_DOMAIN_SUB="$_sub_domain"
@@ -167,21 +180,20 @@ core_resolve_deployment() {
 
 # core_deployment_web_server_ok — the ONE fact about WEB_SERVER this seam
 # needs (§3.1: "WEB_SERVER... belongs on Topology... F/J are
-# nginx-stream{}-only by construction"). Deliberately mirrors the exact
-# same condition already enforced today in lib/panel/cli.sh's
-# panel_cli_select_webserver() (`[ "$MODE" = "F" ] && [ "$WEB_SERVER" = "2" ]`
-# / the equivalent MODE=J guard immediately below it) rather than
-# re-deriving a new rule — this function exists so that reading it, this
-# fact does not need to be silently re-invented a second time. It is not a
-# second F->.. / J->.. table: it is the single boolean Edge's own
-# Topology.public_ingress_owner fact reduces to for the one axis
-# (nginx vs Caddy) that currently has two real values in this codebase.
+# nginx-stream{}-only by construction"). Now expressed as a query against
+# topology.sh's core_topology_requires_nginx_stream() — i.e. "this
+# topology's public_ingress_owner is nginx-stream, and Caddy
+# (WEB_SERVER=2) cannot currently serve that" — rather than a literal
+# `case "$_mode" in F|J)`. The observable rule is unchanged (still exactly
+# F and J today, since those are the only two topologies with
+# public_ingress_owner=nginx-stream), but it is no longer this file's own
+# second F/J-shaped table — it is a derived consequence of the one
+# Topology fact topology.sh owns. Mirrors the same condition already
+# enforced today in lib/panel/cli.sh's panel_cli_select_webserver().
 core_deployment_web_server_ok() {
     local _mode="$1" _web_server="$2"
-    case "$_mode" in
-        F|J) [ "$_web_server" != "2" ] ;;
-        *) return 0 ;;
-    esac
+    core_topology_requires_nginx_stream "$_mode" || return 0
+    [ "$_web_server" != "2" ]
 }
 
 # core_validate_deployment — validates the DEPLOYMENT_* globals set by the
@@ -192,26 +204,29 @@ core_deployment_web_server_ok() {
 core_validate_deployment() {
     CORE_VALIDATION_ERRORS=()
 
-    case "$DEPLOYMENT_TOPOLOGY" in
-        1|2|F|J) : ;;
-        *) CORE_VALIDATION_ERRORS+=("unknown topology: '${DEPLOYMENT_TOPOLOGY}'") ;;
-    esac
+    core_topology_is_valid "$DEPLOYMENT_TOPOLOGY" || \
+        CORE_VALIDATION_ERRORS+=("unknown topology: '${DEPLOYMENT_TOPOLOGY}'")
 
     [ -z "$DEPLOYMENT_DOMAIN_PANEL" ]     && CORE_VALIDATION_ERRORS+=("missing domain: panel")
     [ -z "$DEPLOYMENT_DOMAIN_SUB" ]       && CORE_VALIDATION_ERRORS+=("missing domain: sub")
     [ -z "$DEPLOYMENT_DOMAIN_SELFSTEAL" ] && CORE_VALIDATION_ERRORS+=("missing domain: selfsteal")
 
-    # Capability admissibility — XHTTP is only a meaningful capability
-    # entry for MODE=F (optional there); it must never appear in the list
-    # at all for MODE=1/2/J (for J it is implied by topology, never
-    # listed — see core_resolve_deployment()'s own comment).
+    # Capability admissibility — a capability listed in
+    # DEPLOYMENT_CAPABILITIES must be in this topology's OPTIONAL set
+    # (topology.sh). No literal "$DEPLOYMENT_TOPOLOGY != 'F'"-style check:
+    # today XHTTP is the only capability this seam models, and it happens
+    # to be optional only for F, but this loop does not know or care
+    # which topology that is — it only knows "optional, per topology.sh,
+    # or not". A capability that's valid but simply not in the known set
+    # this seam recognizes (currently only "XHTTP") is still rejected as
+    # unknown, same as before.
     local _cap
     for _cap in "${DEPLOYMENT_CAPABILITIES[@]:-}"; do
         [ -z "$_cap" ] && continue
         case "$_cap" in
             XHTTP)
-                [ "$DEPLOYMENT_TOPOLOGY" != "F" ] && \
-                    CORE_VALIDATION_ERRORS+=("capability 'XHTTP' is not valid for topology '${DEPLOYMENT_TOPOLOGY}'")
+                core_topology_capability_is_optional "$DEPLOYMENT_TOPOLOGY" "$_cap" || \
+                    CORE_VALIDATION_ERRORS+=("capability '${_cap}' is not valid for topology '${DEPLOYMENT_TOPOLOGY}'")
                 ;;
             *)
                 CORE_VALIDATION_ERRORS+=("unknown capability: '${_cap}'")
