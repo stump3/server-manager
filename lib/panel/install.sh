@@ -302,13 +302,21 @@ panel_install() {
     # ── Запуск и автоконфигурация ────────────────────────────────
     STEP_NUM=$(( STEP_NUM + 1 ))
     step "Запуск и автоконфигурация"
-    # XHTTP_ENABLE for panel_setup_api(): J always "1" (unconditional,
-    # unchanged); F follows the operator's own F_XHTTP_ENABLE choice
-    # (panel_cli_select_f_xhttp()) instead of the old MODE=J-only
-    # derivation — see panel_setup_api()'s own FIXED comment.
+    # XHTTP_ENABLE for panel_setup_api() — Adapter #4 (2026-09-06):
+    # FIXED — this used to be a second, independent raw-MODE decision
+    # (`[ "$MODE" = "J" ] && ...; [ "$MODE" = "F" ] && ... "$F_XHTTP_ENABLE"`)
+    # computed HERE and then passed as an explicit 5th argument, which
+    # made panel_setup_api()'s own internal MODE-based fallback dead code
+    # in production (this is the only production call site, and it always
+    # supplies the 5th argument) — the real decision lived in this file,
+    # not in api.sh, even though api.sh's own fallback comment described
+    # itself as "the" decision point. Both are now the same single Core
+    # query: lib/core/deployment.sh's core_deployment_has_capability(),
+    # reading the already-resolved Deployment (core_resolve_deployment()
+    # runs earlier in this same panel_install() invocation — see below)
+    # rather than MODE/F_XHTTP_ENABLE directly.
     local _api_xhttp_enable="0"
-    [ "$MODE" = "J" ] && _api_xhttp_enable="1"
-    [ "$MODE" = "F" ] && _api_xhttp_enable="$F_XHTTP_ENABLE"
+    core_deployment_has_capability "XHTTP" && _api_xhttp_enable="1"
     panel_setup_api "$SUPERADMIN_USER" "$SUPERADMIN_PASS" "$SELFSTEAL_DOMAIN" "$MODE" "$_api_xhttp_enable"
 
     # ── Команда управления ───────────────────────────────────────
