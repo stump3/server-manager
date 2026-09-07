@@ -13,7 +13,7 @@ panel_generate_nginx_config() {
 
         # ── nginx.conf ────────────────────────────────────────────
         local LISTEN_DIR REAL_IP_P REAL_IP_S
-        if [ "$MODE" = "1" ]; then
+        if [ "$(core_topology_public_ingress_owner "$MODE")" = "xray" ]; then
             LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;"
             REAL_IP_P="\$proxy_protocol_addr"
             REAL_IP_S="\$proxy_protocol_addr"
