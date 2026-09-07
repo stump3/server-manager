@@ -55,7 +55,19 @@ panel_compose_nginx_frontend_colocated() {
     local MODE="$1"
     local CERT_VOLUMES="$2"
     local MOUNT_TARGET="conf.d/default.conf"
-    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+    # Adapter #7 (2026-09-07): was a raw `[ "$MODE" = "F" ] || [ "$MODE" = "J" ]`
+    # -- a second, independent copy of the same "does this topology need a
+    # top-level nginx.conf to own a stream{} block" fact
+    # lib/core/topology.sh's core_topology_requires_nginx_stream() already
+    # answers (the same accessor Adapter #6 wired into this file's own
+    # WEB_SERVER-compatibility check below), instead of re-deriving it here
+    # as its own F/J-shaped comparison. Passed $MODE directly (not
+    # $DEPLOYMENT_TOPOLOGY): core_resolve_deployment() has not run yet at
+    # this point in panel_install() (panel_generate_compose() runs before
+    # it, lib/panel/install.sh:208 vs :222) -- but the accessor is a pure
+    # function of its own argument (never reads a Deployment global), so
+    # $MODE is the correct, byte-identical input either way.
+    if core_topology_requires_nginx_stream "$MODE"; then
         MOUNT_TARGET="nginx.conf"
     fi
 
