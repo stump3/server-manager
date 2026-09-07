@@ -148,16 +148,34 @@ awk '
     }
     {print}
 ' lib/core/deployment.sh > /tmp/_deployment_mutated.sh
-cp /tmp/_deployment_mutated.sh lib/core/deployment.sh
 
-NEG_OUT=$(bash -c '
-    source lib/core/config.sh
-    source lib/core/deployment.sh
-    core_resolve_deployment "J" "0" "1" "p.example.com" "s.example.com" "n.example.com" "" ""
-    core_deployment_has_capability "XHTTP" && echo "true" || echo "false"
-' 2>/dev/null)
+# Mandatory precondition: the mutation must have actually landed (exactly
+# one "__UNMATCHABLE__" literal introduced). If the targeted pattern was
+# never found (e.g. the accessor is missing entirely, or its source text
+# no longer matches this exact shape), the awk above is a silent no-op and
+# the "false" result below would be indistinguishable from "accessor never
+# existed" rather than "accessor was broken". Without this check, the
+# negative test cannot tell B (missing accessor) apart from C (broken
+# accessor) -- it must fail loudly here instead of proceeding.
+MUTATION_HIT_COUNT="$(grep -c '__UNMATCHABLE__' /tmp/_deployment_mutated.sh)"
+assert "negative-mutation precondition: the targeted pattern was actually found and replaced exactly once" \
+    "$MUTATION_HIT_COUNT" "1"
 
-cp /tmp/_deployment_backup.sh lib/core/deployment.sh
+if [ "$MUTATION_HIT_COUNT" = "1" ]; then
+    cp /tmp/_deployment_mutated.sh lib/core/deployment.sh
+    NEG_OUT=$(bash -c '
+        source lib/core/config.sh
+        source lib/core/deployment.sh
+        core_resolve_deployment "J" "0" "1" "p.example.com" "s.example.com" "n.example.com" "" ""
+        core_deployment_has_capability "XHTTP" && echo "true" || echo "false"
+    ' 2>/dev/null)
+    cp /tmp/_deployment_backup.sh lib/core/deployment.sh
+else
+    # Mutation never applied -- do not claim to have tested anything about
+    # the accessor's behavior. Force the next assertion to fail rather
+    # than silently pass on an untested no-op.
+    NEG_OUT="MUTATION_NOT_APPLIED"
+fi
 rm -f /tmp/_deployment_backup.sh /tmp/_deployment_mutated.sh
 
 assert "artificially broken required-capabilities branch flips J's XHTTP from true to false (proves the check is load-bearing, not a no-op)" \
@@ -170,6 +188,15 @@ assert "self-repair: core_deployment_has_capability still present exactly once" 
 echo ""
 echo "== 7. MODE-leak audit: core_deployment_has_capability() itself references no MODE/F_XHTTP_ENABLE/WEB_SERVER =="
 ACCESSOR_BODY=$(awk '/^core_deployment_has_capability\(\)/{f=1} f{print} f&&/^}/{exit}' lib/core/deployment.sh)
+# Mandatory precondition: the function must actually exist and have a
+# non-empty body before a "zero MODE references" result means anything.
+# An absent function makes ACCESSOR_BODY empty, which would otherwise let
+# the grep -c below report "0" (no references found) and PASS -- that is
+# indistinguishable from a real, clean accessor. This precondition forces
+# case B (missing accessor) to fail here rather than silently pass case A.
+ACCESSOR_BODY_LINES="$(grep -vE '^\s*#|^\s*$' <<<"$ACCESSOR_BODY" | wc -l)"
+assert "MODE-leak precondition: core_deployment_has_capability() exists with a non-empty body" \
+    "$([ "$ACCESSOR_BODY_LINES" -ge 1 ] && echo "present" || echo "MISSING")" "present"
 assert "accessor body has zero MODE/F_XHTTP_ENABLE/WEB_SERVER code references" \
     "$(grep -vE '^\s*#' <<<"$ACCESSOR_BODY" | grep -cE '\b(MODE|F_XHTTP_ENABLE|WEB_SERVER)\b')" "0"
 
