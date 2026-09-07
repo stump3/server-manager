@@ -240,10 +240,27 @@ panel_install() {
     # ufw never permitted it), fixed here since it's in the exact same
     # code path being touched for F+XHTTP and the fix is a single,
     # low-risk `ufw allow` line — not a broader firewall refactor.
-    if [ "$MODE" = "J" ]; then
-        ufw allow "${J_XHTTP_PUBLIC_PORT:-8443}/tcp" comment 'Variant J XHTTP' >/dev/null 2>&1
-    elif [ "$MODE" = "F" ] && [ "$F_XHTTP_ENABLE" = "1" ]; then
-        ufw allow "${F_XHTTP_PUBLIC_PORT:-9443}/tcp" comment 'Variant F XHTTP' >/dev/null 2>&1
+    #
+    # Adapter #9 (2026-09-07): the gate ("should a public XHTTP port be
+    # opened at all for this Deployment") used to be a second, independent
+    # raw `[ "$MODE" = "J" ] || { [ "$MODE" = "F" ] && [ "$F_XHTTP_ENABLE" = "1" ]; }`
+    # re-derivation of the exact same fact this same function already
+    # asks lib/core/deployment.sh's core_deployment_has_capability("XHTTP")
+    # for, a few lines below, to compute _api_xhttp_enable (Adapter #4).
+    # core_resolve_deployment() has already run above (line 222), so
+    # DEPLOYMENT_* is resolved here — same precondition Adapter #4 already
+    # relies on at its own call site further down in this function. Only
+    # the gate is now the Core query; WHICH port to open (J_XHTTP_PUBLIC_PORT
+    # vs F_XHTTP_PUBLIC_PORT) is still a raw MODE branch — port-per-topology
+    # is PortAllocation-contract territory, not yet modeled in Core (see
+    # lib/core/adapter_reality.sh's own header for the same deferral), and
+    # is deliberately left untouched here.
+    if core_deployment_has_capability "XHTTP"; then
+        if [ "$MODE" = "J" ]; then
+            ufw allow "${J_XHTTP_PUBLIC_PORT:-8443}/tcp" comment 'Variant J XHTTP' >/dev/null 2>&1
+        else
+            ufw allow "${F_XHTTP_PUBLIC_PORT:-9443}/tcp" comment 'Variant F XHTTP' >/dev/null 2>&1
+        fi
     fi
 
     # ── TeleMT integrated (MODE=F/J, опционально) ──────────────────
