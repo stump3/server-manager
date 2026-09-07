@@ -757,14 +757,116 @@ def _score(candidate: dict, effective_ds: dict, inventory: dict, capability_regi
 # Plan IR assembly for the winning candidate set
 # ─────────────────────────────────────────────────────────────────────
 
-def _build_plan_ir(selected: list, effective_ds: dict, inventory: dict, safety_policy: dict):
+def _forced_ip_value(candidate: dict) -> Optional[str]:
+    """The explicit `ip.selection: specific` anchor value for this
+    candidate's group, if any — `None` means the group has no fixed
+    requirement and is free to be assigned any public address."""
+    specific_values = sorted({
+        s["ip"]["value"] for s in candidate["services"]
+        if (s.get("ip") or {}).get("selection") == "specific" and s["ip"].get("value")
+    })
+    return specific_values[0] if specific_values else None
+
+
+def _resolve_all_ips(selected: list, effective_ds: dict, inventory: dict):
+    """Resolves one IP address per selected candidate/group, GLOBALLY
+    across the whole selected set — fixing a real defect where each
+    group was previously resolved independently
+    (`_resolve_group_ip`'s original per-candidate-only scope), with no
+    memory of what address a DIFFERENT group already received. That
+    independence meant an explicit `ip.selection: separate_from_service`
+    constraint spanning two different groups could be silently violated
+    whenever neither group had a `specific` anchor — both would fall
+    back to the identical default address, with no port collision to
+    accidentally surface the mistake (an even quieter failure than a
+    port collision, since `plan_validator.py` has no way to check it:
+    the original `separate_from_service` intent does not survive into
+    Plan IR at all — this is exactly why the fix belongs HERE, in
+    Planner, using information (`effective_ds`) that no downstream
+    layer has access to, rather than in the Validator or a schema
+    change).
+
+    Deterministic greedy coloring, not a general allocator: process
+    candidates in `candidate_id`-sorted order; a group with a `specific`
+    anchor keeps that literal value (unchanged behavior); every other
+    group defaults to `addresses[0]` (UNCHANGED from prior behavior
+    when no separation constraint applies — this preserves the
+    existing "simple by default" bias and every pre-existing test's
+    expected output byte-for-byte) UNLESS that default is already used
+    by a DIFFERENT group this one has an explicit
+    `separate_from_service` relationship with, in which case the next
+    available, not-yet-conflicting address (still deterministically
+    the smallest such address) is used instead.
+
+    Returns (ip_by_candidate_id: dict, infeasible_reason: str | None).
+    A non-None `infeasible_reason` means no valid assignment exists —
+    e.g., more mutually-separated groups than distinct public IPv4
+    addresses — and the caller must treat this as `unsatisfiable`,
+    never silently reuse a colliding address."""
+    service_to_candidate_id = {sid: c["candidate_id"] for c in selected for sid in c["service_ids"]}
+
+    # Undirected "must differ" adjacency between CANDIDATES (not
+    # services), derived from every `separate_from_service` edge in
+    # the effective Desired State that spans two different groups.
+    # (An edge whose two services ended up in the SAME group is
+    # impossible by construction — `_forced_separate`/
+    # `_placement_compatible` already prevent that pairing from ever
+    # being grouped together, so no self-loop can occur here.)
+    must_differ: dict = {}
+    for svc in effective_ds.get("services", []):
+        ip = svc.get("ip") or {}
+        if ip.get("selection") != "separate_from_service":
+            continue
+        other_id = ip.get("separate_from_service")
+        this_cid = service_to_candidate_id.get(svc["id"])
+        other_cid = service_to_candidate_id.get(other_id)
+        if this_cid is None or other_cid is None or this_cid == other_cid:
+            continue
+        must_differ.setdefault(this_cid, set()).add(other_cid)
+        must_differ.setdefault(other_cid, set()).add(this_cid)
+
+    pub = inventory.get("public_ipv4", {})
+    all_addresses = sorted({a["address"] for a in (pub.get("addresses") or [])})
+    fallback_address = all_addresses[0] if all_addresses else "0.0.0.0"
+
+    ip_by_candidate_id: dict = {}
+    for c in sorted(selected, key=lambda c: c["candidate_id"]):
+        cid = c["candidate_id"]
+        forced = _forced_ip_value(c)
+        if forced is not None:
+            ip_by_candidate_id[cid] = forced
+            continue
+
+        neighbor_colors = {
+            ip_by_candidate_id[n] for n in must_differ.get(cid, ())
+            if n in ip_by_candidate_id
+        }
+        if fallback_address not in neighbor_colors:
+            ip_by_candidate_id[cid] = fallback_address
+            continue
+
+        remaining = [a for a in all_addresses if a not in neighbor_colors]
+        if not remaining:
+            return None, (
+                f"candidate {cid!r} requires an IPv4 address distinct from "
+                f"{sorted(neighbor_colors)!r} (per an explicit "
+                f"ip.selection: separate_from_service requirement), but "
+                f"Inventory reports no distinct public IPv4 address available "
+                f"(known addresses: {all_addresses!r})"
+            )
+        ip_by_candidate_id[cid] = remaining[0]
+
+    return ip_by_candidate_id, None
+
+
+def _build_plan_ir(selected: list, effective_ds: dict, inventory: dict, safety_policy: dict, ip_by_candidate_id: dict):
     groups = []
     warnings = []
 
     for c in sorted(selected, key=lambda c: c["candidate_id"]):
         services_ir = []
         safety_decisions = []
-        group_ip = _resolve_group_ip(c, inventory)
+        group_ip = ip_by_candidate_id[c["candidate_id"]]
         for svc in c["services"]:
             port = svc.get("port") or {}
             is_grouped = len(c["services"]) > 1
