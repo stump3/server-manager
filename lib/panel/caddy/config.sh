@@ -6,7 +6,7 @@ panel_generate_caddy_config() {
     local COOKIE_VAL="$3"
 
         # ── Caddyfile ─────────────────────────────────────────────
-        if [ "$MODE" = "1" ]; then
+        if [ "$(core_topology_public_ingress_owner "$MODE")" = "xray" ]; then
             # MODE=1: Caddy слушает unix-сокет (Xray→Caddy, selfsteal)
             cat > /opt/remnawave/Caddyfile << CADDYEOF
 {
