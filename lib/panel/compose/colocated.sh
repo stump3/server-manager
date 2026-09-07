@@ -153,7 +153,25 @@ panel_generate_compose_colocated() {
     # mis-route or inventing a new unverified one. (MODE=J's own guard is
     # new alongside MODE=J's own support in this function — MODE=J did
     # not exist in the original file in any form, correct or not.)
-    if [ "$WEB_SERVER" = "2" ] && { [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; }; then
+    # Adapter #6 (2026-09-07): was a raw `[ "$WEB_SERVER" = "2" ] && { [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; }`
+    # -- a second, independent copy of the same "does this WEB_SERVER work
+    # with this topology" fact lib/core/deployment.sh's
+    # core_deployment_web_server_ok() already answers via
+    # core_topology_requires_nginx_stream(), instead of re-deriving it here
+    # as its own F/J-shaped comparison. Passed $MODE directly (not
+    # $DEPLOYMENT_TOPOLOGY): core_resolve_deployment() has not run yet at
+    # this point in panel_install() (panel_generate_compose() runs before
+    # it, lib/panel/install.sh:208 vs :222), so DEPLOYMENT_TOPOLOGY is
+    # still unset here -- but core_resolve_deployment() only ever sets
+    # DEPLOYMENT_TOPOLOGY="$_mode" verbatim, with no transformation, so
+    # $MODE (already this function's own local, see above) is exactly the
+    # same value byte-for-byte. The accessor itself is a pure function of
+    # its two arguments (never reads a Deployment global), so this is not
+    # a raw-MODE regression -- it is the fact's one true source
+    # (core_topology_requires_nginx_stream()) being consulted instead of a
+    # second, local F/J comparison. Error text/behavior (err() exits
+    # immediately, no "return 1" needed after it) unchanged.
+    if ! core_deployment_web_server_ok "$MODE" "$WEB_SERVER"; then
         err "Variant $MODE требует nginx (WEB_SERVER=1) — Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant $MODE"
     fi
 
