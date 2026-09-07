@@ -174,8 +174,8 @@ assert "api.sh's own duplicated 19444 fallback is untouched (not migrated yet, b
 echo ""
 echo "== 8. no substitution of 19444 (the named migration-debt regression case) =="
 assert "F/xhttp internal_port is exactly 19444, not some other value" "$(core_port_allocation_internal F xhttp)" "19444"
-assert "lib/core/port_allocation.sh's own F/xhttp row literally contains 19444" \
-    "$(grep -c '19444' lib/core/port_allocation.sh)" "1"
+assert "lib/core/port_allocation.sh's own F/xhttp DATA ROW literally contains 19444 (once -- comments elsewhere in the file also discuss 19444 as the named migration-debt case, which is expected and not counted here)" \
+    "$(grep -c '"F:xhttp")     echo "9443|19444|reality/xhttp|no|Xray" ;;' lib/core/port_allocation.sh)" "1"
 
 echo ""
 echo "== 9. negative mutation: corrupt the F/xhttp internal_port, confirm the accessor is actually load-bearing on the table (not a hardcoded pass-through) =="
@@ -220,6 +220,65 @@ assert "lib/panel/api.sh's XHTTP port fallback logic is unchanged (not migrated 
     "$(grep -c 'echo \"\${F_XRAY_XHTTP_PORT:-19444}\" ;;' lib/panel/api.sh)" "1"
 assert "lib/panel/install.sh's UFW XHTTP-port-per-topology branch is unchanged (not migrated in this step)" \
     "$(grep -c 'J_XHTTP_PUBLIC_PORT:-8443' lib/panel/install.sh)" "1"
+
+echo ""
+echo "== 11. no mutation of F_*/J_* port environment variables (accessor is read-only) =="
+# Snapshot every F_*/J_* port variable BEFORE sourcing port_allocation.sh
+# and calling its accessors, then again AFTER, in the SAME shell (not a
+# subshell) so a real `export`/assignment from inside the sourced file
+# would actually be visible here. Deliberately pre-seeds them (rather
+# than leaving them unset) so the test can also prove the accessor
+# doesn't CHANGE a pre-existing value it has no business touching -- an
+# unset-before/unset-after comparison alone wouldn't catch a mutation
+# that both sets and unsets the same variable inside one call.
+ENV_MUTATION_RESULT=$(bash -c '
+    F_NGINX_HTTPS_PORT=7443
+    F_XRAY_VISION_PORT=8443
+    F_XHTTP_PUBLIC_PORT=9443
+    F_XRAY_XHTTP_PORT=19444
+    J_NGINX_HTTPS_PORT=7444
+    J_XRAY_VISION_PORT=18443
+    J_XRAY_XHTTP_PORT=18444
+    J_XHTTP_PUBLIC_PORT=8443
+    BEFORE="$F_NGINX_HTTPS_PORT|$F_XRAY_VISION_PORT|$F_XHTTP_PUBLIC_PORT|$F_XRAY_XHTTP_PORT|$J_NGINX_HTTPS_PORT|$J_XRAY_VISION_PORT|$J_XRAY_XHTTP_PORT|$J_XHTTP_PUBLIC_PORT"
+    BEFORE_VARS="$(compgen -v | grep -E "^[FJ]_(NGINX_HTTPS|XRAY_VISION|XHTTP_PUBLIC|XRAY_XHTTP)_PORT$" | sort)"
+
+    source lib/core/port_allocation.sh
+    for T in F J; do
+        for R in vision xhttp panel_sub telemt; do
+            core_port_allocation_public "$T" "$R" >/dev/null 2>&1
+            core_port_allocation_internal "$T" "$R" >/dev/null 2>&1
+            core_port_allocation_protocol "$T" "$R" >/dev/null 2>&1
+            core_port_allocation_proxy_protocol "$T" "$R" >/dev/null 2>&1
+            core_port_allocation_owner "$T" "$R" >/dev/null 2>&1
+        done
+    done
+
+    AFTER="$F_NGINX_HTTPS_PORT|$F_XRAY_VISION_PORT|$F_XHTTP_PUBLIC_PORT|$F_XRAY_XHTTP_PORT|$J_NGINX_HTTPS_PORT|$J_XRAY_VISION_PORT|$J_XRAY_XHTTP_PORT|$J_XHTTP_PUBLIC_PORT"
+    AFTER_VARS="$(compgen -v | grep -E "^[FJ]_(NGINX_HTTPS|XRAY_VISION|XHTTP_PUBLIC|XRAY_XHTTP)_PORT$" | sort)"
+
+    if [ "$BEFORE" = "$AFTER" ] && [ "$BEFORE_VARS" = "$AFTER_VARS" ]; then
+        echo "unchanged"
+    else
+        echo "MUTATED before=[$BEFORE] after=[$AFTER] before_vars=[$BEFORE_VARS] after_vars=[$AFTER_VARS]"
+    fi
+')
+assert "pre-seeded F_*/J_* port variables are byte-identical before and after sourcing port_allocation.sh and calling every accessor for all 8 rows" \
+    "$ENV_MUTATION_RESULT" "unchanged"
+
+# Separately: same check but starting from completely UNSET F_*/J_*
+# variables -- proves the accessor doesn't CREATE them either.
+ENV_CREATION_RESULT=$(bash -c '
+    unset -v F_NGINX_HTTPS_PORT F_XRAY_VISION_PORT F_XHTTP_PUBLIC_PORT F_XRAY_XHTTP_PORT \
+             J_NGINX_HTTPS_PORT J_XRAY_VISION_PORT J_XRAY_XHTTP_PORT J_XHTTP_PUBLIC_PORT 2>/dev/null
+    source lib/core/port_allocation.sh
+    core_port_allocation_internal F xhttp >/dev/null 2>&1
+    core_port_allocation_public J vision >/dev/null 2>&1
+    CREATED="$(compgen -v | grep -E "^[FJ]_(NGINX_HTTPS|XRAY_VISION|XHTTP_PUBLIC|XRAY_XHTTP)_PORT$" | sort)"
+    [ -z "$CREATED" ] && echo "none-created" || echo "CREATED: $CREATED"
+')
+assert "accessor does not CREATE any F_*/J_* port variable when none existed beforehand" \
+    "$ENV_CREATION_RESULT" "none-created"
 
 echo ""
 echo "==================================="
