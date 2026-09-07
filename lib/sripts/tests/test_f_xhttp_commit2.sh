@@ -43,6 +43,20 @@ assert_not_contains() {
 }
 
 # shellcheck disable=SC1091
+# UPDATED 2026-09-07 (Architecture Gap Discovery, Candidate 1): this
+# file's own panel_reality_xhttp_inbound_port() assertions below (line
+# ~104) now exercise a function whose F/J arms call
+# lib/core/port_allocation.sh's core_port_allocation_internal() -- a
+# real, intentional new dependency (see lib/panel/api.sh's own comment
+# on that function), not a regression. This test's setup previously
+# never needed to source anything under lib/core/*.sh because every
+# panel_reality_* function it calls was, until now, fully self-contained.
+# Sourcing this one Core file here brings this test's own setup back in
+# line with what a real server-manager.sh run already does (loads
+# core/port_allocation before panel) -- no assertion or expected value
+# below was changed to accommodate this.
+source lib/core/port_allocation.sh
+# shellcheck disable=SC1091
 source lib/ui/output.sh
 # shellcheck disable=SC1091
 source lib/common.sh
