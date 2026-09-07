@@ -402,7 +402,23 @@ panel_setup_api() {
     fi
 
     local NODE_ADDR
-    [ "$MODE" = "2" ] && NODE_ADDR="$SELFSTEAL_DOMAIN" || NODE_ADDR="172.30.0.1"
+    # Adapter #5 (2026-09-07): was a raw `[ "$MODE" = "2" ] && ... || ...`
+    # (a third independent copy of the "is Xray co-located with Panel"
+    # fact panel_core_reality_needs_2222_ufw_rule()/panel_core_reality_dest_val()
+    # above already answer via lib/core/runtime_component.sh's
+    # core_runtime_component_exists("xray") instead of a raw MODE
+    # comparison). Same precondition as those two calls: core_resolve_deployment()
+    # already ran earlier in this same panel_install() invocation
+    # (lib/panel/install.sh:222), panel_setup_api() (lib/panel/install.sh:320)
+    # is this function's only production call site. Byte-identical truth
+    # table for all four topologies (1/F/J -> 172.30.0.1, 2 -> SELFSTEAL_DOMAIN),
+    # confirmed against the exact same fact already proven identical for
+    # the two calls above.
+    if core_runtime_component_exists "xray"; then
+        NODE_ADDR="172.30.0.1"
+    else
+        NODE_ADDR="$SELFSTEAL_DOMAIN"
+    fi
     panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
         --arg na "$NODE_ADDR" --arg cu "$CFG_UUID" --argjson ai "$ACTIVE_INBOUNDS_JSON" \
         '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)" >/dev/null 2>&1 \
