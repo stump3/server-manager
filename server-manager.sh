@@ -83,6 +83,7 @@ declare -A _MODULE_SHA256=(
     ["core/runtime_component"]=""
     ["core/adapter_webserver"]=""
     ["core/adapter_reality"]=""
+    ["core/port_allocation"]=""
     ["ui/output"]=""
     ["common"]=""
     ["panel"]=""
@@ -136,6 +137,7 @@ _load_module core/deployment
 _load_module core/runtime_component
 _load_module core/adapter_webserver
 _load_module core/adapter_reality
+_load_module core/port_allocation
 _load_module ui/output
 _load_module common
 _load_module panel
