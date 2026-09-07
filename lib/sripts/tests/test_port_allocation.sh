@@ -165,11 +165,27 @@ assert "J_XRAY_VISION_PORT=18443 still present, unchanged" "$(grep -c '^J_XRAY_V
 assert "J_XRAY_XHTTP_PORT=18444 still present, unchanged" "$(grep -c '^J_XRAY_XHTTP_PORT=18444$' lib/panel/nginx/variant_j.sh)" "1"
 assert "J_NGINX_HTTPS_PORT=7444 still present, unchanged" "$(grep -c '^J_NGINX_HTTPS_PORT=7444$' lib/panel/nginx/variant_j.sh)" "1"
 assert "J_XHTTP_PUBLIC_PORT=8443 still present, unchanged" "$(grep -c '^J_XHTTP_PUBLIC_PORT=8443$' lib/panel/nginx/variant_j.sh)" "1"
-# api.sh's own pre-existing duplicated fallback (the officially-named
-# migration debt) is likewise untouched by this step -- still there,
-# still a duplicate, not yet resolved (that is a LATER, separate step).
-assert "api.sh's own duplicated 19444 fallback is untouched (not migrated yet, by design)" \
-    "$(grep -c 'F_XRAY_XHTTP_PORT:-19444' lib/panel/api.sh)" "1"
+# UPDATED 2026-09-07 (Architecture Gap Discovery, Candidate 1): api.sh's
+# own duplicated 19444/18444 fallback for the F/J arms has now been
+# resolved -- panel_reality_xhttp_inbound_port()'s F/J arms call this
+# file's core_port_allocation_internal() instead of re-typing the
+# literal. This is the intended resolution of the migration debt named
+# in docs/CORE_RUNTIME_CONTRACTS.md §13, not a regression of this
+# section's original "nothing else changed" intent -- the F_*/J_*
+# variable DEFINITIONS above are still byte-unchanged; only api.sh's
+# OWN duplicate copy of one of those numbers is gone. Full behavioral
+# proof (truth table, negative mutation, missing-accessor) lives in
+# lib/sripts/tests/test_port_allocation_wiring.sh -- this assertion only
+# confirms the literal fallback text is actually gone from api.sh now.
+assert "api.sh's F-arm duplicated '\${F_XRAY_XHTTP_PORT:-19444}' literal fallback is gone (migrated to the Core accessor)" \
+    "$(grep -c 'F_XRAY_XHTTP_PORT:-19444' lib/panel/api.sh)" "0"
+assert "api.sh's F arm now calls core_port_allocation_internal \"F\" \"xhttp\" instead" \
+    "$(grep -c 'F) core_port_allocation_internal "F" "xhttp"' lib/panel/api.sh)" "1"
+# The MODE=1/2 catch-all's OWN separate literal (never part of this
+# migration -- lib/core/port_allocation.sh has no topology-1/2 row at
+# all, see that file's header) remains exactly as it always was.
+assert "the untouched MODE=1/2 catch-all's \${J_XRAY_XHTTP_PORT:-18444} literal is still present (deliberately not migrated)" \
+    "$(grep -c '\*) echo "\${J_XRAY_XHTTP_PORT:-18444}"' lib/panel/api.sh)" "1"
 
 echo ""
 echo "== 8. no substitution of 19444 (the named migration-debt regression case) =="
@@ -213,12 +229,51 @@ assert "self-repair: F/xhttp internal_port is back to 19444 after restore" \
     "$(bash -c 'source lib/core/port_allocation.sh; core_port_allocation_internal F xhttp')" "19444"
 
 echo ""
-echo "== 10. no production call site exists yet (read-only layer, not wired in) =="
-assert "no production file (outside lib/core/port_allocation.sh itself and this test) calls any core_port_allocation_* function" \
-    "$(grep -rl 'core_port_allocation_' lib/ 2>/dev/null | grep -v 'lib/core/port_allocation.sh' | grep -v 'lib/sripts/tests/test_port_allocation.sh' | wc -l)" "0"
-assert "lib/panel/api.sh's XHTTP port fallback logic is unchanged (not migrated in this step)" \
-    "$(grep -c 'echo \"\${F_XRAY_XHTTP_PORT:-19444}\" ;;' lib/panel/api.sh)" "1"
-assert "lib/panel/install.sh's UFW XHTTP-port-per-topology branch is unchanged (not migrated in this step)" \
+echo "== 10. UPDATED 2026-09-07 (Candidate 1 wiring landed): exactly one production consumer, in Panel, not inside Core =="
+# This section originally asserted "zero production consumers" -- that
+# described the state before Candidate 1 (Architecture Gap Discovery)
+# wired lib/panel/api.sh's panel_reality_xhttp_inbound_port() onto this
+# file's core_port_allocation_internal(). That assertion is now, itself,
+# an out-of-date description of the architecture, not a guard against a
+# regression -- replaced with assertions for the NEW, intended contract:
+# exactly one consumer file, that file is Panel (never another Core
+# file), and Core itself still does not call back into Panel because of
+# it. Full production-behavior proof (truth table, negative mutation on
+# the real api.sh function, missing-accessor handling, module load
+# order) lives in lib/sripts/tests/test_port_allocation_wiring.sh --
+# this section only re-confirms the boundary shape from this file's own
+# side.
+CONSUMER_FILES="$(grep -rl 'core_port_allocation_' lib/ 2>/dev/null | grep -v 'lib/core/port_allocation.sh' | grep -v 'lib/sripts/tests/')"
+assert "PortAllocation now has exactly one production consumer file" \
+    "$(echo "$CONSUMER_FILES" | grep -c .)" "1"
+assert "that one production consumer is lib/panel/api.sh (Panel), not another lib/core/*.sh file" \
+    "$CONSUMER_FILES" "lib/panel/api.sh"
+PRXIP_BODY="$(awk '/^panel_reality_xhttp_inbound_port\(\) \{$/{grab=1} grab{print} grab&&/^}$/{exit}' lib/panel/api.sh)"
+PRXIP_CODE_ONLY="$(grep -vE '^\s*#' <<<"$PRXIP_BODY")"
+assert "lib/panel/api.sh's function body actually extracted (non-empty)" \
+    "$([ -n "$PRXIP_BODY" ] && echo present || echo MISSING)" "present"
+assert "panel_reality_xhttp_inbound_port()'s CODE calls core_port_allocation_internal exactly twice (F arm, J arm -- not the untouched MODE=1/2 catch-all)" \
+    "$(grep -c 'core_port_allocation_internal' <<<"$PRXIP_CODE_ONLY")" "2"
+# Core still does not depend on Panel as a RESULT of gaining a consumer
+# -- the dependency direction is Panel -> Core, never the reverse; this
+# file's CODE (comments legitimately discuss lib/panel/*.sh paths by
+# name throughout, as design documentation -- see section 6's own
+# CODE_ONLY filtering for the same reasoning) must still contain zero
+# references to any lib/panel/*.sh path or Panel's own F_*/J_* globals,
+# exactly as section 6 above already established before this consumer
+# existed.
+assert "lib/core/port_allocation.sh's CODE (not its documentation comments) still does not source or reference any lib/panel path, even after gaining a Panel consumer" \
+    "$(grep -c 'lib/panel' <<<"$CODE_ONLY")" "0"
+# The table itself (the actual data, not who calls it) remains
+# immutable -- still exactly 8 rows, still the same values verified in
+# section 1 above.
+assert "PortAllocation's own row table is still exactly 8 rows (immutable -- gaining a consumer did not add/remove/reshape rows)" \
+    "$(grep -cE '^\s*"(F|J):(vision|panel_sub|xhttp|telemt)"\)' lib/core/port_allocation.sh)" "8"
+# lib/panel/install.sh's separate UFW port-open logic remains untouched
+# -- Candidate 1 only ever concerned panel_reality_xhttp_inbound_port()
+# in api.sh, not install.sh's own, different, still-unmigrated raw-MODE
+# port choice for the firewall rule.
+assert "lib/panel/install.sh's UFW XHTTP-port-per-topology branch is unchanged (out of scope for Candidate 1)" \
     "$(grep -c 'J_XHTTP_PUBLIC_PORT:-8443' lib/panel/install.sh)" "1"
 
 echo ""
