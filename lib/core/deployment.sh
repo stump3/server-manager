@@ -187,6 +187,50 @@ core_resolve_deployment() {
     fi
 }
 
+# core_deployment_has_capability <capability> — Adapter #4's single Core
+# query: "does the ALREADY-RESOLVED Deployment (most recent
+# core_resolve_deployment() call) have <capability>, whether because it
+# was explicitly turned on (DEPLOYMENT_CAPABILITIES[]) or because the
+# current DEPLOYMENT_TOPOLOGY requires it intrinsically
+# (core_topology_required_capabilities())?"
+#
+# This is a pure read over state core_resolve_deployment() already
+# computed — it takes no MODE/F_XHTTP_ENABLE/WEB_SERVER argument, reads
+# none of those globals, and does not itself call core_resolve_deployment()
+# or otherwise (re)populate DEPLOYMENT_*. It is not a second resolver: it
+# adds no new fact and makes no topology/business decision of its own —
+# "is J's XHTTP required" is topology.sh's core_topology_required_capabilities()
+# answer (J -> "Vision XHTTP"), already relied on by nothing here except a
+# literal membership test against that same list. Equivalent to the
+# existing core_topology_capability_is_required() shape one level up,
+# combined with the OPTIONAL set already recorded in
+# DEPLOYMENT_CAPABILITIES[] by the resolver — no new truth table, no
+# `case "$DEPLOYMENT_TOPOLOGY" in J)`.
+#
+#   $1  capability name, e.g. "XHTTP"
+#
+# Returns 0 (has it) or 1 (does not), matching the shell-boolean idiom
+# used by core_topology_capability_is_optional()/_is_required() above.
+core_deployment_has_capability() {
+    local _want="${1:-}" _cap
+    [ -z "$_want" ] && return 1
+
+    # Explicitly-on optional capability (e.g. F + F_XHTTP_ENABLE=1, already
+    # recorded into DEPLOYMENT_CAPABILITIES[] by core_resolve_deployment()).
+    for _cap in "${DEPLOYMENT_CAPABILITIES[@]:-}"; do
+        [ "$_cap" = "$_want" ] && return 0
+    done
+
+    # Topology-required capability (e.g. J's XHTTP) — same fact
+    # core_topology_capability_is_required() already exposes, read here
+    # against the resolved DEPLOYMENT_TOPOLOGY rather than a raw MODE.
+    for _cap in $(core_topology_required_capabilities "$DEPLOYMENT_TOPOLOGY" 2>/dev/null); do
+        [ "$_cap" = "$_want" ] && return 0
+    done
+
+    return 1
+}
+
 # core_deployment_web_server_ok — the ONE fact about WEB_SERVER this seam
 # needs (§3.1: "WEB_SERVER... belongs on Topology... F/J are
 # nginx-stream{}-only by construction"). Now expressed as a query against
