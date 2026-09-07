@@ -101,10 +101,35 @@ panel_reality_accept_proxy_protocol() {
 # (xray_xhttp_f -> 127.0.0.1:19444) never forwards to, a total port
 # mismatch of exactly the kind panel_reality_inbound_port()'s own FIXED
 # comment above already warns about for Vision.
+#
+# WIRED to lib/core/port_allocation.sh (2026-09-07, Architecture Gap
+# Discovery / Candidate 1, first PortAllocation production consumer): the
+# F and J arms now read core_port_allocation_internal("<F|J>", "xhttp")
+# instead of each carrying its own literal fallback default — this is
+# the resolution of the "19444" duplicated-literal migration debt named
+# in docs/CORE_RUNTIME_CONTRACTS.md §13 and docs/edge_contracts.md's Port
+# allocation section: F_XRAY_XHTTP_PORT (still defined, unchanged, in
+# lib/panel/nginx/variant_f.sh) is no longer independently re-typed as a
+# number here.
+#
+# The `*` arm (MODE=1/2, and this function's own long-standing catch-all
+# shape) is DELIBERATELY NOT migrated: lib/core/port_allocation.sh has no
+# row for topology 1 or 2 at all (neither has an internal/public XHTTP
+# port split — see that file's own header), so
+# core_port_allocation_internal("1", "xhttp") would simply fail. This
+# function's result feeds every MODE, unconditionally, straight into
+# lib/panel/xray/templates/render.sh's `jq --argjson xport "$XHTTP_PORT"`
+# (see panel_setup_api()'s call site below) — an empty result for
+# MODE=1/2 would break jq there even though f.json (MODE=1/2's template)
+# never actually renders $xport. The literal ${J_XRAY_XHTTP_PORT:-18444}
+# default is kept exactly as-is for this arm, preserving the existing,
+# already-tested (test_f_xhttp_commit2.sh) MODE=1/2 -> 18444 contract
+# unchanged.
 panel_reality_xhttp_inbound_port() {
     local MODE="$1"
     case "$MODE" in
-        F) echo "${F_XRAY_XHTTP_PORT:-19444}" ;;
+        F) core_port_allocation_internal "F" "xhttp" ;;
+        J) core_port_allocation_internal "J" "xhttp" ;;
         *) echo "${J_XRAY_XHTTP_PORT:-18444}" ;;
     esac
 }
