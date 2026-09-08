@@ -249,18 +249,40 @@ panel_install() {
     # for, a few lines below, to compute _api_xhttp_enable (Adapter #4).
     # core_resolve_deployment() has already run above (line 222), so
     # DEPLOYMENT_* is resolved here — same precondition Adapter #4 already
-    # relies on at its own call site further down in this function. Only
-    # the gate is now the Core query; WHICH port to open (J_XHTTP_PUBLIC_PORT
-    # vs F_XHTTP_PUBLIC_PORT) is still a raw MODE branch — port-per-topology
-    # is PortAllocation-contract territory, not yet modeled in Core (see
-    # lib/core/adapter_reality.sh's own header for the same deferral), and
-    # is deliberately left untouched here.
+    # relies on at its own call site further down in this function.
+    #
+    # WIRED to lib/core/port_allocation.sh (2026-09-08, Architecture Gap
+    # Discovery / Candidate 2): WHICH port to open now comes from
+    # core_port_allocation_public() instead of a raw MODE branch over
+    # J_XHTTP_PUBLIC_PORT/F_XHTTP_PUBLIC_PORT. Safe specifically BECAUSE
+    # of the gate above, not in spite of it: core_deployment_has_capability
+    # ("XHTTP") can only be true when DEPLOYMENT_TOPOLOGY is "F" (with
+    # F_XHTTP_ENABLE=1 explicitly turning on the optional XHTTP capability)
+    # or "J" (XHTTP is intrinsically required there) — proved exhaustively
+    # from lib/core/topology.sh's own core_topology_required_capabilities()
+    # ("1"->Vision, "2"->PanelSub, "F"->Vision, "J"->"Vision XHTTP") and
+    # core_topology_optional_capabilities() ("1"|"2"|"J"->"", "F"->"XHTTP"):
+    # no topology other than F or J can ever reach this block. So, unlike
+    # panel_reality_xhttp_inbound_port() in lib/panel/api.sh (Candidate 1),
+    # which runs unconditionally for every MODE and therefore keeps a raw
+    # literal `*` catch-all arm, this call site needs no fallback arm at
+    # all — core_port_allocation_public("1"|"2", "xhttp") is a real
+    # failure mode of the accessor (no row for those topologies) but a
+    # provably unreachable one here. Deliberately no fallback added: a
+    # future violation of that invariant should fail loudly (this line
+    # sits in a plain command's argument, not a case arm gated by `&&`/
+    # `||`, so a failing command substitution here DOES trip `set -e`
+    # under this project's `set -euo pipefail` convention) rather than
+    # silently reintroducing a stale literal. F_XHTTP_PUBLIC_PORT/
+    # J_XHTTP_PUBLIC_PORT (lib/panel/nginx/variant_f.sh/variant_j.sh) are
+    # no longer read at this call site at all; those files themselves are
+    # untouched. lib/panel/api.sh:483-488's own, separate, structurally
+    # similar XHTTP_PUBLIC_PORT_VAL computation is a distinct, later
+    # candidate — deliberately not touched here.
     if core_deployment_has_capability "XHTTP"; then
-        if [ "$MODE" = "J" ]; then
-            ufw allow "${J_XHTTP_PUBLIC_PORT:-8443}/tcp" comment 'Variant J XHTTP' >/dev/null 2>&1
-        else
-            ufw allow "${F_XHTTP_PUBLIC_PORT:-9443}/tcp" comment 'Variant F XHTTP' >/dev/null 2>&1
-        fi
+        local _xhttp_ufw_port_desc
+        _xhttp_ufw_port_desc="$(core_port_allocation_public "$MODE" "xhttp")"
+        ufw allow "${_xhttp_ufw_port_desc}/tcp" comment "Variant $MODE XHTTP" >/dev/null 2>&1
     fi
 
     # ── TeleMT integrated (MODE=F/J, опционально) ──────────────────
