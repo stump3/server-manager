@@ -229,25 +229,29 @@ assert "self-repair: F/xhttp internal_port is back to 19444 after restore" \
     "$(bash -c 'source lib/core/port_allocation.sh; core_port_allocation_internal F xhttp')" "19444"
 
 echo ""
-echo "== 10. UPDATED 2026-09-07 (Candidate 1 wiring landed): exactly one production consumer, in Panel, not inside Core =="
-# This section originally asserted "zero production consumers" -- that
-# described the state before Candidate 1 (Architecture Gap Discovery)
-# wired lib/panel/api.sh's panel_reality_xhttp_inbound_port() onto this
-# file's core_port_allocation_internal(). That assertion is now, itself,
-# an out-of-date description of the architecture, not a guard against a
-# regression -- replaced with assertions for the NEW, intended contract:
-# exactly one consumer file, that file is Panel (never another Core
-# file), and Core itself still does not call back into Panel because of
-# it. Full production-behavior proof (truth table, negative mutation on
-# the real api.sh function, missing-accessor handling, module load
-# order) lives in lib/sripts/tests/test_port_allocation_wiring.sh --
-# this section only re-confirms the boundary shape from this file's own
-# side.
+echo "== 10. UPDATED 2026-09-08 (Candidate 1 + Candidate 2 wiring landed): exactly two production consumers, both in Panel, never inside Core =="
+# This section originally asserted "zero production consumers" (pre-
+# Candidate 1), then "exactly one" (post-Candidate 1, api.sh only).
+# Candidate 2 (lib/panel/install.sh's UFW XHTTP-port branch) added a
+# second, real production consumer -- updating the count again is the
+# same kind of "describes the new correct architecture" update as
+# Candidate 1's own change to this section, not a weakening: the
+# boundary invariant being checked (consumers are only ever in Panel,
+# Core never calls back into Panel) is unchanged and still enforced
+# below. Full production-behavior proof for each consumer lives in its
+# own focused test (lib/sripts/tests/test_port_allocation_wiring.sh for
+# api.sh, lib/sripts/tests/test_adapter_install_xhttp_ufw.sh for
+# install.sh) -- this section only re-confirms the boundary shape from
+# this file's own side.
 CONSUMER_FILES="$(grep -rl 'core_port_allocation_' lib/ 2>/dev/null | grep -v 'lib/core/port_allocation.sh' | grep -v 'lib/sripts/tests/')"
-assert "PortAllocation now has exactly one production consumer file" \
-    "$(echo "$CONSUMER_FILES" | grep -c .)" "1"
-assert "that one production consumer is lib/panel/api.sh (Panel), not another lib/core/*.sh file" \
-    "$CONSUMER_FILES" "lib/panel/api.sh"
+assert "PortAllocation now has exactly two production consumer files" \
+    "$(echo "$CONSUMER_FILES" | grep -c .)" "2"
+assert "both production consumers are in lib/panel/ (Panel), never another lib/core/*.sh file" \
+    "$(echo "$CONSUMER_FILES" | grep -vc '^lib/panel/')" "0"
+assert "lib/panel/api.sh is one of the two consumers" \
+    "$(echo "$CONSUMER_FILES" | grep -c '^lib/panel/api\.sh$')" "1"
+assert "lib/panel/install.sh is the other of the two consumers" \
+    "$(echo "$CONSUMER_FILES" | grep -c '^lib/panel/install\.sh$')" "1"
 PRXIP_BODY="$(awk '/^panel_reality_xhttp_inbound_port\(\) \{$/{grab=1} grab{print} grab&&/^}$/{exit}' lib/panel/api.sh)"
 PRXIP_CODE_ONLY="$(grep -vE '^\s*#' <<<"$PRXIP_BODY")"
 assert "lib/panel/api.sh's function body actually extracted (non-empty)" \
@@ -269,12 +273,24 @@ assert "lib/core/port_allocation.sh's CODE (not its documentation comments) stil
 # section 1 above.
 assert "PortAllocation's own row table is still exactly 8 rows (immutable -- gaining a consumer did not add/remove/reshape rows)" \
     "$(grep -cE '^\s*"(F|J):(vision|panel_sub|xhttp|telemt)"\)' lib/core/port_allocation.sh)" "8"
-# lib/panel/install.sh's separate UFW port-open logic remains untouched
-# -- Candidate 1 only ever concerned panel_reality_xhttp_inbound_port()
-# in api.sh, not install.sh's own, different, still-unmigrated raw-MODE
-# port choice for the firewall rule.
-assert "lib/panel/install.sh's UFW XHTTP-port-per-topology branch is unchanged (out of scope for Candidate 1)" \
-    "$(grep -c 'J_XHTTP_PUBLIC_PORT:-8443' lib/panel/install.sh)" "1"
+# UPDATED 2026-09-08 (Candidate 2): lib/panel/install.sh's UFW
+# XHTTP-port-per-topology branch, which was still untouched raw MODE
+# after Candidate 1, is now itself migrated onto
+# core_port_allocation_public("$MODE", "xhttp") -- full behavioral proof
+# (truth table, negative mutation on this exact call site, call order)
+# lives in lib/sripts/tests/test_adapter_install_xhttp_ufw.sh; this
+# assertion only re-confirms, from this file's own side, that the old
+# raw-literal branch is actually gone from install.sh now.
+assert "lib/panel/install.sh no longer reads J_XHTTP_PUBLIC_PORT (migrated to core_port_allocation_public)" \
+    "$(grep -c 'J_XHTTP_PUBLIC_PORT:-8443' lib/panel/install.sh)" "0"
+assert "lib/panel/install.sh's XHTTP UFW gate now calls core_port_allocation_public \"\$MODE\" \"xhttp\"" \
+    "$(grep -c 'core_port_allocation_public "\$MODE" "xhttp"' lib/panel/install.sh)" "1"
+# lib/panel/api.sh:483-488's own, separate, structurally similar
+# XHTTP_PUBLIC_PORT_VAL computation (for the Remnawave Host registration,
+# not the UFW rule) is a distinct, later candidate -- deliberately left
+# untouched by Candidate 2, confirmed still present here.
+assert "lib/panel/api.sh's own, separate XHTTP_PUBLIC_PORT_VAL computation is untouched (distinct future candidate, not part of Candidate 2)" \
+    "$(grep -c 'XHTTP_PUBLIC_PORT_VAL="\${J_XHTTP_PUBLIC_PORT:-8443}"' lib/panel/api.sh)" "1"
 
 echo ""
 echo "== 11. no mutation of F_*/J_* port environment variables (accessor is read-only) =="
