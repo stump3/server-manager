@@ -480,13 +480,20 @@ panel_setup_api() {
     # $F_XHTTP_PUBLIC_PORT (9443, lib/panel/nginx/variant_f.sh) — clients
     # would have been handed a Host pointing at a port nginx never listens
     # on for F+XHTTP at all.
-    local XHTTP_PUBLIC_PORT_VAL
-    if [ "$MODE" = "F" ]; then
-        XHTTP_PUBLIC_PORT_VAL="${F_XHTTP_PUBLIC_PORT:-9443}"
-    else
-        XHTTP_PUBLIC_PORT_VAL="${J_XHTTP_PUBLIC_PORT:-8443}"
-    fi
+    #
+    # PortAllocation migration (2026-09-07): the raw MODE=F/J fallback
+    # literal above is gone. core_port_allocation_public("$MODE","xhttp")
+    # (lib/core/port_allocation.sh) is the single source of truth now, and
+    # the call is deliberately INSIDE this XHTTP_ENABLE gate, not above it
+    # (unlike the old unconditional if/else) — PortAllocation has no row
+    # for topology 1/xhttp or 2/xhttp, and panel_setup_api() runs for
+    # every MODE. An unconditional call here would abort MODE=1/2 installs
+    # under `set -e`. XHTTP_ENABLE is only ever "1" for MODE=F(enabled)/J
+    # (core_deployment_has_capability "XHTTP", Adapter #4) — by the time
+    # this line runs, MODE is already known to be F or J.
     if [ "$XHTTP_ENABLE" = "1" ] && [ -n "$XHTTP_IBD_UUID" ]; then
+        local XHTTP_PUBLIC_PORT_VAL
+        XHTTP_PUBLIC_PORT_VAL="$(core_port_allocation_public "$MODE" "xhttp")"
         local EXISTING_XHTTP_HOST
         EXISTING_XHTTP_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
             jq -r --arg iu "$XHTTP_IBD_UUID" \
