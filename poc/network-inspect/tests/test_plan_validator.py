@@ -296,17 +296,31 @@ class TestSharingAndExclusivity(unittest.TestCase):
         self.assertIn("shared_group_endpoint_mismatch", [d.code for d in result.diagnostics])
 
     def test_14b_shared_topology_single_service_is_flagged(self):
-        """Documents a genuine, disclosed limitation precisely: a lone
-        service in a SHARED_* group is structurally valid and has zero
-        endpoint conflicts with itself, so it currently passes. Full
-        'sharing required implies >=2 services' enforcement would need
-        this specific rule; noted in the report rather than silently
-        assumed covered."""
+        """This round's targeted defect review (Finding 3) confirmed
+        this is directly checkable from Plan IR alone (topology name +
+        services array length, no additional schema information
+        needed) and added shared_topology_requires_multiple_services
+        as a minimal, additive validation rule — previously this
+        shape passed silently (a genuine, disclosed limitation at the
+        time); now it correctly fails."""
         svc = plan_ir.build_service_entry("a", "colocated", "create", "none",
                                            plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
         plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc])])
         result = plan_validator.validate_plan(plan)
-        self.assertTrue(result.valid)
+        self.assertFalse(result.valid)
+        self.assertIn("shared_topology_requires_multiple_services", [d.code for d in result.diagnostics])
+
+    def test_14b_shared_topology_with_two_services_is_not_flagged(self):
+        """Confirms the new rule only fires on the singleton case,
+        never as a false positive on a genuinely-shared, correctly
+        endpoint-matched pair."""
+        svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+        svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+        plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc_a, svc_b])])
+        result = plan_validator.validate_plan(plan)
+        self.assertTrue(result.valid, result.diagnostics)
 
     def test_15_forbidden_sharing_manifests_as_endpoint_collision(self):
         result = plan_validator.validate_plan(_separate_ips_plan_ir_with_known_bug())
