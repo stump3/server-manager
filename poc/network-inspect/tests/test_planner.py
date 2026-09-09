@@ -296,6 +296,103 @@ class TestPortsAndIps(unittest.TestCase):
         self.assertEqual(result["outcome"], "planned")
 
 
+class TestSeparateFromServiceIpResolution(unittest.TestCase):
+    """Regression tests for a real defect found while building
+    plan_validator.py: `separate_from_service` could be silently
+    violated because each candidate's IP was resolved independently,
+    with no memory of what address a DIFFERENT candidate already
+    received — both would fall back to the same default address.
+    Fixed in planner.py's `_resolve_all_ips()` (deterministic greedy
+    coloring across the whole selected candidate set, using
+    information only Planner has: the effective Desired State's own
+    separate_from_service edges)."""
+
+    def test_two_services_with_separate_from_service_get_distinct_ips(self):
+        doc = _doc(
+            _svc("a", port_value=443, sharing="allowed"),
+            _svc("b", port_value=8080, sharing="allowed", ip_selection="separate_from_service", separate_from="a"),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(public_ipv4_count=2), _registry(), doc)
+        self.assertEqual(result["outcome"], "planned")
+        ips = {s["listener"]["ip"] for g in result["plan_ir"]["groups"] for s in g["services"]}
+        self.assertEqual(len(ips), 2, f"expected 2 distinct IPs, got {ips!r}")
+
+    def test_separate_from_service_distinct_even_with_same_port(self):
+        """The more dangerous variant: same port on both services —
+        without the fix, this would silently produce two DIRECT_TCP
+        groups both bound to the identical (ip, port), an outright
+        socket conflict a real deploy would reject, despite the
+        operator's explicit separation requirement."""
+        doc = _doc(
+            _svc("a", port_value=443, sharing="allowed"),
+            _svc("b", port_value=443, sharing="allowed", ip_selection="separate_from_service", separate_from="a"),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(public_ipv4_count=2), _registry(), doc)
+        self.assertEqual(result["outcome"], "planned")
+        endpoints = [(s["listener"]["ip"], s["listener"]["port"]) for g in result["plan_ir"]["groups"] for s in g["services"]]
+        self.assertEqual(len(set(endpoints)), len(endpoints), f"colliding endpoints: {endpoints!r}")
+
+    def test_resolution_is_deterministic_across_repeated_runs(self):
+        doc = _doc(
+            _svc("a", port_value=443, sharing="allowed"),
+            _svc("b", port_value=8080, sharing="allowed", ip_selection="separate_from_service", separate_from="a"),
+        )
+        _assert_valid_ds(doc)
+        inv = _inventory(public_ipv4_count=2)
+        results = [planner.plan(inv, _registry(), doc) for _ in range(10)]
+        plans = [r["plan_ir"] for r in results]
+        self.assertTrue(all(p == plans[0] for p in plans))
+
+    def test_multiple_separate_services_use_distinct_ips_when_available(self):
+        doc = _doc(
+            _svc("a", port_value=1111, sharing="allowed"),
+            _svc("b", port_value=2222, sharing="allowed", ip_selection="separate_from_service", separate_from="a"),
+            _svc("c", port_value=3333, sharing="allowed", ip_selection="separate_from_service", separate_from="a"),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(public_ipv4_count=3), _registry(), doc)
+        self.assertEqual(result["outcome"], "planned")
+        ip_by_service = {s["service_id"]: s["listener"]["ip"] for g in result["plan_ir"]["groups"] for s in g["services"]}
+        self.assertNotEqual(ip_by_service["a"], ip_by_service["b"])
+        self.assertNotEqual(ip_by_service["a"], ip_by_service["c"])
+        # b and c have no direct constraint between them — both being
+        # separate from 'a' does not itself force b != c (a real,
+        # deliberate scope limit: only pairwise edges actually
+        # declared in Desired State are enforced, never an inferred
+        # transitive "all pairwise distinct" group).
+
+    def test_insufficient_ips_is_unsatisfiable_not_silently_collapsed(self):
+        """The critical safety property: when no valid assignment
+        exists, Planner must FAIL, never silently reuse a colliding
+        address."""
+        doc = _doc(
+            _svc("a", port_value=443, sharing="allowed"),
+            _svc("b", port_value=443, sharing="allowed", ip_selection="separate_from_service", separate_from="a"),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(public_ipv4_count=1), _registry(), doc)
+        self.assertEqual(result["outcome"], "unsatisfiable")
+        self.assertIn("separate_from_service", result["failure_reason"])
+        self.assertTrue(any(r["rejection_class"] == "unsatisfiable_placement" for r in result["rejected_alternatives"]))
+
+    def test_no_regression_when_no_separation_constraint_exists(self):
+        """Confirms the fix preserves prior behavior exactly when no
+        separate_from_service edge is present anywhere: independent
+        services with no relationship still default to the SAME first
+        public address (the existing 'prefer simple' bias), not a
+        needlessly-diversified one."""
+        doc = _doc(
+            _svc("a", port_value=1111, sharing="allowed"),
+            _svc("b", port_value=2222, sharing="allowed"),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(public_ipv4_count=2), _registry(), doc)
+        ips = {s["listener"]["ip"] for g in result["plan_ir"]["groups"] for s in g["services"]}
+        self.assertEqual(ips, {"203.0.113.10"})
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 17-19: capability status handling
 # ─────────────────────────────────────────────────────────────────────
