@@ -109,10 +109,15 @@ here):
      actually matches `plan_ir.group_id()` computed from its listed
      services (catches a corrupted/hand-edited artifact).
   C. Endpoint (transport, ip, port) consistency: services in a
-     SHARED_* group MUST share one identical endpoint; services in a
-     non-shared group (or across DIFFERENT groups entirely) MUST NOT
-     collide on one — this is the check that catches a REAL, disclosed
-     defect in the current `planner.py` (see report).
+     SHARED_* group MUST share one identical endpoint AND a SHARED_*
+     group must have at least 2 services (a lone service in a
+     "shared" group is an internal inconsistency, fully checkable
+     from `topology`+`services` alone — added during this project's
+     targeted defect review, Finding 3, once confirmed this needs no
+     additional schema information); services in a non-shared group
+     (or across DIFFERENT groups entirely) MUST NOT collide on one —
+     this is the check that catches a REAL, disclosed defect in the
+     current `planner.py` (see report).
   D. Reconciliation action/change_scope consistency (keep/reuse ->
      change_scope none; create -> none; change -> parameter or
      topology, never none).
@@ -436,6 +441,14 @@ def _validate_placement(plan: dict) -> list:
 
         distinct_endpoints = len(endpoints_in_group)
         if topology in _SHARED_TOPOLOGIES:
+            if len(group["services"]) < 2:
+                _err(diags, "shared_topology_requires_multiple_services", gid,
+                     "$.groups[].services",
+                     f"group {gid!r} is topology {topology!r} ('shared' implies sharing with "
+                     f"at least one other service) but has only {len(group['services'])} "
+                     f"service(s) — a shared-topology group with a single, unpaired service is "
+                     f"an internal inconsistency, fully checkable from group_id/topology/services "
+                     f"alone with no additional schema information needed")
             if distinct_endpoints > 1:
                 _err(diags, "shared_group_endpoint_mismatch", gid, "$.groups[].services[].listener",
                      f"group {gid!r} is topology {topology!r} (services should share one "
