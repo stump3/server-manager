@@ -803,8 +803,8 @@ own non-goals.
 | `F_XHTTP_ENABLE` (`"0"\|"1"`) | `cli.sh:100-106`'s confirm prompt | `install.sh:170,223,304` (positional relay + re-derivation), `nginx/config.sh:215` (`$13` positional, own default), `variant_f.sh` (consumed), `api.sh:87,162` (re-derived independently from MODE+the relayed value) | is F's optional XHTTP leg on | `Deployment.capabilities` containing `"XHTTP"` |
 | `TELEMT_DOMAIN` | `cli.sh:170,221,243` | `install.sh:168,221,284`, `nginx/config.sh:190` (`$11` positional), `variant_f.sh:76`, `variant_j.sh:92` | SNI value for TeleMT's masquerade domain (Edge's Domain contract) | `Deployment.telemt.domain` |
 | `TELEMT_PORT` | `cli.sh:171,222,252` | `install.sh:168,222,284`, `nginx/config.sh:191` (`$12` positional), `variant_f.sh:77`, `variant_j.sh:93` | TeleMT's own loopback listener port | `Deployment.telemt.port` |
-| `F_XHTTP_PUBLIC_PORT` (`9443`) | literal constant in `variant_f.sh:57` | `api.sh:421` (`${F_XHTTP_PUBLIC_PORT:-9443}` — independent fallback default, same literal, not the same variable scope) | Edge's own `PortAllocation` row (topology=F, capability=XHTTP, role=xhttp, public_port) | should be *read from* a PortAllocation lookup, not defined twice |
-| `F_XRAY_XHTTP_PORT` (`19444`) | literal constant in `variant_f.sh:58` | `api.sh:107` (`${F_XRAY_XHTTP_PORT:-19444}` — independent fallback default, same literal) | same PortAllocation row's `internal_port` | same — this is the exact duplicated-literal Edge already flagged, now traced to its two exact locations |
+| `F_XHTTP_PUBLIC_PORT` (`9443`) | literal constant in `variant_f.sh:57` | **RESOLVED (Candidate 3, 2026-09-07)** — `api.sh` no longer redeclares this as an independent fallback default; the public XHTTP port is now read via `core_port_allocation_public "$MODE" "xhttp"` inside `api.sh`'s `XHTTP_ENABLE` gate. (An earlier revision of this table cited `api.sh:421` for the old `${F_XHTTP_PUBLIC_PORT:-9443}` literal; that line has since moved on to unrelated code and no longer contains it.) `cli.sh` still reads `F_XHTTP_PUBLIC_PORT` directly for its confirm-prompt display text — that is intentional and out of scope (Candidate 4 = NOT NEEDED, single display-only call site, not a duplicated decision point). | Edge's own `PortAllocation` row (topology=F, capability=XHTTP, role=xhttp, public_port) | resolved — kept here for historical traceability, not as an open item |
+| `F_XRAY_XHTTP_PORT` (`19444`) | literal constant in `variant_f.sh:58` | **RESOLVED (Candidate 1, 2026-09-07)** — `panel_reality_xhttp_inbound_port()`'s F/J arms now call `core_port_allocation_internal "$MODE" "xhttp"` instead of re-typing the literal. (An earlier revision of this table cited `api.sh:107` for the old `${F_XRAY_XHTTP_PORT:-19444}` literal; that line is now a comment documenting the fix, not the literal itself.) | same PortAllocation row's `internal_port` | resolved — kept here for historical traceability, not as an open item |
 | `WEB_SERVER` (`1`\|`2`) | `cli.sh` | `install.sh` (F/J rejection guard), `compose/*.sh`, `nginx/config.sh` vs `caddy/config.sh` dispatch | nginx vs Caddy, and (per §3.1) really a Topology-level fact, not a Deployment-level one | `Topology.public_ingress_owner`'s underlying provider choice — belongs in Edge's model, referenced not duplicated by Deployment |
 
 This table is the direct answer to the task's item 9. No file was
@@ -859,11 +859,16 @@ grepped and read this session (line numbers cited above), not inferred.
 
 Both already named in `edge_contracts.md`'s own "Current limitations"
 section, re-cited here because this document's Named Data table (§10)
-depends on them being fixed eventually:
-- The `19444` duplicated literal (`variant_f.sh:58` / `api.sh:107`).
+depended on them being fixed eventually — one now is:
+- **~~The `19444` duplicated literal (`variant_f.sh:58` / `api.sh:107`)~~
+  — RESOLVED (Candidate 1, 2026-09-07).** `api.sh`'s F/J arms now call
+  `core_port_allocation_internal("F"/"J", "xhttp")` instead of
+  independently re-typing the literal; `api.sh:107` today is a comment
+  documenting that fix, not the literal itself. See §10's updated
+  `F_XRAY_XHTTP_PORT` row. Kept here for historical traceability.
 - The positional-argument chains for `F_XHTTP_ENABLE`/`TELEMT_DOMAIN`/
   `TELEMT_PORT` through `config.sh → variant_f.sh/variant_j.sh → api.sh
-  → render.sh`.
+  → render.sh` — still open, unaffected by the above.
 
 No new migration debt is identified by this document beyond what §0's
 findings already name (the doc-baseline mismatch itself is not code
