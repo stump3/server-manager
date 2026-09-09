@@ -275,19 +275,21 @@ document):
 transcription of the constants already verified in code across prior
 sessions.
 
-**`19444` is explicitly flagged as a duplicated literal, not a new
-finding**: it is defined once in `variant_f.sh:58` and independently
-redeclared as a fallback default in `api.sh`
-(`${F_XRAY_XHTTP_PORT:-19444}`). This table's `internal_port` column for
-F/XHTTP is the intended single source of truth this duplication should
-eventually resolve against — this document does not perform that
-resolution; it only names the target shape. Same status for the
+**`19444` was flagged as a duplicated literal — RESOLVED (Candidate 1,
+2026-09-07).** It is defined once in `variant_f.sh:58`; `api.sh` used to
+independently redeclare it as a fallback default
+(`${F_XRAY_XHTTP_PORT:-19444}`). `api.sh`'s F/J arms now call
+`core_port_allocation_internal("F"/"J", "xhttp")` — the accessor over
+this table's own `internal_port` column for F/XHTTP — instead of
+re-typing the literal, so the duplication this note originally flagged
+no longer exists in `api.sh`. Kept here for historical traceability. The
 positional-argument chains that currently thread `F_XHTTP_ENABLE`,
 `TELEMT_DOMAIN`, `TELEMT_PORT` through `config.sh → variant_f.sh → api.sh
-→ render.sh` — this table's `topology`/`capability`/`role` keys are the
-shape a future named-parameter or lookup-based version of that threading
-would key off of. **Both are migration targets recorded here for
-traceability, not bugs this stage fixes.**
+→ render.sh` remain open and unaffected by the above — this table's
+`topology`/`capability`/`role` keys are still the shape a future
+named-parameter or lookup-based version of that threading would key off
+of. **That chain is a migration target recorded here for traceability,
+not a bug this stage fixes.**
 
 ---
 
@@ -437,12 +439,15 @@ dispatcher, no CLI branch was modified to produce this contract.
   system needs one.
 - **The current implementation still has positional-argument chains**
   threading `F_XHTTP_ENABLE`/`TELEMT_DOMAIN`/`TELEMT_PORT` through
-  `config.sh → variant_f.sh → api.sh → render.sh`.
-- **The current port allocation still has a duplicated literal**
-  (`19444`, in both `variant_f.sh` and `api.sh`).
-- **Both of the above are migration targets this document names a shape
-  for — they are not bugs this stage fixes, and this stage made no code
-  changes toward fixing them.**
+  `config.sh → variant_f.sh → api.sh → render.sh`. This is a migration
+  target this document names a shape for — not a bug this stage fixes,
+  and this stage made no code changes toward fixing it.
+- **~~The current port allocation still has a duplicated literal
+  (`19444`, in both `variant_f.sh` and `api.sh`)~~ — RESOLVED (Candidate
+  1, 2026-09-07).** `api.sh` now reads F/XHTTP's internal port via
+  `core_port_allocation_internal("F"/"J", "xhttp")` instead of
+  redeclaring the literal; see the PortAllocation section above. Kept
+  here for historical traceability, not as an open limitation.
 
 ---
 
