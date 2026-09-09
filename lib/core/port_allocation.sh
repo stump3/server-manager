@@ -33,17 +33,31 @@
 # fallback — see "19444" note below), not a replacement for that
 # interpolation.
 #
-# SCOPE (2026-09-07, first implementation): read-only/descriptive, zero
-# runtime effect. Not wired into lib/panel/api.sh (still has its own,
-# separately-duplicated fallback defaults — migrating those is a later,
-# separate step, not this one). Not wired into lib/panel/install.sh's
-# UFW port-open logic (still a raw MODE branch — same reason). Not added
-# to server-manager.sh's module loader yet — no production call site
-# exists to require it there yet; lib/sripts/tests/test_port_allocation.sh
-# sources this file directly by path, the same way every other Core
-# adapter test in this repo does. Sourcing this file has zero side
-# effects (no top-level side-effecting statement below, only function
-# definitions).
+# SCOPE (2026-09-07, first implementation; wired the same day —
+# Candidates 1-3): read-only/descriptive at its own layer, zero runtime
+# side effects (no top-level side-effecting statement below, only
+# function definitions). Being wired into production consumers below
+# does not change what this file *is*: it remains an
+# independently-verified static mirror, not the canonical source — the
+# canonical topology port values still live in
+# lib/panel/nginx/variant_f.sh and variant_j.sh (see "WHY THIS FILE
+# DOES NOT READ $F_*/$J_* DIRECTLY" above; that constraint is unchanged
+# by any of the wiring below — this file still never reads $F_*/$J_*
+# at runtime).
+#
+# NOW WIRED (previously was not): lib/panel/api.sh's
+# panel_reality_xhttp_inbound_port() (Candidate 1) reads the XHTTP
+# internal port via core_port_allocation_internal("F"/"J", "xhttp")
+# instead of independently re-typing the literal fallback it used to
+# carry. The same file's Host-registration block (Candidate 3) reads
+# the XHTTP public port via core_port_allocation_public("$MODE",
+# "xhttp"), inside its own XHTTP_ENABLE gate. lib/panel/install.sh's
+# XHTTP UFW rule (Candidate 2) reads the public port the same way,
+# inside its own XHTTP-capability gate. This file is registered in
+# server-manager.sh's module loader as core/port_allocation, loaded
+# before panel; lib/sripts/tests/test_port_allocation.sh also still
+# sources it directly by path, the same way every other Core adapter
+# test in this repo does.
 #
 # WEB_SERVER and Plan IR (poc/network-inspect/): both explicitly out of
 # scope for this file — see the "Architecture Gap Discovery" report this
@@ -78,20 +92,23 @@
 # proxy_protocol, owner) ARE fixed topology facts and are looked up
 # normally.
 #
-# "19444" regression note: lib/panel/api.sh independently redeclares
-# F's XHTTP internal port as a fallback default
-# (`${F_XRAY_XHTTP_PORT:-19444}`) — already named as a duplicated
-# literal in docs/CORE_RUNTIME_CONTRACTS.md §13 and
-# docs/edge_contracts.md's Port allocation section. This file's F/xhttp
-# internal_port row is independently written as its own literal "19444"
-# (not copied via any shared constant, on purpose — see the
-# no-cross-file-dependency note above), so
-# lib/sripts/tests/test_port_allocation.sh's truth table specifically
-# pins this value; a future migration of api.sh onto this file's
-# accessor is what actually resolves the duplication named in that
-# debt entry — this file alone does not resolve it, it only names the
-# target shape, exactly as edge_contracts.md's own table already says
-# of itself.
+# "19444" regression note (historical — RESOLVED by Candidate 1,
+# 2026-09-07): lib/panel/api.sh used to independently redeclare F's
+# XHTTP internal port as a fallback default
+# (`${F_XRAY_XHTTP_PORT:-19444}`) — named as a duplicated literal in
+# docs/CORE_RUNTIME_CONTRACTS.md §13 and docs/edge_contracts.md's Port
+# allocation section. That duplication is gone: api.sh:131-132 now
+# calls this file's core_port_allocation_internal("F"/"J", "xhttp")
+# instead of re-typing the literal. This file's own F/xhttp
+# internal_port row is unaffected by that fix and remains independently
+# written as its own literal "19444" (not copied via any shared
+# constant, on purpose — see the no-cross-file-dependency note above,
+# and note this is this file's own static table data, not a runtime
+# read of $F_XRAY_XHTTP_PORT), so
+# lib/sripts/tests/test_port_allocation.sh's truth table still
+# specifically pins this value as a regression check on this
+# independently-maintained table, separately from api.sh's own
+# migration.
 
 # core_port_allocation_role_is_valid <role> — 0 if role is one of the
 # four roles this table knows about, 1 otherwise. Mirrors
