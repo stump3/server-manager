@@ -397,7 +397,63 @@ class TestSeparateFromServiceIpResolution(unittest.TestCase):
 # 17-19: capability status handling
 # ─────────────────────────────────────────────────────────────────────
 
-class TestCapabilityStatusHandling(unittest.TestCase):
+class TestPerServiceRequiredCapabilities(unittest.TestCase):
+    """Regression tests for a real precision defect found while
+    building plan_validator.py: `_required_dimensions_for_group()`'s
+    whole-group union was being assigned to EVERY service's own
+    `required_capabilities` field in Plan IR, so a TLS-passthrough
+    service grouped with a TLS-termination service incorrectly also
+    claimed tcp.tls_termination (and vice versa). Confirmed to be a
+    Planner-only bug (plan_ir.py's schema already supports independent
+    per-service values) and fixed via
+    `_required_dimensions_for_service()`."""
+
+    def test_mixed_tls_group_gets_precise_per_service_capabilities(self):
+        doc = _doc(
+            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
+        self.assertEqual(result["outcome"], "planned")
+        caps = {s["service_id"]: set(s["required_capabilities"]) for g in result["plan_ir"]["groups"] for s in g["services"]}
+        self.assertIn("tcp.tls_passthrough", caps["xray"])
+        self.assertNotIn("tcp.tls_termination", caps["xray"])
+        self.assertIn("tcp.tls_termination", caps["web"])
+        self.assertNotIn("tcp.tls_passthrough", caps["web"])
+
+    def test_shared_structural_dimensions_still_common_to_both(self):
+        """tcp.listen/tcp.proxy/tcp.sni_inspection legitimately apply
+        to every service sharing one listener — must stay common,
+        only the TLS-mode-specific dims should be individualized."""
+        doc = _doc(
+            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
+        caps = {s["service_id"]: set(s["required_capabilities"]) for g in result["plan_ir"]["groups"] for s in g["services"]}
+        for dim in ("tcp.listen", "tcp.proxy", "tcp.sni_inspection"):
+            self.assertIn(dim, caps["xray"])
+            self.assertIn(dim, caps["web"])
+
+    def test_mechanism_eligibility_unaffected_by_the_fix(self):
+        """The group-wide _required_dimensions_for_group() function
+        (used for candidate-generation eligibility checks) must remain
+        unchanged — this fix only touches how required_capabilities is
+        POPULATED per service in the final Plan IR, never which
+        mechanisms are considered eligible to serve the group."""
+        doc = _doc(
+            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
+        self.assertEqual(result["outcome"], "planned")
+        self.assertEqual(result["plan_ir"]["groups"][0]["mechanism"], "nginx")
+
+
+
     def _shared_doc(self):
         return _doc(
             _svc("a", sharing="required", tls={"mode": "passthrough"}),
