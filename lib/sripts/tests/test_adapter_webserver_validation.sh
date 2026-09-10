@@ -7,11 +7,14 @@
 # to the existing, previously-unwired Core query
 # lib/core/deployment.sh:core_deployment_web_server_ok().
 #
-# NOT the same guard as lib/panel/cli.sh:panel_cli_select_webserver()'s own
-# `[ "$MODE" = "F" ] && [ "$WEB_SERVER" = "2" ]` / J equivalent -- that one
-# is legitimate raw-input validation at CLI collection time (before any
-# Deployment exists) and stays exactly as-is; section 6 below confirms it
-# is untouched, deliberately, not migrated.
+# lib/panel/cli.sh:panel_cli_select_webserver()'s own former
+# `[ "$MODE" = "F" ] && [ "$WEB_SERVER" = "2" ]` / J equivalent raw guard
+# was a separate, independent duplicate of the same fact -- migrated in a
+# later bounded stage (CLI WEB_SERVER×MODE guard -- wire to
+# core_deployment_web_server_ok()), same pattern as this adapter's own
+# colocated.sh migration. Section 6 below now confirms CLI's guard calls
+# the accessor and no longer contains its own raw MODE comparison for
+# this decision, mirroring sections 1-5's coverage of colocated.sh.
 #
 # Precondition note (found during Step 0, NOT a raw-MODE regression):
 # panel_generate_compose() (lib/panel/install.sh:208) runs BEFORE
@@ -182,11 +185,22 @@ assert "self-repair: bash -n deployment.sh still passes after restore" \
     "$(bash -n lib/core/deployment.sh; echo $?)" "0"
 
 echo ""
-echo "== 6. panel_cli_select_webserver()'s own, separate CLI-time guard is untouched (legitimate raw-input validation, not migrated) =="
-assert "cli.sh's own MODE=F+WEB_SERVER=2 raw guard is still present, unchanged" \
-    "$(grep -c '\[ "\$MODE" = "F" \] && \[ "\$WEB_SERVER" = "2" \]' lib/panel/cli.sh)" "1"
-assert "cli.sh's own MODE=J+WEB_SERVER=2 raw guard is still present, unchanged" \
-    "$(grep -c '\[ "\$MODE" = "J" \] && \[ "\$WEB_SERVER" = "2" \]' lib/panel/cli.sh)" "1"
+echo "== 6. panel_cli_select_webserver()'s own CLI-time guard now calls the same Core accessor (migrated, no longer a separate raw table) =="
+# Scope to the target function only -- other MODE comparisons in cli.sh
+# (panel_cli_select_mode(), panel_cli_select_f_xhttp(), summary/label
+# logic) are explicitly out of scope for this migration and must not be
+# flagged here.
+CLI_FUNC_REGION=$(awk '/^panel_cli_select_webserver\(\) \{/,/^\}$/' lib/panel/cli.sh)
+assert "panel_cli_select_webserver() region is non-empty (region actually matched)" \
+    "$([ -n "$CLI_FUNC_REGION" ] && echo present || echo MISSING)" "present"
+assert "cli.sh's guard calls the Core accessor with (MODE, WEB_SERVER) exactly once" \
+    "$(grep -c 'core_deployment_web_server_ok "\$MODE" "\$WEB_SERVER"' <<<"$CLI_FUNC_REGION")" "1"
+assert "cli.sh's former raw MODE=F+WEB_SERVER=2 compatibility comparison is gone" \
+    "$(grep -c '\[ "\$MODE" = "F" \] && \[ "\$WEB_SERVER" = "2" \]' <<<"$CLI_FUNC_REGION")" "0"
+assert "cli.sh's former raw MODE=J+WEB_SERVER=2 compatibility comparison is gone" \
+    "$(grep -c '\[ "\$MODE" = "J" \] && \[ "\$WEB_SERVER" = "2" \]' <<<"$CLI_FUNC_REGION")" "0"
+assert "cli.sh still calls err() on rejection (exit behavior preserved)" \
+    "$(grep -c 'err "' <<<"$CLI_FUNC_REGION")" "3"
 
 echo ""
 echo "== 7. call order / call-site sanity (documented precondition, not a live global read) =="
