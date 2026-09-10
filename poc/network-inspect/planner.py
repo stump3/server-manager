@@ -465,7 +465,17 @@ def _required_dimensions_for_group(services: list):
     """Deterministic, sorted list of Capability Registry dimensions a
     SHARED_* candidate for this group needs, derived purely from the
     services' own declared requirements — never guessed, never
-    provider-specific."""
+    provider-specific.
+
+    This is the GROUP-WIDE union, used exclusively for MECHANISM
+    ELIGIBILITY at candidate-generation time (`_eligible_mechanisms()`)
+    — correctly group-wide there, since one mechanism instance must
+    satisfy every service's need simultaneously to be eligible for the
+    group at all. Do NOT use this to populate an individual service's
+    own `required_capabilities` field in Plan IR — see
+    `_required_dimensions_for_service()` below for that, and this
+    project's targeted defect review (Finding 2) for why the two must
+    stay distinct."""
     dims = set()
     transport = services[0].get("transport")
     if transport == "tcp":
@@ -486,6 +496,49 @@ def _required_dimensions_for_group(services: list):
             if quic and quic.get("sni_routing") == "passthrough":
                 dims.add("udp.quic_inspection")
                 dims.add("udp.quic_sni_routing")
+        dims.add("udp.multi_backend_same_port")
+    return sorted(dims)
+
+
+def _required_dimensions_for_service(svc: dict, group_services: list):
+    """Per-service `required_capabilities` for Plan IR — deliberately
+    distinct from `_required_dimensions_for_group()`'s group-wide
+    union above. Fixes a real, disclosed precision defect (this
+    project's targeted defect review, Finding 2): the prior code
+    passed the WHOLE GROUP's union to every service's
+    `required_capabilities` entry, so e.g. a TLS-passthrough service
+    grouped with a TLS-termination service would incorrectly also
+    list `tcp.tls_termination` in its own Plan IR entry (and vice
+    versa) — confirmed to be a Planner-only bug, not a Plan IR schema
+    limitation: `plan_ir.build_service_entry()` already accepts a
+    fully independent `required_capabilities` list per call; nothing
+    in the schema forces sharing across a group's services.
+
+    The structural, shared-listener dimensions (tcp.listen/tcp.proxy/
+    tcp.sni_inspection or tcp.n_way_sni_routing; udp.listen/udp.proxy/
+    udp.multi_backend_same_port) legitimately DO apply to every
+    service sharing one listener — kept common here, correctly. Only
+    the TLS-mode-specific and QUIC-routing-specific dimensions are
+    now individualized per service, using that service's OWN `tls`/
+    `quic` fields rather than the group's aggregate."""
+    dims = set()
+    transport = svc.get("transport")
+    if transport == "tcp":
+        dims.add("tcp.listen")
+        dims.add("tcp.proxy")
+        dims.add("tcp.n_way_sni_routing" if len(group_services) > 2 else "tcp.sni_inspection")
+        tls = svc.get("tls")
+        if tls and tls.get("mode") == "passthrough":
+            dims.add("tcp.tls_passthrough")
+        elif tls and tls.get("mode") == "termination":
+            dims.add("tcp.tls_termination")
+    else:
+        dims.add("udp.listen")
+        dims.add("udp.proxy")
+        quic = svc.get("quic")
+        if quic and quic.get("sni_routing") == "passthrough":
+            dims.add("udp.quic_inspection")
+            dims.add("udp.quic_sni_routing")
         dims.add("udp.multi_backend_same_port")
     return sorted(dims)
 
@@ -883,7 +936,7 @@ def _build_plan_ir(selected: list, effective_ds: dict, inventory: dict, safety_p
                 elif svc.get("quic"):
                     routing = plan_ir.build_routing("quic_sni", None)
 
-            dims = _required_dimensions_for_group(c["services"]) if c["mechanism"] else []
+            dims = _required_dimensions_for_service(svc, c["services"]) if c["mechanism"] else []
 
             services_ir.append(plan_ir.build_service_entry(
                 service_id=svc["id"],
@@ -928,30 +981,7 @@ def _allocate_port(svc: dict, candidate: dict) -> int:
     return 443
 
 
-def _resolve_group_ip(candidate: dict, inventory: dict) -> str:
-    """Resolved ONCE per candidate/group — every service sharing this
-    candidate's listener gets the SAME address, since sharing a
-    listener literally means sharing one (ip, port). Any explicit
-    `ip.selection: specific` value among the group's services acts as
-    the anchor (validated already to be mutually consistent within a
-    group by `desired_state.py`); `same_as_service` services never
-    need their own separate lookup because they're already unioned
-    into this same candidate's service list by
-    `_build_mandatory_groups`/`_optional_pairs` — resolving the WHOLE
-    group at once is what actually fixes that, rather than resolving
-    each service independently and hoping they happen to agree."""
-    services = candidate["services"]
-    specific_values = sorted({
-        s["ip"]["value"] for s in services
-        if (s.get("ip") or {}).get("selection") == "specific" and s["ip"].get("value")
-    })
-    if specific_values:
-        return specific_values[0]
-    pub = inventory.get("public_ipv4", {})
-    addresses = pub.get("addresses") or []
-    if addresses:
-        return addresses[0]["address"]
-    return "0.0.0.0"  # no known public IPv4 — see design gate §19-Q2 (IPv6 unmodeled)
+
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1032,7 +1062,22 @@ def plan(inventory: dict, capability_registry: dict, desired_state: dict, safety
             "failure_reason": f"no surviving candidate covers service(s) {missing!r}",
         }
 
-    plan_ir_doc = _build_plan_ir(selected, effective_ds, inventory, safety_policy)
+    ip_by_candidate_id, infeasible_reason = _resolve_all_ips(selected, effective_ds, inventory)
+    if infeasible_reason is not None:
+        rejected_alternatives.append(plan_ir.build_rejected_alternative(
+            "SEPARATE_IPS", None, sorted(all_service_ids),
+            "unsatisfiable_placement",
+            infeasible_reason,
+            {"source": "inventory", "path": "public_ipv4.addresses", "value": inventory.get("public_ipv4", {}).get("addresses")},
+            "conditional",
+        ))
+        return {
+            "outcome": "unsatisfiable", "selected_topology": None, "plan_ir": None,
+            "rejected_alternatives": rejected_alternatives,
+            "failure_reason": infeasible_reason,
+        }
+
+    plan_ir_doc = _build_plan_ir(selected, effective_ds, inventory, safety_policy, ip_by_candidate_id)
     topologies = sorted({c["topology"] for c in selected})
     selected_topology = topologies[0] if len(topologies) == 1 else topologies
 
