@@ -302,10 +302,14 @@ Note what does **not** appear: no `xhttp_public_port`/`xhttp_internal_port`
 field on `Deployment` itself. Those are `PortAllocation` facts (Edge's
 own model, already keyed by `topology` + `capability` + `role`) — listing
 them again on `Deployment` would be the exact kind of duplicated literal
-Edge's own "Current limitations" section already flags for `19444`
-(defined once in `variant_f.sh:58`, redeclared as a fallback default in
-`api.sh:107`). Desired State should *reference* PortAllocation rows by
-`(topology, capability, role)`, never re-state their values.
+Edge's own "Current limitations" section used to flag for `19444` —
+defined once in `variant_f.sh:58`, formerly redeclared as a fallback
+default in `api.sh:107` until Candidate 1's migration to
+`core_port_allocation_internal("F"/"J", "xhttp")` resolved it (see §10's
+`F_XRAY_XHTTP_PORT` row and §13, both updated 2026-09-07). Desired State
+should *reference* PortAllocation rows by `(topology, capability, role)`,
+never re-state their values, exactly as that now-resolved case
+illustrates.
 
 **J** (XHTTP is required, not a capability toggle — per Edge's own
 explicit warning against modeling it as "capability, defaulted on"):
