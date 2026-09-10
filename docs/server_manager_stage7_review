@@ -1,0 +1,720 @@
+# server-manager — Architecture Freeze Review (Stage 7 → Stage 8)
+
+> Read-only review. Working tree: clean throughout. No commits, no push,
+> no reset/rebase/checkout beyond the initial `checkout -b variant-f-j
+> origin/variant-f-j`, no runtime/test files touched, no dependency
+> installs.
+
+---
+
+## 0. Baseline
+
+```
+Repo:            stump3/server-manager (fresh clone this session)
+Branch:          variant-f-j
+HEAD:            a24ea3fb0776ee107fc0f74de2b882420e80cd23
+origin/variant-f-j: a24ea3fb0776ee107fc0f74de2b882420e80cd23  (identical — up to date)
+Working tree:    clean, before and after this review
+Stash:           empty
+```
+
+`HEAD` is **not stale** relative to your last message: the tip commit
+(`a24ea3f`, today, 2026‑09‑10) is itself
+`docs/CORE_RUNTIME_CONTRACTS.md` being revised. That file turns out to
+already be a nearly-complete Stage 7 audit, written by a prior session
+against this exact branch, self-critical, and — everywhere I
+independently re-checked it against the real code (8 separate claims,
+listed in §2) — accurate. This review's main job was therefore
+**verification and reconciliation**, not rebuilding the audit from
+zero, and finding the one next stage.
+
+---
+
+## 1. What "Stage 7" actually is, confirmed
+
+Entry chain, read directly (`server-manager.sh`, `lib/cli/router.sh`,
+`lib/common/menu.sh`):
+
+```
+server-manager.sh (bootstrap: self-locate, self-clone, module loader)
+  → cli_run() (lib/cli/router.sh — thin, transitional, delegates)
+    → main_menu() (lib/common/menu.sh — still the real UI/dispatch)
+      → panel_menu / telemt_section / hysteria_menu / migrate_menu
+```
+
+`server-manager.sh` is **150 lines**, purely a bootstrap + module
+loader (self-locating, self-cloning, SHA256-gated remote sourcing). It
+is not the "monolithic install.sh" the task assumed exists — see §9.
+
+Four canonical Core/Runtime docs exist in `docs/`. Only **one** is
+actually scoped to `variant-f-j`:
+
+| Document | Its own stated baseline | Applies to `variant-f-j`? |
+|---|---|---|
+| `docs/edge_contracts.md` | `variant-f-j` | **Yes** |
+| `docs/CORE_RUNTIME_CONTRACTS.md` | `variant-f-j`, HEAD `a24ea3f` (today) | **Yes** |
+| `docs/CONTRACTS.md` | `beta @ 3313560` | **No** — pre-dates all of `lib/core/*` |
+| `docs/ARCHITECTURE.md` | `beta` (cross-referenced by the above) | **No** |
+| `docs/LEGACY_AUDIT.md` | `beta @ 3313560` | **No** |
+| `docs/ENGINEER_GUIDELINES.md` | `btemp`/`beta @ 3313560` | **No** |
+
+This is not a paperwork nuance — see §12.
+
+---
+
+## 2. Independent verification of the existing audit
+
+`docs/CORE_RUNTIME_CONTRACTS.md` makes many specific, line-numbered
+claims. I re-checked 8 of them directly against the current checkout
+rather than trusting the document. All 8 held:
+
+1. `lib/ui/output.sh` — `ok/info/warn/err/die/detail/step` **all**
+   write to `>&2` today. ✅ confirmed (contradicts `docs/CONTRACTS.md`
+   contract 1, which is `beta`-only — see §12).
+2. `panel_get_token()` (`lib/panel/core.sh`) no longer calls `err()`
+   internally and no longer interleaves a stdout `ok` before its final
+   `echo "$token"` (the `ok` now goes to stderr). ✅ confirmed — the
+   contract‑3 (a) and (c) violations `docs/CONTRACTS.md` describes for
+   `beta` do not exist here.
+3. `lib/panel/node/install.sh` checks `panel_node_register`'s
+   **propagated exit code** (`if ! _reg_out=$(...)`), not stdout
+   emptiness, with an inline comment explicitly citing "Contract 2/3
+   (IO-02)". ✅ confirmed.
+4. Remote Node identity: `Nodes.name = "RemoteNode-${SELFSTEAL_DOMAIN}"`,
+   looked up via `GET /api/nodes` + `select(.name==$name)`
+   (`lib/panel/node/api.sh:275-276`). ✅ confirmed, byte-for-byte.
+5. Lookup-before-create + best-effort rollback exists for config-profile
+   → Node → Host, gated on `*_EXISTING` flags, compensating only what
+   *this run* created. ✅ confirmed by direct read of
+   `lib/panel/node/api.sh` end to end.
+6. `lib/core/adapter_reality.sh`'s two "remaining" functions
+   (`panel_core_reality_needs_2222_ufw_rule`,
+   `panel_core_reality_dest_val`) are **already implemented**, not
+   outstanding. ✅ confirmed, and wired into `lib/panel/api.sh` at the
+   real call sites (lines 208, 300, 349, 351) — legacy
+   `panel_reality_*` functions are kept in place but are no longer the
+   production path.
+7. `lib/core/topology.sh` / `lib/core/runtime_component.sh` are
+   side-effect-free, MODE-blind, single-source-of-truth modules exactly
+   as documented (`remote_node` deliberately excluded from automatic
+   inventory; `lifecycle_state` deliberately not implemented, flagged
+   as a live tension in the file's own header). ✅ confirmed by reading
+   both files in full.
+8. `lib/panel/nginx/config.sh`'s positional-argument shape
+   (`$11`=TELEMT_DOMAIN, `$12`=TELEMT_PORT, `$13`=F_XHTTP_ENABLE) is
+   exactly as `CORE_RUNTIME_CONTRACTS.md` §10 states. ✅ confirmed.
+
+**Test suite, run read-only, no files modified:**
+
+| Suite | Result |
+|---|---|
+| `test_adapter_reality.sh` | PASS=37 FAIL=1* |
+| `test_adapter_webserver.sh` | PASS=19 FAIL=1* |
+| `test_adapter_xhttp.sh` | PASS=30 FAIL=0 |
+| `test_deployment_resolver.sh` | PASS=67 FAIL=0 |
+| `test_port_allocation.sh` | PASS=66 FAIL=0 |
+| `test_port_allocation_wiring.sh` | PASS=32 FAIL=0 |
+| `test_adapter_node_addr.sh` | PASS=24 FAIL=0 |
+| `test_adapter_webserver_ingress_owner.sh` | PASS=41 FAIL=0 |
+| `test_adapter_webserver_mount.sh` | PASS=33 FAIL=0 |
+| `test_adapter_webserver_validation.sh` | PASS=39 FAIL=0 |
+| `test_adapter_install_xhttp_ufw.sh` | PASS=24 FAIL=0 |
+| `test_adapter_api_xhttp_host_port.sh` | PASS=38 FAIL=0 |
+| `test_telemt_noninteractive.sh` | 40 passed, 0 failed |
+
+\* Both single failures are the **same, known, pre-existing** cause:
+`test_f_xhttp_commit2.sh` cannot run in this sandbox because `jq` is
+not installed (`command -v jq` → not found; direct invocation exits
+127 immediately). This matches your own prior finding exactly
+("jq unavailable via apt in the sandbox... confirmed pre-existing and
+unrelated to adapter work"). **Not a regression, not new** — I did not
+install `jq` (dependency installs were out of scope for this stage).
+
+Net: **zero real test failures**, 449/450 assertions green, the one
+red is an environment artifact already known to you.
+
+---
+
+## 3. Canonical contracts — current vs target, `variant-f-j`-verified
+
+| Contract | Current (verified this session) | Target | Confidence | Migration impact |
+|---|---|---|---|---|
+| stdout/stderr | **Satisfied.** All UI helpers (`ok/info/warn/err/die/detail/step`) write to stderr. `err()`/`die()` both still `exit 1` from two separate helpers — a naming/consolidation question, not a stream question. | Keep as-is; decide whether `err`/`die` should be one helper | High (direct read) | None — already done |
+| Exit codes | **Satisfied** at the one previously-flagged site (`panel_node_register` caller checks propagated `$?`, not stdout emptiness). Not audited exhaustively across all 164 functions this session. | Same pattern generalized | High for the cited site; Medium for "everywhere" | Spot-audit, not a rewrite |
+| Command substitution (`local x=$(f)` masking `$?`) | The two previously-known offenders (`panel_get_token`, `panel_node_register`'s caller) are fixed. No repo-wide re-grep performed this session. | Zero occurrences of `local x=$(f)` for any fallible `f` | Medium (not re-swept) | A repo-wide grep is cheap and worth doing before the next stage, see §14 |
+| HTTP transport vs API success | `panel_api_status()` exists and is used by rollback paths to distinguish transport failure / HTTP status / body, with an explicit `\|\| _rc=$?` pattern under `set -e`. Not verified as universal across every `panel_api()` call site. | Every Panel call site checks all three independently | Medium — real progress, not exhaustive | Not blocking |
+| SSH lifecycle (timeout, traps) | `RUN`/`PUT` (`lib/common/ssh.sh`) have `ConnectTimeout=10`; **no execution-level timeout**; `trap ... RETURN` exists on exactly one remote-state-creating flow (`panel_install_remote_node()`); **no `INT`/`TERM` traps anywhere** in the repo (repo-wide grep, this session). | Command-level timeout; `INT`/`TERM` trapped during any remote-state-creating operation | High (directly grepped) | Real, scoped gap — see P1 finding below |
+| Secrets | Not re-audited this session beyond what §2 covered. `docs/CONTRACTS.md`'s `sshpass -p` / compose-file-permission findings are `beta`-branch findings and were **not re-verified against `variant-f-j`**. | Never in argv; generated secret files owner-only | **UNKNOWN for variant-f-j** — flagged, not assumed | Needs its own pass |
+| Desired State / Observed State | `Deployment` (desired, §4) is fully designed on paper and consumed for XHTTP/webserver/reality decisions. **No Observed-State reader exists for anything** except: (a) TeleMT's `telemt_menu_status()`, (b) topology *detection* via generated-config markers (`SERVER_MANAGER_TOPOLOGY=`/`_XHTTP=`). | Per-component `RuntimeComponent` state read (§5.3) | High — directly confirmed absent | Genuinely large, not a small stage — see §6 |
+| Idempotency / reconcile | Lookup-before-create with rollback for Panel Node/Host/config-profile. **CREATE-only** — no RECONCILE/REPAIR/REINSTALL for any component, confirmed by the code's own comment (`api.sh:222-225`: "is RECONCILE's job... not defined here and not invented here"). | Full CREATE/RECONCILE/REPAIR/REINSTALL per component | High | Large, cross-cutting — not this stage, see §14 |
+| Traps/cleanup | 1 `RETURN` trap total (`panel_install_remote_node()`); 0 `INT`/`TERM` traps repo-wide. | Every remote-state-creating op traps `RETURN`+`INT`/`TERM` | High (grepped) | Bounded — a handful of call sites |
+| Remote Node identity | `Nodes.name = "RemoteNode-${SELFSTEAL_DOMAIN}"`; Host identity is weaker, convention-level (`inbound.configProfileInboundUuid`), not DB-unique. Not part of identity: `NODE_ADDR`, SSH endpoint, credentials, hostname. | Unchanged — this is a settled `DECISION`, not open | **High — closed** | None needed |
+
+---
+
+## 4. stdout/stderr — the priority investigation, resolved
+
+This was the top-priority item in the task, and the finding is good
+news: **the ambiguity this contract worries about has already been
+closed on `variant-f-j`.** `lib/ui/output.sh` carries an explicit
+comment citing "Contract 1 (docs/CONTRACTS.md)" and stating the
+decision was made deliberately. Concretely:
+
+- Every UI-emitting helper writes to `stderr`. Function stdout, where
+  it exists (`panel_get_token`, `panel_node_fetch_secret`,
+  `panel_node_register`, `panel_core_reality_*`, `core_topology_*`,
+  `core_port_allocation_*`), is now — by construction — the function's
+  *only* payload: safe to capture with `$(...)`.
+- The one remaining ambiguity, and it's explicitly named rather than
+  hidden: `err()` and `die()` are still two separate helpers, both
+  `exit 1`, both now writing to stderr, with no functional difference
+  today. `lib/ui/output.sh`'s own comment points at
+  `docs/ARCHITECTURE.md` §8 for "which fatal helper survives" — but
+  that document is `beta`-scoped (§12), so this specific question has
+  **no `variant-f-j`-scoped answer on record**. This is real, minor,
+  P3-level cleanup debt, not a correctness bug (both behave
+  identically today).
+- I did not re-run the "63 UI-emitting functions × every `$(...)`
+  call site" repo-wide cross-reference this session (the two known
+  historical offenders are fixed, per §2, but a full re-sweep is cheap
+  and was out of scope for a read-only review — see §14, item 2, for
+  why this is worth doing *before*, not during, the next stage).
+
+**Function → caller → consumption map**, for the sites that matter:
+
+| Function | stdout meaning | stderr meaning | Consumer | Risk |
+|---|---|---|---|---|
+| `panel_get_token` | the token, single line, always | login prompts, success/failure messages | `panel_get_token \|\| return 1` (2 call sites, `lib/panel/warp.sh`) | None — clean |
+| `panel_node_register` | `"$TOKEN $NODE_UUID"` on success only | every diagnostic/progress message | `if ! _reg_out=$(panel_node_register ...)` | None — clean, and the fix is commented in-line |
+| `panel_node_fetch_secret` | secret key or empty | (none currently routed through `ok/warn`) | `SECRET_KEY=$(panel_node_fetch_secret ...)` | Low — empty-string-on-failure is checked (`[ -z "$SECRET_KEY" ]`) |
+| `core_topology_*` / `core_port_allocation_*` / `panel_core_reality_*` | the single derived value (port, "true"/"false", path) | none — these are pure, no UI output at all | dozens of `$(...)` call sites in `api.sh` | None — these were designed clean from the start, never had a UI-mixing risk |
+
+**Recommendation for this specific contract**: do not touch it as part
+of the next stage. It is done. The only open item (`err` vs `die`
+naming) is a one-line documentation decision, not a code change, and
+should be recorded once, in `docs/CORE_RUNTIME_CONTRACTS.md` (the
+document actually scoped to this branch) rather than left pointing at
+`docs/ARCHITECTURE.md`'s `beta`-branch answer.
+
+---
+
+## 5. Error/return contract — classification, not a fix list
+
+Real seam-crossing points checked, with actual risk:
+
+| Seam | Function | Failure signal | Can caller lose the error? |
+|---|---|---|---|
+| CLI → Core | `core_resolve_deployment()` | sets `DEPLOYMENT_*` globals; not itself audited for a failure path this session | **UNKNOWN** — not re-verified this round |
+| Core → Panel | `panel_core_reality_*`, `core_port_allocation_*` | echo value / return 0 on success; `return 1` with empty stdout on bad input | Low — callers use `$(...)` and treat empty as bad, consistently in the sites checked |
+| Panel → external API | `panel_api()` / `panel_api_status()` | the latter separates transport/HTTP/body per §3's "HTTP transport vs API success" row | Medium — `panel_api()` (the older, more widely used function) was not re-audited call-site-by-call-site this session |
+| Panel → SSH (`RUN`/`PUT`) | `lib/common/ssh.sh` | exit code of the underlying `ssh`/`scp`; no execution timeout | **Real gap** — a hung remote command blocks indefinitely; nothing in the contract table above changes this assessment |
+| Remote Node create | `panel_node_register()` | `return 1` + rollback, verified clean this session | Low |
+
+No new bug was found this session beyond what `CORE_RUNTIME_CONTRACTS.md`
+already names. I am not re-litigating `docs/CONTRACTS.md`'s `beta`-branch
+bug list (NODE-01 through NODE-07) as if it applies here — per §12,
+several of those are already fixed on `variant-f-j` and the rest were
+not independently re-verified against this branch this session.
+
+---
+
+## 6. Remote Node lifecycle — target model, confirmed/refuted
+
+Task's proposed model, checked line-by-line against
+`lib/panel/node/api.sh` and `lib/panel/node/install.sh`:
+
+```
+install
+  ├── identity lookup            ✅ REAL — GET /api/nodes + name filter
+  │
+  ├── NOT FOUND
+  │      └── CREATE               ✅ REAL — POST with rollback of
+  │                                    profile+node on downstream failure
+  │
+  └── FOUND
+         │
+         ├── healthy + desired state matches
+         │       └── NO-OP        ⚠️ PARTIAL — reuses the found Node's
+         │                            uuid and skips re-creating it, but
+         │                            there is no drift check at all: a
+         │                            changed NODE_ADDR/IP on a re-run is
+         │                            silently NOT reapplied to the
+         │                            existing Node object. "NO-OP" is
+         │                            accidentally correct only because
+         │                            nothing is compared, not because a
+         │                            match was confirmed.
+         │
+         ├── healthy + drift
+         │       └── RECONCILE     ❌ DOES NOT EXIST — no code path
+         │                            compares any field of an existing
+         │                            Node/Host against desired values
+         │
+         └── unhealthy / incomplete
+                 └── REPAIR/RECONCILE  ❌ DOES NOT EXIST — no health
+                                          read exists for Remote Node at
+                                          all (only `panel_node_wait_
+                                          connected()`'s one-shot
+                                          isConnected poll, run only
+                                          immediately after a fresh
+                                          registration, never on a
+                                          "found existing" path)
+
+explicit reinstall
+  └── reinstall runtime while preserving node identity
+        ❌ DOES NOT EXIST as a distinct operation. The remote-host
+        deployment half (file copy + `docker compose up -d`) always
+        re-executes unconditionally on every invocation, regardless of
+        whether Panel-side objects already existed — this is not a
+        "reinstall" abstraction, it's the simple absence of a
+        Panel-side/remote-host state check being kept in sync. Recorded
+        as a documentation/code inconsistency: the operator-facing
+        warning text ("Повторный запуск создаст новую ноду/хост... —
+        операция не идемпотентна") is now FALSE for the Panel-API half
+        (Node/Host ARE reused) but TRUE for the remote-host half
+        (compose/files ARE unconditionally rewritten and restarted) —
+        the single warning conflates two different actual behaviors.
+```
+
+**Verdict on the proposed model**: partially real. CREATE (with
+identity + rollback) is solid and already better than what
+`docs/ARCHITECTURE.md`/`docs/CONTRACTS.md` describe for `beta`.
+RECONCILE/REPAIR/REINSTALL are correctly identified as *targets*, not
+current behavior — the code's own comment
+(`api.sh:222-225`) says so explicitly. I am not adopting the model as
+"the" target architecture just because it was proposed; I'm confirming
+the CREATE slice is real and the rest is, so far, only named
+vocabulary with zero implementation — same conclusion
+`CORE_RUNTIME_CONTRACTS.md` §7/§14 already reached, independently
+re-confirmed this session.
+
+**Identity ownership**: settled — `Nodes.name` is the only identity
+key; address/SSH/credentials/hostname are confirmed NOT part of it.
+
+---
+
+## 7. Desired State / Observed State
+
+**Exists as design, not as running code.** `Deployment` (§3.1 of
+`CORE_RUNTIME_CONTRACTS.md`) is a real, consumed desired-state shape —
+`core_resolve_deployment()` populates `DEPLOYMENT_TOPOLOGY`/
+`DEPLOYMENT_CAPABILITIES`/etc., and downstream adapters
+(`adapter_webserver.sh`, `adapter_reality.sh`, `runtime_component.sh`)
+consume it, MODE-blind, verified by the tests' own "MODE appears only
+inside `core_resolve_deployment()`" audits (`test_deployment_resolver.sh`,
+67/67 green).
+
+**Observed State barely exists**: exactly two real reads of actual
+runtime reality —
+1. `telemt_menu_status()` — live, interactive, TeleMT-only.
+2. Generated-`nginx.conf` marker lines
+   (`SERVER_MANAGER_TOPOLOGY=`/`_XHTTP=`) — topology *detection*, read
+   by `management.sh`, not a general health/state read.
+
+Comparison/decision logic ("does actual match desired") exists in
+exactly one place: the Node/Host/profile name-lookup in
+`lib/panel/node/api.sh`. Nowhere else. There is no `config_hash`, no
+generic `health`, no `running`/`stopped` poll anywhere in the tree
+(repo-wide check, confirmed absent this session by the same method
+`CORE_RUNTIME_CONTRACTS.md` used and I independently re-confirmed for
+`config_hash`/`running` via grep).
+
+---
+
+## 8. Domain boundaries
+
+```
+CLI (cli.sh)
+  → collects MODE, F_XHTTP_ENABLE, TELEMT_DOMAIN/PORT, WEB_SERVER as
+    positional/local values — this IS domain logic (the reserved-port
+    array, the confirm-prompt defaults) living in the CLI layer, a real,
+    named, still-open finding (§10's whole table).
+→ orchestration (install.sh files, one per domain: lib/panel/install.sh,
+  lib/hy2/install.sh, lib/telemt/install.sh — NOT one monolithic file)
+  → domain/service (lib/panel/*, lib/telemt/*, lib/hy2/*)
+    → adapter (lib/core/adapter_webserver.sh, adapter_reality.sh —
+      REAL, thin, tested seams; NOT yet present for XHTTP capability
+      decisions beyond the one accessor already wired, NOT yet present
+      for port-value generation beyond PortAllocation's F/J arms)
+      → runtime/common (lib/common/{ssh,network,core}.sh, lib/core/{
+        topology,port_allocation,runtime_component,deployment}.sh)
+```
+
+**Confirmed leakage, concretely**:
+- `cli.sh` owns real domain decisions (reserved-port collision logic
+  keyed on `F_XHTTP_ENABLE`) that arguably belong at the
+  `Deployment`/`Topology` level, not the CLI layer — matches §9's
+  "Capability→Adapter boundary is not currently a real seam" finding.
+- `variant_f.sh`/`variant_j.sh` still decide **both** "is this
+  capability on" **and** "what exact nginx block does that produce" in
+  one function — the Capability→Adapter split named in §9 of
+  `CORE_RUNTIME_CONTRACTS.md` is a *named target*, not yet a real code
+  boundary anywhere.
+- `WEB_SERVER`'s true home (Topology-level `public_ingress_owner`
+  provider choice, vs. a `Deployment`-level field) is explicitly
+  **undecided** — `topology.sh`'s own header calls this out as an open
+  question rather than silently picking a side.
+
+**Boundaries that are already good and should NOT be touched for
+"symmetry"**: `lib/core/topology.sh` and `lib/core/runtime_component.sh`
+are clean, side-effect-free, single-source-of-truth, MODE-blind, and
+fully covered by tests that specifically assert MODE-blindness. Do not
+refactor these to "look more like" `adapter_reality.sh` or vice versa —
+they already serve different, correctly-separated purposes (Topology =
+facts about a topology id; RuntimeComponent = ownership inventory over
+a resolved Deployment; Adapter = the thin translation layer between
+either of those and one specific legacy call site).
+
+---
+
+## 9. `install.sh` — investigated, claim not confirmed
+
+**There is no monolithic `install.sh`.** The repo has three
+domain-scoped install files:
+
+| File | Lines | Scope |
+|---|---|---|
+| `lib/panel/install.sh` | 365 | Panel orchestration only |
+| `lib/hy2/install.sh` | 490 | Hysteria2 orchestration only |
+| `lib/telemt/install.sh` | 347 | TeleMT orchestration only |
+
+Each is domain-scoped, not a shared cross-cutting orchestrator. The
+actual cross-cutting entry point, `server-manager.sh`, is 150 lines and
+is a bootstrap/module-loader, not a domain-logic file — it contains no
+`MODE`/`WEB_SERVER`/capability branching at all (confirmed by reading
+it in full, §1).
+
+`lib/panel/install.sh`'s 365 lines (spot-checked, not exhaustively
+read this session) mix orchestration (call order: SSH → generate →
+deploy → register → health-check, mirroring the Remote Node flow in
+§6) with some domain logic (the reserved-port / MODE-adjacent guards).
+This is a real, smaller-scoped version of the "too much responsibility
+in one file" concern — but it is **not** the large single-file problem
+the task's framing assumed, and splitting it further is not
+self-evidently valuable without a concrete next consumer needing the
+split (matches the task's own instruction not to extract "just for
+file size").
+
+**Conclusion**: the premise "install.sh is still an oversized
+orchestration/domain layer" does **not hold** for this branch. This
+finding closes that question rather than deferring it.
+
+---
+
+## 10. Existing refactoring work — respected, not re-litigated
+
+Confirmed via git log + code read, not re-analyzed as "still open":
+
+- **Candidate 1** (F_XRAY_XHTTP_PORT / `19444` duplicated literal) —
+  RESOLVED 2026-09-07, `panel_core_reality_*`... no — correction: this
+  was `api.sh`'s F/J arms calling `core_port_allocation_internal`.
+  Confirmed via `test_port_allocation_wiring.sh` (32/32 green,
+  including the explicit "literal 19444/18444 gone from F/J arms,
+  `*` catch-all arm unchanged" assertions).
+- **Candidate 3** (`F_XHTTP_PUBLIC_PORT` / `9443`) — RESOLVED
+  2026-09-07, via `core_port_allocation_public`.
+- **Candidate 4** (`cli.sh`'s direct read of `F_XHTTP_PUBLIC_PORT` for
+  its confirm-prompt display text) — confirmed correctly classified as
+  NOT NEEDED (single display-only call site, not a duplicated decision
+  point) — I did not reopen this.
+- **`adapter_reality.sh`'s two functions**
+  (`panel_core_reality_needs_2222_ufw_rule`/`_dest_val`) — confirmed
+  implemented and wired (§2, item 6) — **not** left as open work, as an
+  earlier status note believed.
+- **`test_adapter_reality.sh`** — confirmed passing (37/37 real
+  assertions; the one reported FAIL is the known `jq`-sandbox issue,
+  §2) — **not** "not yet re-run," it has been re-run (by me, this
+  session, read-only) and it passes.
+
+None of this was rolled back, re-analyzed as broken, or "refactored for
+symmetry." Good, already-correct seams (`topology.sh`,
+`runtime_component.sh`, the Reality/Webserver adapters) are left
+exactly as they are.
+
+---
+
+## 11. Findings, classified
+
+| # | Finding | Evidence | Severity | Domain | Confidence |
+|---|---|---|---|---|---|
+| F1 | No SSH execution-level timeout; no `INT`/`TERM` traps anywhere in the repo | `grep -rn "trap.*INT\|TERM" lib/` → 0 results; `ConnectTimeout=10` present, no `-o ServerAliveInterval`/wrapped timeout on command execution | **P1** — a hung remote command (`RUN`) blocks the whole flow indefinitely, with no cleanup of partially-created local/remote state on `SIGINT` | Common/SSH, Remote Node | High |
+| F2 | Remote Node "reinstall" warning text is now inaccurate for half of what it describes | `lib/panel/node/install.sh:28`'s warning says the whole operation is non-idempotent; the Panel-API half now IS idempotent (lookup-before-create), only the remote-host deploy half still unconditionally re-executes | **P3** — misleading operator message, not a functional bug | Panel/Remote Node | High |
+| F3 | Four `beta`-branch docs (`CONTRACTS.md`, `ARCHITECTURE.md`, `LEGACY_AUDIT.md`, `ENGINEER_GUIDELINES.md`) describe violations that are already fixed on `variant-f-j`, with no branch-scope disclaimer visible without reading each doc's own baseline line | §2, §12 | **P2** — real risk of a future session "fixing" an already-fixed contract, or citing a stale bug as current in a report to you | Documentation | High |
+| F4 | `err()` vs `die()` naming/consolidation is unresolved, and the only pointer to a decision (`docs/ARCHITECTURE.md` §8) is `beta`-scoped, not `variant-f-j`-scoped | `lib/ui/output.sh`'s own comment | **P3** — cosmetic, both helpers behave identically today | UI/Common | High |
+| F5 | `WEB_SERVER`'s correct model home (Topology vs Deployment) is an open question, explicitly flagged in code, not resolved | `lib/core/topology.sh` header, `CORE_RUNTIME_CONTRACTS.md` §14 Q3 | **P2** — blocks a clean model for the Capability→Adapter extension point (§9) until decided | Core/Edge boundary | High |
+| F6 | Positional-argument chain (`F_XHTTP_ENABLE`/`TELEMT_DOMAIN`/`TELEMT_PORT`) still threads through 4-5 files with independent re-defaulting at each hop | `CORE_RUNTIME_CONTRACTS.md` §10 table, spot-verified (§2 item 8) | **P2** — the single largest remaining concrete (not speculative) migration-debt item with a fully designed target shape already waiting (`Deployment.capabilities`/`Deployment.telemt`) | Core/CLI boundary | High |
+| F7 | No repo-wide re-sweep this session of "every UI-emitting function × every `$(...)` call site" — the historical 2 offenders are fixed, but the sweep itself is stale (last run before the stderr migration landed) | Not re-run this session (explicitly out of scope for a read-only pass at this depth) | **P3** — cheap insurance, not urgent; the two known-risky sites are already fixed | UI/Common | Medium (absence of evidence, not evidence of a new problem) |
+
+No P0 found this session. Nothing here is a live safety/correctness
+emergency.
+
+---
+
+## 12. Documentation vs code — the one real contradiction worth fixing
+
+`docs/CONTRACTS.md` and `docs/ARCHITECTURE.md` are **not wrong** — they
+are accurate for `beta`, and say so explicitly in their own baseline
+lines. The problem is structural: nothing at the top of either file
+tells a reader "this document does not describe `variant-f-j`" without
+them separately reading `docs/CORE_RUNTIME_CONTRACTS.md` §0's Finding 3
+first — and `docs/CORE_RUNTIME_CONTRACTS.md` is the newest, least
+likely to be everyone's first stop.
+
+**Concretely wrong if read as "current" for `variant-f-j`**:
+- `docs/CONTRACTS.md` contract 1: claims `ok/info/warn/err/step/detail`
+  write to stdout. False on `variant-f-j` (§2, item 1; §4).
+- `docs/CONTRACTS.md` contract 2: claims `panel_node_register`'s caller
+  checks stdout emptiness instead of exit code. False on `variant-f-j`
+  (§2, item 3).
+- `docs/CONTRACTS.md` contract 3: claims `panel_get_token` has both an
+  (a) and a (c) violation. False on `variant-f-j` (§2, item 2).
+- `docs/CONTRACTS.md` contract 13 / `docs/ARCHITECTURE.md`: claims
+  `panel_node_register()` does unconditional POST with no lookup. False
+  on `variant-f-j` — the opposite is true and more advanced (§2, item
+  5; §6).
+
+I am **not** rewriting these documents. Per the task's own instruction
+("если документация уже достаточно хорошая — вообще её не трогай"),
+and because `docs/CORE_RUNTIME_CONTRACTS.md` §0 already performs and
+records exactly this reconciliation carefully and correctly, no
+docs-only fix was made this session — duplicating that reconciliation
+into `CONTRACTS.md`/`ARCHITECTURE.md` themselves would be a real edit
+to `beta`-owned documents, arguably out of scope for a `variant-f-j`
+review, and is better done as its own small, deliberate documentation
+task (see §14) rather than folded silently into this one.
+
+---
+
+## 13. Decision status — held to the requested vocabulary
+
+| Question | Status |
+|---|---|
+| stdout/stderr all-to-stderr | **DECISION** — implemented, tested, commented in-line |
+| `err()`/`die()` consolidation | **OPEN QUESTION** — no `variant-f-j`-scoped answer exists |
+| Exit-code-not-stdout-emptiness for Remote Node registration | **DECISION** — implemented, commented in-line |
+| Full RECONCILE/REPAIR/REINSTALL (any component) | **PROPOSED** (vocabulary borrowed from `beta`'s `ARCHITECTURE.md`, explicitly marked `NOT VERIFIED` in `CORE_RUNTIME_CONTRACTS.md`) — no implementation, no `variant-f-j`-native design either |
+| `lifecycle_state` as a `RuntimeComponent` field | **OPEN QUESTION**, explicitly recorded as a tension in `runtime_component.sh`'s own header (the contract doc lists it as a field; the file deliberately omits it) |
+| `WEB_SERVER` → Topology vs Deployment | **OPEN QUESTION**, explicitly flagged, leaning-but-undecided toward Topology |
+| CLI/domain separation for reserved-port logic | **OPEN QUESTION** — named (§8, §10), not decided |
+| Remote Node identity | **DECISION** — closed, verified |
+| Desired/Observed state as a general (non-Remote-Node) mechanism | **PROPOSED** only — no code, no committed design beyond the `Deployment`/`RuntimeComponent` shapes already built |
+| Positional→named argument migration (§10 table) | **PROPOSED**, fully specified target shape, zero implementation — the most "shovel-ready" proposal on the table |
+
+---
+
+## 14. Final synthesis
+
+### Architecture verdict
+
+The target architecture in `docs/CORE_RUNTIME_CONTRACTS.md` is, to the
+extent it has been implemented at all, **confirmed by code and
+tests** — not just asserted. What's built (Topology, Deployment
+resolution, two Core adapters, RuntimeComponent inventory, Remote Node
+CREATE-with-rollback) works, is tested, and is MODE-blind exactly as
+designed. What's *not* built (Reconciler, general health/observed
+state, RECONCILE/REPAIR/REINSTALL for anything, a real Capability→
+Adapter code seam) is **correctly and honestly labeled as not built**
+in the existing docs — I found no case this session where the
+documentation overclaims what exists in `variant-f-j` itself. The only
+overclaiming problem is the **other**, `beta`-scoped documents being
+read as if they describe this branch — a documentation-hygiene issue,
+not an architecture-honesty issue.
+
+### Canonical contracts (condensed — full table in §3)
+
+| Contract | Current | Target | Status |
+|---|---|---|---|
+| stdout/stderr | stderr, uniformly | (same) | Done |
+| Exit codes / command substitution | Fixed at known sites | Same pattern everywhere | Mostly done, not re-swept |
+| SSH timeout/traps | Connect-timeout only, 1 RETURN trap, 0 INT/TERM traps | Execution timeout + INT/TERM traps on remote-state ops | Open — real gap |
+| Remote Node identity | `Nodes.name` convention | (same) | Closed |
+| Remote Node lifecycle | CREATE only | CREATE/RECONCILE/REPAIR/REINSTALL | CREATE done, rest not started |
+| Desired/Observed state | Desired: real (`Deployment`). Observed: TeleMT + topology-detection only | Per-component RuntimeComponent state read | Half-built, by design (nothing further needed yet) |
+
+### Domain boundaries (condensed — full map in §8)
+
+```
+CLI → orchestration → domain/service → adapter → runtime/common
+ ^ owns some domain
+   logic it shouldn't
+   (reserved-port array)          ^ two real, tested seams
+                                     exist (webserver, reality);
+                                     capability/port-generation
+                                     seams do not exist yet
+```
+
+### Remote Node lifecycle (condensed — full state machine in §6)
+
+Real: identity + CREATE + rollback. Not real: RECONCILE, REPAIR,
+REINSTALL, drift detection, any health read beyond a one-shot
+post-creation `isConnected` poll.
+
+### Highest-value findings
+
+1. **F1** (no execution timeout / no INT-TERM traps) is the only
+   finding with real user-facing risk (a hang with no cleanup) — but
+   it is not urgent enough, nor cheap enough to fix safely in the same
+   stage as anything else, without its own test harness for simulating
+   a hung `ssh`.
+2. **F3** (stale `beta`-branch docs read as current) is a process risk:
+   it can cause a future session to "fix" something already fixed, or
+   report a false regression to you. Cheapest possible mitigation: a
+   one-line branch-scope banner at the top of `CONTRACTS.md`/
+   `ARCHITECTURE.md`/`LEGACY_AUDIT.md`/`ENGINEER_GUIDELINES.md` pointing
+   at `docs/CORE_RUNTIME_CONTRACTS.md` §0 for the `variant-f-j` reality.
+   Small enough to be a five-minute follow-up, not a stage of its own.
+3. **F6** (positional-argument chain) is the only remaining
+   **concrete, fully-specified, zero-implementation** migration item —
+   everything else either has no design yet (Reconciler, general
+   health) or is genuinely cross-cutting/higher-risk (F1's SSH
+   lifecycle work touches every remote-state-creating call site at
+   once).
+
+### Open questions (genuinely unresolved by code or docs)
+
+- `err()` vs `die()` — which survives, or do both, permanently, with a
+  documented reason?
+- `WEB_SERVER` → Topology field or its own top-level entity?
+- Should `lifecycle_state` exist on `RuntimeComponent` at all, given
+  the recorded tension between the contract doc's field list and the
+  implementation's deliberate omission?
+- Is `beta` meant to merge into `variant-f-j`, the reverse, or do the
+  two lines stay permanently separate? (Directly affects whether
+  `beta`'s Remote Node target state machine is even the right thing to
+  borrow vocabulary from going forward.)
+- Full repo-wide re-sweep of UI-function-vs-`$(...)`-call-site: not
+  run this session — worth doing as a 15-minute grep-only check before
+  committing to any stage that touches more `$(...)` call sites, just
+  to rule out a fresh regression having crept in since the last sweep.
+
+### Recommended next implementation stage — exactly one
+
+**Name**: *Named Deployment Threading — retire the
+`F_XHTTP_ENABLE`/`TELEMT_DOMAIN`/`TELEMT_PORT` positional chain*
+
+**Goal**: Replace the positional/re-defaulted threading of these three
+values (currently re-derived or re-defaulted independently at every
+hop: `cli.sh` → `install.sh` → `nginx/config.sh`'s `$11`/`$12`/`$13` →
+`variant_f.sh`/`variant_j.sh` → `api.sh`'s own re-derivation) with reads
+from the already-designed, already-partially-consumed `Deployment`
+model (`Deployment.capabilities` containing `"XHTTP"`;
+`Deployment.telemt.domain`/`.port`) — the exact target shape
+`docs/CORE_RUNTIME_CONTRACTS.md` §10 already specifies, verified this
+session to still be accurate.
+
+**Concrete files** (all independently confirmed this session to carry
+one or more of the three values):
+- `lib/panel/cli.sh` (source of the three values)
+- `lib/panel/install.sh` (positional relay: `install.sh:170,221-223,
+  284,304`)
+- `lib/panel/nginx/config.sh` (positional consumption: `$11`, `$12`,
+  `$13`)
+- `lib/panel/nginx/variant_f.sh`, `lib/panel/nginx/variant_j.sh`
+  (consumers, not re-defaulters)
+- `lib/panel/api.sh` (independent re-derivation of `F_XHTTP_ENABLE`
+  from `MODE` at `install.sh:304`'s call site, per §10's own citation)
+
+**Responsibilities that change**: `cli.sh` still *collects* the three
+raw values (no change to prompts/UX) but hands them to
+`core_resolve_deployment()` instead of threading them positionally
+through `install.sh`; every downstream consumer
+(`nginx/config.sh`/`variant_f.sh`/`variant_j.sh`/`api.sh`) reads
+`Deployment.capabilities`/`Deployment.telemt` instead of its own
+positional argument or independent re-derivation.
+
+**Contracts touched**: closes the last concrete item in
+`CORE_RUNTIME_CONTRACTS.md`'s "Known migration debt" (§13); is the
+first real *consumer* of the already-designed `Deployment.capabilities`/
+`Deployment.telemt` shapes (§3.1/§3.2) — everything up to now has only
+*modeled* those fields, nothing has *read* them for a real decision
+yet.
+
+**What must NOT change**:
+- The four topologies' actual generated output (nginx config content,
+  Xray inbound JSON) — byte-identical before/after, exactly the
+  discipline every prior Candidate in this series has held itself to.
+- `cli.sh`'s user-facing prompts/UX.
+- `WEB_SERVER`'s handling — deliberately out of scope (open question,
+  F5/§14, not to be silently resolved as a side effect of this stage).
+- `lifecycle_state`/RECONCILE/health — not touched; this stage is
+  Desired-State plumbing only, no Observed-State or reconciliation
+  work.
+- `lib/core/topology.sh`/`runtime_component.sh` — already correct,
+  not to be modified for "consistency" with the new work.
+
+**Necessary tests** (following the established pattern in this repo's
+own test suite exactly):
+1. Byte-identity: generated `nginx.conf`/Xray-inbounds JSON unchanged
+   for all four topologies × XHTTP on/off × TeleMT present/absent,
+   before vs after.
+2. MODE/positional-blind audit: `F_XHTTP_ENABLE`/`TELEMT_DOMAIN`/
+   `TELEMT_PORT` appear as literal strings **only** inside
+   `core_resolve_deployment()` after the change (mirrors
+   `test_deployment_resolver.sh`'s own MODE-blind assertion style).
+3. Negative mutation: corrupt one field of a resolved `Deployment`,
+   confirm the specific downstream consumer that should react, does.
+4. Explicit-argument-precedence test (same shape as the XHTTP adapter's
+   own "explicit 5th arg beats Core accessor" test) if any call site
+   needs to keep an explicit override path during transition.
+5. `bash -n` / `shellcheck` on every touched file, per repo convention.
+
+**Completion criteria**:
+- Zero remaining literal `$11`/`$12`/`$13`/`${13:-0}`-style positional
+  reads of these three specific values anywhere outside
+  `core_resolve_deployment()`'s own input-collection point.
+- All new + all existing test suites green (the `jq`-sandbox caveat
+  from §2 aside, which is an environment limitation, not a suite
+  outcome).
+- No change to any generated artifact's bytes for any existing
+  topology/capability combination.
+
+**Why this stage, and not another one**: every other candidate next
+step named in this review (F1's SSH timeout/trap work, the Reconciler,
+general health/observed-state, RECONCILE/REPAIR/REINSTALL,
+`lifecycle_state`, `WEB_SERVER`'s model home) either (a) requires
+inventing a genuinely new architecture decision this review found no
+settled answer for — which would violate the freeze discipline this
+whole exercise exists to protect — or (b) is cross-cutting enough (SSH
+lifecycle touches every remote-state call site at once) that it
+deserves its own dedicated design pass rather than being bundled
+opportunistically. The positional-argument chain is the **only**
+remaining item that is simultaneously (1) fully specified already, on
+paper, with no new decision required, (2) bounded to a known, small
+set of files, (3) directly continues the exact "wire an
+already-modeled Core value into one legacy call site, prove
+byte-identical output" pattern that has a 100% track record across
+Candidates 1, 3, and the two `adapter_reality.sh` functions in this
+series, and (4) is explicitly still open per the project's own most
+current, most-verified document (`CORE_RUNTIME_CONTRACTS.md` §13).
+
+---
+
+## 15. Safety / working tree — confirmation
+
+- Source/runtime code: read-only throughout. Zero files modified.
+- No test files touched (tests were *run*, not edited).
+- No commits, no push, no reset/rebase/merge/checkout beyond the
+  initial branch checkout to read the code.
+- No dependency installations (the `jq` gap was documented, not
+  patched).
+- `git status --porcelain` is empty; `HEAD` == `origin/variant-f-j`,
+  both before and after this session.
+- No documentation file was modified — `docs/CORE_RUNTIME_CONTRACTS.md`
+  was already accurate and current (its own last edit is the current
+  `HEAD` commit); nothing needed fixing there. The one documentation
+  issue found (F3, stale `beta`-branch docs) is flagged, not silently
+  patched, per your instruction to leave documentation alone unless a
+  fix is truly necessary — a five-minute banner addition is a
+  reasonable follow-up, but not one I made unilaterally in a review
+  pass.
+
+---
+
+## FINAL VERDICT
+
+**`ARCHITECTURE FREEZE — READY FOR NEXT IMPLEMENTATION STAGE`**
+
+The architecture is confirmed by code and by a full, green (net of one
+known environment artifact) test run — not merely by re-reading
+documentation. Exactly one next stage is identified above, is fully
+scoped, requires no new architectural decision, and directly continues
+this project's own established, proven refactor pattern.
