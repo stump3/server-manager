@@ -348,28 +348,26 @@ class TestTcpUdpQuicInvariants(unittest.TestCase):
         tcp.tls_passthrough / tcp.tls_termination in
         required_capabilities, never a single ambiguous 'tls' flag.
 
-        NOTE — a real, disclosed planner.py precision defect surfaced
-        while writing this test (not fixed here, per this round's
-        explicit instruction not to modify planner.py without a proven
-        blocker; reported in the accompanying summary instead):
-        planner.py's `_required_dimensions_for_group()` computes ONE
-        dimension set for the WHOLE group and assigns that same union
-        to EVERY service's required_capabilities — so in a mixed
-        passthrough+termination group, `web` (termination) also
-        incorrectly claims `tcp.tls_passthrough`, and `xray`
-        (passthrough) also incorrectly claims `tcp.tls_termination`.
-        This is not an internal Plan IR CONTRADICTION the Validator can
-        detect on its own (there is no per-service tls.mode field left
-        in the artifact to cross-check required_capabilities against —
-        the imprecision is only visible by comparing against the
-        original Desired State, which plan_validator.py is
-        architecturally forbidden from importing). This test therefore
-        only asserts what IS genuinely, always true regardless of that
-        imprecision: each service's own correct dimension is present."""
+        This round's targeted defect review (Finding 2) fixed a real,
+        disclosed planner.py precision defect that used to prevent
+        this from being asserted as a full, strict invariant: prior to
+        the fix, planner.py's `_required_dimensions_for_group()`
+        computed ONE dimension set for the WHOLE group and assigned
+        that same union to EVERY service's required_capabilities, so
+        `web` (termination) also incorrectly claimed
+        `tcp.tls_passthrough`, and `xray` (passthrough) also
+        incorrectly claimed `tcp.tls_termination`. Confirmed to be a
+        Planner-only bug (plan_ir.build_service_entry() already
+        accepts a fully independent required_capabilities list per
+        call — nothing in the schema forced the sharing), fixed via a
+        new _required_dimensions_for_service() function. This test now
+        asserts the full, strict invariant the fix restores."""
         plan = _shared_tcp_plan_ir()
         caps_by_service = {s["service_id"]: set(s["required_capabilities"]) for g in plan["groups"] for s in g["services"]}
         self.assertIn("tcp.tls_passthrough", caps_by_service["xray"])
+        self.assertNotIn("tcp.tls_termination", caps_by_service["xray"])
         self.assertIn("tcp.tls_termination", caps_by_service["web"])
+        self.assertNotIn("tcp.tls_passthrough", caps_by_service["web"])
         result = plan_validator.validate_plan(plan)
         self.assertTrue(result.valid, result.diagnostics)
 
