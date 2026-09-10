@@ -50,15 +50,21 @@ panel_cli_collect_domains() {
     fi
 }
 
-# panel_cli_select_webserver — WEB_SERVER prompt, plus the MODE=F guard
-# that already existed (Caddy has no caddy-l4 in the official image) and
-# an equivalent new MODE=J guard: J needs nginx stream{} SNI routing for
-# BOTH its Vision and XHTTP legs (lib/panel/nginx/variant_j.sh), which
-# Caddy cannot provide any more than it could for F — same underlying
-# reason, so the same fatal-error treatment, not a silent fallback (this
-# mirrors panel_generate_compose_colocated()'s own WEB_SERVER=2+MODE=J
-# guard added in the compose stage; that guard is Compose's last line of
-# defense, this one is the CLI's first — neither replaces the other).
+# panel_cli_select_webserver — WEB_SERVER prompt, plus the MODE×WEB_SERVER
+# compatibility guard. Previously this guard was two independent raw
+# comparisons (`[ "$MODE" = "F" ] && [ "$WEB_SERVER" = "2" ]` / a J
+# equivalent), duplicating a fact lib/core/deployment.sh's
+# core_deployment_web_server_ok() already answers and lib/panel/compose/
+# colocated.sh already consults (same pattern: called with raw $MODE,
+# before core_resolve_deployment() has run — see that call site's own
+# comment for why the accessor's pure-function-of-two-arguments contract
+# makes this safe pre-resolver). Migrated here so CLI and Compose ask the
+# same canonical compatibility decision instead of maintaining two
+# F/J-shaped tables that could silently drift apart. The underlying rule
+# is unchanged: Variant F/J both need nginx stream{} SNI routing (Vision,
+# plus J's XHTTP leg), which Caddy cannot provide — see
+# docs/ARCHITECTURE.md §4b (Variant F) for why that's a scope boundary,
+# not an architectural verdict against Caddy.
 panel_cli_select_webserver() {
     section "Веб-сервер"
     echo "  1) Nginx   (SSL через certbot — Cloudflare / Let's Encrypt / Gcore)"
@@ -69,19 +75,18 @@ panel_cli_select_webserver() {
         read -p "  Выбор (1/2): " WEB_SERVER < /dev/tty
     done
 
-    # Режим F (TCP passthrough к Xray через nginx stream) реализован пока
-    # только для nginx. Для Caddy эквивалентный механизм — сторонний
-    # плагин caddy-l4 (mholt/caddy-l4), который требует собственной сборки
-    # бинарника (xcaddy build --with github.com/mholt/caddy-l4) — НЕ входит
-    # в официальный образ caddy:2.11, уже используемый ниже для MODE=1/2.
-    # Это не архитектурное решение "Caddy не поддерживается вообще" — это
-    # явное ограничение объёма текущего изменения; см. docs/ARCHITECTURE.md
-    # §4b (Variant F).
-    if [ "$MODE" = "F" ] && [ "$WEB_SERVER" = "2" ]; then
-        err "Режим F сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy для F требует отдельной сборки (caddy-l4, не входит в official caddy:2.11 image) — не реализовано в этом проходе."
-    fi
-    if [ "$MODE" = "J" ] && [ "$WEB_SERVER" = "2" ]; then
-        err "Режим J сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant J (Vision + XHTTP)."
+    if ! core_deployment_web_server_ok "$MODE" "$WEB_SERVER"; then
+        case "$MODE" in
+            F)
+                err "Режим F сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy для F требует отдельной сборки (caddy-l4, не входит в official caddy:2.11 image) — не реализовано в этом проходе."
+                ;;
+            J)
+                err "Режим J сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant J (Vision + XHTTP)."
+                ;;
+            *)
+                err "Режим $MODE сейчас поддерживается только с Nginx (WEB_SERVER=1) — Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant $MODE."
+                ;;
+        esac
     fi
 }
 
