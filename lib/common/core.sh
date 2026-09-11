@@ -31,18 +31,18 @@ TELEMT_CHOSEN_VERSION="latest"
 
 # Заголовок раздела (подменю)
 header() {
-    clear
-    echo ""
-    echo -e "${BOLD}${WHITE}  $*${NC}"
-    echo -e "${GRAY}  ────────────────────────────────────────${NC}"
-    echo ""
+    clear >&2
+    echo "" >&2
+    echo -e "${BOLD}${WHITE}  $*${NC}" >&2
+    echo -e "${GRAY}  ────────────────────────────────────────${NC}" >&2
+    echo "" >&2
 }
 
 # Секция внутри экрана (без clear)
 section() {
-    echo ""
-    echo -e "${BOLD}${WHITE}  $*${NC}"
-    echo -e "${GRAY}  ──────────────────────────────${NC}"
+    echo "" >&2
+    echo -e "${BOLD}${WHITE}  $*${NC}" >&2
+    echo -e "${GRAY}  ──────────────────────────────${NC}" >&2
 }
 
 confirm() {
