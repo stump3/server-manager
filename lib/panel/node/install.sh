@@ -30,6 +30,21 @@ panel_install_remote_node() {
 
     local _selfsteal_staging=""
     local _node_cleanup_done=""
+    # F1 ownership fix: set to a non-empty value ONLY once this specific
+    # invocation has actually written into the remote /opt/remnanode
+    # (right after the PUT below succeeds) -- NOT merely once _SSH_IP/
+    # _SSH_USER are known. Knowing the SSH target is necessary but not
+    # sufficient for "we may destructively roll back /opt/remnanode on
+    # that target": between ask_ssh_target and that PUT, remote
+    # /opt/remnanode may already exist from an earlier, unrelated
+    # deployment (this function's own docstring above says re-running it
+    # is not idempotent -- so a prior run against the same target is a
+    # realistic, not hypothetical, way for that to be true), and a SIGINT
+    # in that window must not tear it down. Stays true for the rest of
+    # this invocation once set -- ownership, once genuinely acquired,
+    # does not need to be "un-acquired" for later steps (registration,
+    # health-check) to still permit rollback on failure.
+    local _node_remote_owned=""
 
     # F1 (SSH reliability): single cleanup function, all traps delegate to
     # it instead of duplicating the `rm -rf` logic. Idempotent — safe to
@@ -66,13 +81,27 @@ panel_install_remote_node() {
         # Best-effort: kill the in-flight RUN/PUT subtree, if any. Right
         # after `timeout ... &`, RUN/PUT's own $! *is* the PGID of a fresh
         # process group timeout creates for itself (GNU timeout's default,
-        # non---foreground mode: it calls setpgid(0,0) precisely so it can
-        # reliably signal its whole descendant tree on its own deadline —
-        # confirmed empirically this session, including that sshpass
-        # interposes at least one further process before reaching the
-        # real ssh/scp binary, which is exactly why signaling only the
-        # direct child would not be enough). `-"$_LAST_SSH_PID"` reaches
-        # the whole tree in one signal.
+        # non-foreground mode: it calls setpgid(0,0) on itself — confirmed
+        # empirically this session). That group, however, does NOT contain
+        # the whole tree: sshpass calls setsid() before exec'ing the real
+        # ssh/scp binary (confirmed by reading sshpass's own source —
+        # needed so the ssh/scp process can own the pty sshpass allocates
+        # for password injection), which moves ssh/scp into a brand-new
+        # session and process group of their own. `-"$_LAST_SSH_PID"`
+        # therefore reaches only `timeout` and `sshpass`, not ssh/scp
+        # directly. It still works today because killing sshpass with
+        # SIGTERM (not SIGKILL — confirmed this session that SIGKILL
+        # leaves ssh/scp orphaned instead) tears down the pty sshpass
+        # holds open, and ssh/scp dies as a side effect of that. sshpass
+        # has no signal handler of its own for this (confirmed from
+        # source: only SIGCHLD/SIGWINCH); this is pty/session teardown
+        # behavior incidental to sshpass's architecture, not a documented
+        # sshpass contract. It is exercised correctly by every real path
+        # in this tool — this explicit `kill -TERM` and GNU timeout's own
+        # default deadline handling both use SIGTERM, never SIGKILL — but
+        # is not guaranteed by anything upstream, so do not assume it
+        # generalizes to a different auth-injection tool or a SIGKILL path
+        # without re-verifying.
         # `if`, not `[ ... ] && kill ...`, for the same set -e reason as
         # _node_install_cleanup() above -- an empty/unset $_LAST_SSH_PID
         # (no RUN/PUT in flight right now) is the common case, not an
@@ -88,10 +117,17 @@ panel_install_remote_node() {
         # over a *fresh* SSH connection: killing the local ssh client
         # above stops *us* from waiting on it, it does not by itself
         # guarantee the remote command stopped, so this is a genuine
-        # follow-up attempt, not a formality. Only attempted once SSH is
-        # actually initialized — if interrupted before that point there is
-        # nothing remote to clean up yet.
-        if [ -n "${_SSH_IP:-}" ] && [ -n "${_SSH_USER:-}" ]; then
+        # follow-up attempt, not a formality.
+        #
+        # Gated on _node_remote_owned, NOT on _SSH_IP/_SSH_USER alone.
+        # _SSH_IP/_SSH_USER only prove the SSH target is known; they say
+        # nothing about whether THIS invocation ever wrote anything to
+        # that target. _node_remote_owned is set only after this
+        # invocation's own PUT into remote /opt/remnanode has actually
+        # succeeded — before that point, remote /opt/remnanode (if it
+        # exists at all) may be an unrelated, pre-existing deployment
+        # this invocation must not touch.
+        if [ -n "${_node_remote_owned:-}" ]; then
             RUN "cd /opt/remnanode 2>/dev/null && docker compose down 2>/dev/null; rm -rf /opt/remnanode" \
                 >/dev/null 2>&1 || true
         fi
@@ -187,8 +223,18 @@ panel_install_remote_node() {
 
     # ── Перенос файлов на ноду ──────────────────────────────────────
     info "Копирование файлов на ${_SSH_IP}..."
-    PUT /opt/remnanode/docker-compose.yml /opt/remnanode/Caddyfile \
-        "${_SSH_USER}@${_SSH_IP}:/opt/remnanode/" || { warn "Не удалось скопировать compose/Caddyfile"; return 1; }
+    # `if`, not `PUT ... || { ...; }` alone, specifically so the success
+    # branch can set _node_remote_owned=1 -- this PUT is the exact,
+    # earliest point at which this invocation has actually written
+    # anything into remote /opt/remnanode, i.e. the earliest point
+    # destructive rollback there becomes this invocation's to perform.
+    if PUT /opt/remnanode/docker-compose.yml /opt/remnanode/Caddyfile \
+        "${_SSH_USER}@${_SSH_IP}:/opt/remnanode/"; then
+        _node_remote_owned=1
+    else
+        warn "Не удалось скопировать compose/Caddyfile"
+        return 1
+    fi
     RUN "mkdir -p /var/www/html" || true
     PUT "${_selfsteal_staging}/." \
         "${_SSH_USER}@${_SSH_IP}:/var/www/html/" || { warn "Не удалось скопировать selfsteal-контент"; return 1; }
