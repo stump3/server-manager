@@ -108,8 +108,8 @@ assert "migrated guard's CODE contains no raw [ \"\$WEB_SERVER\" = ... ] compari
     "$(grep -cE '\[ *"\$WEB_SERVER" *=' <<<"$GUARD_REGION_CODE")" "0"
 assert "migrated guard calls the Core accessor with (MODE, WEB_SERVER)" \
     "$(grep -c 'core_deployment_web_server_ok "\$MODE" "\$WEB_SERVER"' <<<"$GUARD_REGION_CODE")" "1"
-assert "migrated guard still calls err() on rejection (exit behavior/error text preserved)" \
-    "$(grep -c 'err "Variant \$MODE требует nginx' <<<"$GUARD_REGION_CODE")" "1"
+assert "migrated guard still calls die() on rejection (exit behavior/error text preserved; F4 renamed err()->die(), no other change)" \
+    "$(grep -c 'die "Variant \$MODE требует nginx' <<<"$GUARD_REGION_CODE")" "1"
 # Other, non-migrated MODE checks in this same file must still exist
 # (this test must not accidentally demand the whole file be MODE-blind --
 # only the migrated responsibility).
@@ -130,7 +130,7 @@ assert "core_deployment_web_server_ok() actually exists in lib/core/deployment.s
     "$(grep -c '^core_deployment_web_server_ok()' lib/core/deployment.sh)" "1"
 # 4b. Guard block removed entirely from colocated.sh -> must not silently
 # pass as "no raw MODE/WEB_SERVER found".
-assert "the guard's err() call is still present at all (guard not silently deleted)" \
+assert "the guard's die() call is still present at all (guard not silently deleted; F4 renamed err()->die())" \
     "$(grep -c 'Caddy не поддерживает nginx stream{}-маршрутизацию' lib/panel/compose/colocated.sh)" "1"
 # 4c. Call must pass exactly two arguments in the right order (MODE then
 # WEB_SERVER) -- a call with swapped or missing arguments would silently
@@ -199,8 +199,8 @@ assert "cli.sh's former raw MODE=F+WEB_SERVER=2 compatibility comparison is gone
     "$(grep -c '\[ "\$MODE" = "F" \] && \[ "\$WEB_SERVER" = "2" \]' <<<"$CLI_FUNC_REGION")" "0"
 assert "cli.sh's former raw MODE=J+WEB_SERVER=2 compatibility comparison is gone" \
     "$(grep -c '\[ "\$MODE" = "J" \] && \[ "\$WEB_SERVER" = "2" \]' <<<"$CLI_FUNC_REGION")" "0"
-assert "cli.sh still calls err() on rejection (exit behavior preserved)" \
-    "$(grep -c 'err "' <<<"$CLI_FUNC_REGION")" "3"
+assert "cli.sh still calls die() on rejection (exit behavior preserved; F4 renamed err()->die())" \
+    "$(grep -c 'die "' <<<"$CLI_FUNC_REGION")" "3"
 
 echo ""
 echo "== 7. call order / call-site sanity (documented precondition, not a live global read) =="
