@@ -25,7 +25,21 @@ panel_install_remote_node() {
     header "Remote Node — установка"
     echo ""
     warn "Panel должна быть уже установлена — потребуются её admin-credentials."
-    warn "Повторный запуск создаст новую ноду/хост в Panel (операция не идемпотентна)."
+    # FIXED (F2, post-C13 audit): the previous wording here ("Повторный
+    # запуск создаст новую ноду/хост в Panel — операция не идемпотентна")
+    # became stale once Contract 13 was extended to this flow's own
+    # panel_node_register() (lib/panel/node/api.sh) — that function now
+    # does lookup-before-create for config-profile/Node/Host alike
+    # (reuses an existing "RemoteNode-${SELFSTEAL_DOMAIN}" Node/profile
+    # and an existing Host matched on configProfileInboundUuid, exactly
+    # as documented in that file's own Contract 13 comments), so a
+    # re-run does NOT unconditionally create a duplicate Node/Host in
+    # Panel any more. What genuinely remains non-idempotent, unchanged
+    # by C13 and NOT addressed here (F1 stays its own, separate,
+    # untouched scope): the SSH-side redeploy below unconditionally
+    # PUTs into /opt/remnanode and restarts containers on every
+    # invocation, regardless of whether Panel already knows this node.
+    warn "Повторный запуск переиспользует существующие конфиг-профиль/ноду/хост в Panel, если они уже есть, но заново скопирует файлы в /opt/remnanode и перезапустит контейнеры на удалённом хосте — эта часть операции не идемпотентна."
     echo ""
 
     local _selfsteal_staging=""
