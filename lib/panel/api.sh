@@ -480,10 +480,33 @@ panel_setup_api() {
     # Not a DB-enforced constraint (see that same caveat below) --
     # convention-level, same as XHTTP. Existence alone is the check, same
     # scope boundary as Config Profile/Node above.
+    # FIXED (Contract 13 verification pass): the response-shape fallback
+    # originally copied from the XHTTP Host neighbor below --
+    # `(.response.hosts // .response // [])` -- relies on jq's `//` to
+    # fall back to the flat-array shape when `.response` isn't an
+    # object. jq's `//` only rescues null/false results; it does NOT
+    # rescue a hard type error, and `.response.hosts` on an
+    # already-array `.response` raises exactly that
+    # ("Cannot index array with string \"hosts\""), aborting the whole
+    # expression before `2>/dev/null` ever gets a chance to matter for
+    # anything but the message text. Confirmed directly with jq: the
+    # flat-array shape silently produced empty output every time,
+    # meaning an existing Host in that shape would never be found and
+    # this lookup would recreate it on every re-run -- the exact
+    # failure Contract 13 exists to prevent. Rewritten to branch on
+    # `.response`'s actual type instead of relying on `//` across a
+    # type boundary; both shapes verified directly with jq before this
+    # change (object-with-hosts match/no-match, flat-array
+    # match/no-match, non-matching inbound, malformed non-JSON input --
+    # the last of these still exits non-zero and is still silenced by
+    # the existing `2>/dev/null` below, preserving this file's
+    # established fall-through-to-create convention unchanged). Scope:
+    # this touches only this Vision-Host lookup, not the XHTTP Host
+    # neighbor, which is precedent for this change and out of scope.
     local EXISTING_VISION_HOST
     EXISTING_VISION_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
         jq -r --arg iu "$IBD_UUID" \
-        '(.response.hosts // .response // [])[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid' 2>/dev/null | head -1)
+        '(if (.response|type)=="object" then (.response.hosts // []) else (.response // []) end)[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid' 2>/dev/null | head -1)
     if [ -n "$EXISTING_VISION_HOST" ]; then
         ok "Хост уже существует, используется существующий"
     else
