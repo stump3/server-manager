@@ -444,23 +444,60 @@ panel_setup_api() {
     else
         NODE_ADDR="$SELFSTEAL_DOMAIN"
     fi
-    panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
-        --arg na "$NODE_ADDR" --arg cu "$CFG_UUID" --argjson ai "$ACTIVE_INBOUNDS_JSON" \
-        '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)" >/dev/null 2>&1 \
-        && ok "Нода создана" || warn "Ошибка создания ноды"
+    # Contract 13 (lookup-before-create): reuse an already-existing Node
+    # named "Steal" instead of always POSTing a new one on every re-run.
+    # GET /api/nodes -> {"response":[...]}, a bare array -- the same
+    # response shape lib/panel/node/api.sh's own Node lookup relies on
+    # (there, sourced against remnawave/backend's get-nodes.command.ts
+    # and eGamesAPI's check_node_domain(), both confirming `.response[]`
+    # with no further nesting). Identity = name: Nodes.name is @unique in
+    # the Panel's own Prisma schema (same fact node/api.sh's Node lookup
+    # already established for the Remote Node path), so this lookup is
+    # as reliable as that one. Existence alone is the check -- same scope
+    # boundary as the Config Profile lookup above: no content-diff
+    # against an existing Node's fields; that reconciliation behaviour
+    # isn't defined anywhere and isn't invented here. Duplicate-match
+    # handling (`head -1`) mirrors the Config Profile lookup above,
+    # unchanged assumption.
+    local EXISTING_NODE
+    EXISTING_NODE=$(panel_api "GET" "http://$API/api/nodes" "$TOKEN" | \
+        jq -r '.response[]? | select(.name=="Steal") | .uuid' 2>/dev/null | head -1)
+    if [ -n "$EXISTING_NODE" ]; then
+        ok "Нода Steal уже существует, используется существующая"
+    else
+        panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
+            --arg na "$NODE_ADDR" --arg cu "$CFG_UUID" --argjson ai "$ACTIVE_INBOUNDS_JSON" \
+            '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)" >/dev/null 2>&1 \
+            && ok "Нода создана" || warn "Ошибка создания ноды"
+    fi
 
-    panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
-        --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" \
-        '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
-        && ok "Хост создан" || warn "Ошибка создания хоста"
+    # Contract 13 (lookup-before-create): same pattern as the XHTTP Host
+    # below, which already does this for this exact endpoint -- identity
+    # = configProfileInboundUuid, the one field that uniquely identifies
+    # "the Host for this specific inbound" regardless of remark/address,
+    # which an operator could change later (same reasoning already
+    # documented at the XHTTP Host lookup below, applied here to Vision).
+    # Not a DB-enforced constraint (see that same caveat below) --
+    # convention-level, same as XHTTP. Existence alone is the check, same
+    # scope boundary as Config Profile/Node above.
+    local EXISTING_VISION_HOST
+    EXISTING_VISION_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
+        jq -r --arg iu "$IBD_UUID" \
+        '(.response.hosts // .response // [])[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid' 2>/dev/null | head -1)
+    if [ -n "$EXISTING_VISION_HOST" ]; then
+        ok "Хост уже существует, используется существующий"
+    else
+        panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
+            --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" \
+            '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
+            && ok "Хост создан" || warn "Ошибка создания хоста"
+    fi
 
     # Variant J / XHTTP_ENABLE=1: second Host for XHTTP, only when
-    # XHTTP_ENABLE=1 actually produced an XHTTP inbound. Unlike the Vision Host above (unchanged,
-    # pre-existing, no lookup-before-create — out of scope to retrofit
-    # here), this new path DOES look up an existing Host first: this is
-    # new code being added under an explicit idempotency requirement, so
-    # it follows the config-profile's own established lookup-before-
-    # create pattern rather than the older, always-POST Vision pattern.
+    # XHTTP_ENABLE=1 actually produced an XHTTP inbound. Same
+    # lookup-before-create pattern as the Vision Host immediately above
+    # (both now converted under Contract 13; this one was already
+    # converted first, under an explicit idempotency requirement).
     # Match key: configProfileInboundUuid, the one field that uniquely
     # identifies "the Host for this specific inbound" regardless of
     # remark/address, which an operator could change later.
