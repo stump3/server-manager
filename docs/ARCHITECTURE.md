@@ -747,14 +747,15 @@ stay backward-compatible during it, how to verify it, and its rollback.
 | CREATE transactional, RECONCILE/REPAIR compensating | `DECISION` — §4.4 |
 | Retry lives at the external-command layer, not the lifecycle layer | `DECISION` — §4.5 |
 | `status_render.py` as a named exception to the single-writer rule | `DECISION` — §5.2 |
-| `err()` vs `die()` — which fatal helper survives | **`DECISION REQUIRED`** — no source picks one; low-stakes, resolve during stage 3 implementation |
+| `err()` vs `die()` — which fatal helper survives | `DECISION` — `die()` (F4); `err()` removed from `lib/ui/output.sh`, all former call sites converted, message text unchanged |
 | Concrete timeout default values (HTTP, SSH) | **`DECISION REQUIRED`** — no source gives numbers; assign during stage 6/implementation, not architecture |
 | `docs/CONTRACTS.md` schema-migration mechanism for `stats.db` | **`DECISION REQUIRED`** — `init_db.py` (per `architecture_v1.md`) creates but does not specify an alter/upgrade path; needed before stage 9 ships, not before this document is finalized |
 
-Three `DECISION REQUIRED` items remain, deliberately — each is either
-low-stakes (helper-function naming) or genuinely implementation-detail
-(numeric timeouts, a migration-tooling mechanism) rather than a
-structural architecture question. No structural question was left open.
+Two `DECISION REQUIRED` items remain (`err()` vs `die()` was resolved
+as `die()`, F4) — each of the remaining two is genuinely
+implementation-detail (numeric timeouts, a migration-tooling
+mechanism) rather than a structural architecture question. No
+structural question was left open.
 
 ---
 
