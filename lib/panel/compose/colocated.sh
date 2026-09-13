@@ -181,10 +181,10 @@ panel_generate_compose_colocated() {
     # its two arguments (never reads a Deployment global), so this is not
     # a raw-MODE regression -- it is the fact's one true source
     # (core_topology_requires_nginx_stream()) being consulted instead of a
-    # second, local F/J comparison. Error text/behavior (err() exits
+    # second, local F/J comparison. Error text/behavior (die() exits
     # immediately, no "return 1" needed after it) unchanged.
     if ! core_deployment_web_server_ok "$MODE" "$WEB_SERVER"; then
-        err "Variant $MODE требует nginx (WEB_SERVER=1) — Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant $MODE"
+        die "Variant $MODE требует nginx (WEB_SERVER=1) — Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant $MODE"
     fi
 
     {
