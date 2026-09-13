@@ -3,7 +3,7 @@
 #
 # F7 hardening: header() and section() (lib/common/core.sh) used to write
 # their UI banner text to stdout, unlike every other UI helper in
-# lib/ui/output.sh (ok/info/warn/err/die/detail/step), all of which write
+# lib/ui/output.sh (ok/info/warn/die/detail/step), all of which write
 # to stderr per the documented contract:
 #   "Contract 1 (docs/CONTRACTS.md): stdout carries machine-readable
 #    return data only; stderr carries all UI text, diagnostics,
@@ -70,15 +70,15 @@ for fn in ok info warn detail; do
 done
 _STEP_OUT="$(source lib/ui/output.sh; STEP_NUM=1; TOTAL_STEPS=3; step "x" 2>/dev/null)"
 assert "step() stdout is still empty (unaffected by this change)" "$_STEP_OUT" ""
-# err()/die() exit 1 -- run each in its own subshell so their exit
-# doesn't abort this script (lib/common/core.sh sets -e when sourced).
-( source lib/ui/output.sh; err "x" >/tmp/_err_o 2>/tmp/_err_e )
-assert "err() still exits 1" "$?" "1"
-assert "err() stdout still empty" "$(wc -c </tmp/_err_o)" "0"
+# die() exits 1 -- run in its own subshell so its exit doesn't abort
+# this script (lib/common/core.sh sets -e when sourced). F4: err() was
+# consolidated into die() and removed as a separate helper (identical
+# termination semantics, no behavioral difference beyond err()'s
+# cosmetic blank-line padding) -- see lib/ui/output.sh's own comment.
 ( source lib/ui/output.sh; die "x" >/tmp/_die_o 2>/tmp/_die_e )
 assert "die() still exits 1" "$?" "1"
 assert "die() stdout still empty" "$(wc -c </tmp/_die_o)" "0"
-rm -f /tmp/_err_o /tmp/_err_e /tmp/_die_o /tmp/_die_e
+rm -f /tmp/_die_o /tmp/_die_e
 
 echo ""
 echo "==================================="
