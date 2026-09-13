@@ -217,7 +217,7 @@ panel_setup_api() {
     until curl -s -f --max-time 30 "http://127.0.0.1:3000/api/auth/status" \
             -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Forwarded-Proto: https' >/dev/null 2>&1; do
         ATTEMPTS=$((ATTEMPTS+1))
-        [ "$ATTEMPTS" -ge 5 ] && err "Панель не стартовала. Проверьте: cd /opt/remnawave && docker compose logs remnawave"
+        [ "$ATTEMPTS" -ge 5 ] && die "Панель не стартовала. Проверьте: cd /opt/remnawave && docker compose logs remnawave"
         info "Попытка $ATTEMPTS/5, ждём 60с..."; sleep 60
     done
     ok "Панель готова"
@@ -243,7 +243,7 @@ panel_setup_api() {
     local REG_RAW REG_RC=0
     REG_RAW=$(panel_api_status "POST" "http://$API/api/auth/register" "" \
         "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}") || REG_RC=$?
-    [ "$REG_RC" -ne 0 ] && err "Ошибка регистрации: сетевая ошибка (transport failure)"
+    [ "$REG_RC" -ne 0 ] && die "Ошибка регистрации: сетевая ошибка (transport failure)"
     local REG_STATUS="${REG_RAW: -3}"
     local REG="${REG_RAW:0:${#REG_RAW}-3}"
 
@@ -255,7 +255,7 @@ panel_setup_api() {
         # (HTTP 403 + errorCode E000) falls through to login. Any other
         # failure (network hiccup already handled above, validation
         # error, unrelated 403/500, malformed body) still aborts via
-        # err() exactly as before — never silently proceeds through
+        # die() exactly as before — never silently proceeds through
         # login on an error we haven't confirmed the meaning of.
         local REG_ERR_CODE
         REG_ERR_CODE=$(echo "$REG" | jq -r '.errorCode // empty' 2>/dev/null)
@@ -265,10 +265,10 @@ panel_setup_api() {
             LOGIN_R=$(panel_api "POST" "http://$API/api/auth/login" "" \
                 "{\"username\":\"$SUPERADMIN_USER\",\"password\":\"$SUPERADMIN_PASS\"}")
             TOKEN=$(echo "$LOGIN_R" | jq -r '.response.accessToken // empty' 2>/dev/null)
-            [ -z "$TOKEN" ] && err "Ошибка входа существующим суперадмином: $LOGIN_R"
+            [ -z "$TOKEN" ] && die "Ошибка входа существующим суперадмином: $LOGIN_R"
             ok "Вход выполнен: $SUPERADMIN_USER"
         else
-            err "Ошибка регистрации: $REG"
+            die "Ошибка регистрации: $REG"
         fi
     else
         ok "Суперадмин: $SUPERADMIN_USER"
@@ -277,12 +277,12 @@ panel_setup_api() {
     local KEYS_R PRIV_KEY
     KEYS_R=$(panel_api "GET" "http://$API/api/system/tools/x25519/generate" "$TOKEN")
     PRIV_KEY=$(echo "$KEYS_R" | jq -r '.response.keypairs[0].privateKey // empty' 2>/dev/null)
-    [ -z "$PRIV_KEY" ] && err "Ошибка генерации ключей"
+    [ -z "$PRIV_KEY" ] && die "Ошибка генерации ключей"
 
     local PUB_R PUB_KEY
     PUB_R=$(panel_api "GET" "http://$API/api/keygen" "$TOKEN")
     PUB_KEY=$(echo "$PUB_R" | jq -r '.response.secretKey // empty' 2>/dev/null)
-    [ -z "$PUB_KEY" ] && err "Ошибка получения SECRET_KEY ноды"
+    [ -z "$PUB_KEY" ] && die "Ошибка получения SECRET_KEY ноды"
     sed -i "s|SECRET_KEY=\"PUBLIC KEY FROM REMNAWAVE-PANEL\"|SECRET_KEY=\"$PUB_KEY\"|g" \
         /opt/remnawave/docker-compose.yml
     ok "Ключи Reality готовы"
@@ -349,7 +349,7 @@ panel_setup_api() {
         "$(panel_core_reality_accept_proxy_protocol)" \
         "$XHTTP_ENABLE" \
         "$(panel_core_reality_listen_addr)")
-    [ -z "$INBOUNDS_JSON" ] && err "Ошибка генерации Xray inbounds JSON (panel_xray_render_inbounds)"
+    [ -z "$INBOUNDS_JSON" ] && die "Ошибка генерации Xray inbounds JSON (panel_xray_render_inbounds)"
 
     # Contract 13 (lookup-before-create, not always-create): reuse an
     # already-existing "StealConfig" profile by name if one is already
@@ -406,7 +406,7 @@ panel_setup_api() {
         CFG_UUID=$(echo "$PROFILE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
         IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="Steal") | .uuid' 2>/dev/null | head -1)
         [ "$XHTTP_ENABLE" = "1" ] && XHTTP_IBD_UUID=$(echo "$PROFILE_R" | jq -r '.response.inbounds[]? | select(.tag=="StealXHTTP") | .uuid' 2>/dev/null | head -1)
-        [ -z "$CFG_UUID" ] && err "Ошибка создания конфиг-профиля"
+        [ -z "$CFG_UUID" ] && die "Ошибка создания конфиг-профиля"
         ok "Конфиг-профиль создан"
     fi
 
