@@ -106,6 +106,69 @@ run_host_block() {
     ) 2>&1
 }
 
+# Split-stream variant of the two harnesses above, needed for sections 6,
+# 11 and 12 below. run_node_block/run_host_block deliberately merge
+# stdout+stderr with `) 2>&1` so sections 2-5/7-10 can grep either
+# stream for the ok()/warn() message text without caring which one it
+# landed on -- but that same merge makes it impossible to assert
+# anything about stdout *in isolation* (section 12) or to capture a
+# create-failure warn() into a variable at all (sections 6/11 originally
+# wrote `$( ... ) 2>&1` with the redirect OUTSIDE the command
+# substitution, which redirects the assignment's own -- empty --
+# stderr, not the subshell's; ok()/warn() write to fd2 per
+# lib/ui/output.sh, so that text never reached the captured variable).
+# This variant leaves fd1/fd2 unmerged: the caller decides via its own
+# `2>...` how to route each. Executed inside a real function (not a bare
+# `$( ... )` at file scope) so `local` inside the eval'd production
+# block works without the "local: can only be used in a function"
+# builtin error the original bug also produced incidentally.
+run_node_block_split() {
+    # $1 = GET response, $2 = "1" to force every POST call to fail
+    (
+        source lib/ui/output.sh
+        if [ "${2:-}" = "1" ]; then
+            panel_api() { [ "$1" = "GET" ] && { echo "$GET_RESPONSE"; return 0; }; return 1; }
+        else
+            panel_api() {
+                local method="$1" url="$2"
+                if [ "$method" = "GET" ]; then
+                    echo "$GET_RESPONSE"
+                elif [ "$method" = "POST" ]; then
+                    echo "POST:$url" >> /tmp/_c13_post_log
+                    echo '{"response":{"uuid":"new-node-uuid"}}'
+                fi
+            }
+        fi
+        GET_RESPONSE="$1"
+        API="127.0.0.1:3000"; TOKEN="tok"
+        NODE_ADDR="1.2.3.4"; CFG_UUID="cfg-uuid"; ACTIVE_INBOUNDS_JSON='["ibd-uuid"]'
+        eval "$NODE_BLOCK"
+    )
+}
+
+run_host_block_split() {
+    (
+        source lib/ui/output.sh
+        if [ "${2:-}" = "1" ]; then
+            panel_api() { [ "$1" = "GET" ] && { echo "$GET_RESPONSE"; return 0; }; return 1; }
+        else
+            panel_api() {
+                local method="$1" url="$2"
+                if [ "$method" = "GET" ]; then
+                    echo "$GET_RESPONSE"
+                elif [ "$method" = "POST" ]; then
+                    echo "POST:$url" >> /tmp/_c13_post_log
+                    echo '{"response":{"uuid":"new-host-uuid"}}'
+                fi
+            }
+        fi
+        GET_RESPONSE="$1"
+        API="127.0.0.1:3000"; TOKEN="tok"
+        CFG_UUID="cfg-uuid"; IBD_UUID="ibd-uuid"; SELFSTEAL_DOMAIN="n.example.com"
+        eval "$HOST_BLOCK"
+    )
+}
+
 echo ""
 echo "== 2. Node: missing -> lookup says absent -> POST happens =="
 rm -f /tmp/_c13_post_log
@@ -147,22 +210,13 @@ assert "Node lookup failure: falls through to create (matches this file's establ
 
 echo ""
 echo "== 6. Node: create failure is preserved as failure (warn, not ok; does not abort the block) =="
-CREATE_FAIL_OUT=$(
-    source lib/ui/output.sh
-    panel_api() {
-        local method="$1"
-        [ "$method" = "GET" ] && { echo '{"response":[]}'; return 0; }
-        return 1
-    }
-    API="127.0.0.1:3000"; TOKEN="tok"
-    NODE_ADDR="1.2.3.4"; CFG_UUID="cfg-uuid"; ACTIVE_INBOUNDS_JSON='["ibd-uuid"]'
-    eval "$NODE_BLOCK"
-    echo "REACHED_END"
-) 2>&1
+NODE_STDERR_FILE=$(mktemp)
+CREATE_FAIL_STDOUT=$(run_node_block_split '{"response":[]}' 1 2>"$NODE_STDERR_FILE")
 assert "Node create failure: warn shown, not ok" \
-    "$(grep -c 'Ошибка создания ноды' <<<"$CREATE_FAIL_OUT")" "1"
-assert "Node create failure: block completes (non-fatal, matches existing && / || convention)" \
-    "$(grep -c 'REACHED_END' <<<"$CREATE_FAIL_OUT")" "1"
+    "$(grep -c 'Ошибка создания ноды' "$NODE_STDERR_FILE")" "1"
+assert "Node create failure: stdout stays clean even on the failure path" \
+    "$CREATE_FAIL_STDOUT" ""
+rm -f "$NODE_STDERR_FILE"
 
 echo ""
 echo "== 7. Vision-Host: missing -> lookup says absent -> POST happens =="
@@ -190,42 +244,67 @@ assert "Vision-Host lookup correctly ignores a non-matching inbound -- still cre
     "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_c13_post_log 2>/dev/null || echo 0)" "1"
 
 echo ""
-echo "== 10. Vision-Host: response-shape fallback (.response as flat array, like the XHTTP Host neighbor already handles) =="
+echo "== 10. Vision-Host: response-shape fallback (.response as a flat array) =="
+# NOTE: the XHTTP Host neighbor this was originally modeled after uses
+# the same `(.response.hosts // .response // [])` idiom, but jq's `//`
+# does not rescue a hard type error -- `.response.hosts` on an
+# already-array `.response` throws "Cannot index array with string
+# \"hosts\"" (confirmed directly with jq), which aborts the pipeline
+# before 2>/dev/null's suppression is anything but cosmetic, silently
+# producing "not found" and re-creating on every run for that shape.
+# This lookup was rewritten to branch on .response's type instead
+# (verified against both shapes directly with jq before the change).
+# The XHTTP Host neighbor itself is untouched -- out of scope for this
+# stage -- and still has the original, unverified-for-flat-array
+# pattern.
 rm -f /tmp/_c13_post_log
 OUT=$(run_host_block '{"response":[{"uuid":"existing-host-uuid","inbound":{"configProfileInboundUuid":"ibd-uuid"}}]}')
 assert "Vision-Host flat-array response shape also correctly detects existing" \
     "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_c13_post_log 2>/dev/null || echo 0)" "0"
 
 echo ""
-echo "== 11. Vision-Host: create failure is preserved as failure (warn, not ok; does not abort the block) =="
-CREATE_FAIL_OUT=$(
-    source lib/ui/output.sh
-    panel_api() {
-        local method="$1"
-        [ "$method" = "GET" ] && { echo '{"response":{"hosts":[]}}'; return 0; }
-        return 1
-    }
-    API="127.0.0.1:3000"; TOKEN="tok"
-    CFG_UUID="cfg-uuid"; IBD_UUID="ibd-uuid"; SELFSTEAL_DOMAIN="n.example.com"
-    eval "$HOST_BLOCK"
-    echo "REACHED_END"
-) 2>&1
-assert "Vision-Host create failure: warn shown, not ok" \
-    "$(grep -c 'Ошибка создания хоста' <<<"$CREATE_FAIL_OUT")" "1"
-assert "Vision-Host create failure: block completes (non-fatal)" \
-    "$(grep -c 'REACHED_END' <<<"$CREATE_FAIL_OUT")" "1"
+echo "== 11. Vision-Host: lookup failure (malformed GET response) -- preserves this file's established behavior =="
+# Parity with section 5 (Node lookup failure): this case existed for
+# Node but was missing for Vision-Host. Same established, non-strict
+# convention -- a malformed response produces empty jq output (silenced
+# by 2>/dev/null) and falls through to create, same as a genuinely
+# empty/no-match list. Not a new behavior; just closing a coverage gap.
+rm -f /tmp/_c13_post_log
+OUT=$(run_host_block 'not-json-at-all{{{')
+assert "Vision-Host lookup failure: falls through to create (matches established, non-strict convention)" \
+    "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_c13_post_log 2>/dev/null || echo 0)" "1"
 
 echo ""
-echo "== 12. stdout/stderr contract: neither block writes to stdout (ok/warn go to stderr; POST/GET response bodies never echoed to stdout) =="
-STDOUT_ONLY=$(run_node_block '{"response":[]}' 2>/dev/null)
+echo "== 12. Vision-Host: create failure is preserved as failure (warn, not ok; does not abort the block) =="
+HOST_STDERR_FILE=$(mktemp)
+CREATE_FAIL_STDOUT=$(run_host_block_split '{"response":{"hosts":[]}}' 1 2>"$HOST_STDERR_FILE")
+assert "Vision-Host create failure: warn shown, not ok" \
+    "$(grep -c 'Ошибка создания хоста' "$HOST_STDERR_FILE")" "1"
+assert "Vision-Host create failure: stdout stays clean even on the failure path" \
+    "$CREATE_FAIL_STDOUT" ""
+rm -f "$HOST_STDERR_FILE"
+
+echo ""
+echo "== 13. stdout/stderr contract: neither block writes to stdout (ok/warn go to stderr; POST/GET response bodies never echoed to stdout) =="
+# Deliberately uses the split-stream harness, not run_node_block/
+# run_host_block -- those two already merge stdout+stderr internally
+# (`) 2>&1` inside their own body) for sections 2-5/7-10's convenience,
+# which makes them structurally unable to prove "nothing landed on
+# stdout": by the time the caller sees the output, ok()/warn()'s stderr
+# text has already been folded into what looks like stdout.
+STDOUT_ONLY=$(run_node_block_split '{"response":[]}' 2>/dev/null)
 assert "Node block: stdout is empty on the create path (all UI on stderr)" "$STDOUT_ONLY" ""
-STDOUT_ONLY=$(run_host_block '{"response":{"hosts":[]}}' 2>/dev/null)
+STDOUT_ONLY=$(run_host_block_split '{"response":{"hosts":[]}}' 2>/dev/null)
 assert "Vision-Host block: stdout is empty on the create path (all UI on stderr)" "$STDOUT_ONLY" ""
+STDOUT_ONLY=$(run_node_block_split '{"response":[{"uuid":"x","name":"Steal"}]}' 2>/dev/null)
+assert "Node block: stdout is empty on the reuse path too" "$STDOUT_ONLY" ""
+STDOUT_ONLY=$(run_host_block_split '{"response":{"hosts":[{"uuid":"x","inbound":{"configProfileInboundUuid":"ibd-uuid"}}]}}' 2>/dev/null)
+assert "Vision-Host block: stdout is empty on the reuse path too" "$STDOUT_ONLY" ""
 
 rm -f /tmp/_c13_post_log
 
 echo ""
-echo "== 13. call-site precondition: panel_setup_api() still has exactly one production call site, unchanged =="
+echo "== 14. call-site precondition: panel_setup_api() still has exactly one production call site, unchanged =="
 assert "panel_setup_api() single production call site preserved" \
     "$(grep -rn 'panel_setup_api "\$SUPERADMIN_USER"' lib/panel/*.sh lib/panel/*/*.sh 2>/dev/null | grep -c 'lib/panel/install.sh')" "1"
 
