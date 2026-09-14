@@ -44,8 +44,8 @@ panel_install_template() {
     cd /opt/ || return 1
     rm -f main.zip
     rm -rf simple-web-templates-main sni-templates-main nothing-sni-main
-    wget -q --timeout=30 "$selected_url" -O main.zip || { die "Ошибка загрузки"; return 1; }
-    unzip -o main.zip &>/dev/null || { die "Ошибка распаковки"; return 1; }
+    wget -q --timeout=30 "$selected_url" -O main.zip || { die "Ошибка загрузки"; }
+    unzip -o main.zip &>/dev/null || { die "Ошибка распаковки"; }
     rm -f main.zip
     local dir template
     if [[ "$selected_url" == *"eGamesAPI"* ]]; then
