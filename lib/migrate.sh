@@ -1,33 +1,20 @@
 # ████████████████████  MIGRATE SECTION  ███████████████████████████
-# panel_migrate() — перенос Panel через migrate_menu
-# Вызывает do_migrate из panel.sh если доступна,
-# иначе подгружает panel.sh из того же каталога
+# panel_migrate() — перенос только Panel (см. migrate_all() для полного
+# стека Panel+MTProxy+Hysteria2). Раньше эта функция искала do_migrate()
+# через `declare -f` (наследие архитектуры, где ожидалось, что do_migrate
+# станет обычной sourced-функцией) — это никогда не могло сработать:
+# do_migrate существует только как текст heredoc внутри генерируемого
+# /usr/local/bin/remnawave_panel (lib/panel/mgmt_script.sh), а не как
+# функция в этом процессе. Фоллбэк на `panel_menu migrate` тоже был
+# мёртвым на практике: panel_menu() не принимает аргументов вообще, так
+# что "migrate" молча игнорировался, и оператор просто попадал в общее
+# меню Panel. Вместо этого вызываем тот же рабочий Panel-transfer пайплайн,
+# которым уже пользуется migrate_all() для своей Panel-части.
 panel_migrate() {
-    if declare -f do_migrate >/dev/null 2>&1; then
-        do_migrate
-        return $?
-    fi
-    # Пробуем подгрузить panel.sh
-    local _panel_sh
-    _panel_sh="$(dirname "${BASH_SOURCE[0]}")/panel.sh"
-    if [ -f "$_panel_sh" ]; then
-        # shellcheck source=/dev/null
-        source "$_panel_sh"
-        if declare -f do_migrate >/dev/null 2>&1; then
-            do_migrate
-            return $?
-        fi
-
-        # Совместимость со старыми/кастомными версиями panel.sh,
-        # где отдельной do_migrate может не быть.
-        if declare -f panel_menu >/dev/null 2>&1; then
-            panel_menu migrate
-            return $?
-        fi
-
-        die "В panel.sh не найдена функция do_migrate/panel_menu."
-    fi
-    die "Модуль panel.sh не найден. Запустите через главное меню."
+    header "📦 Перенос Panel на другой сервер"
+    migrate_prepare_target || return 1
+    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+    migrate_transfer_panel
 }
 
 
