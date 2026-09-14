@@ -233,8 +233,8 @@ _hy_sub_injector_build() {
     info "Скачиваю исходники sub-injector..."
     local raw="https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector"
     mkdir -p "${src_dir}/src"
-    curl -fsSL --max-time 30 "${raw}/Cargo.toml" -o "${src_dir}/Cargo.toml" 2>/dev/null ||         { die "Не удалось скачать Cargo.toml"; rm -rf "$src_dir"; return 1; }
-    curl -fsSL --max-time 30 "${raw}/src/main.rs" -o "${src_dir}/src/main.rs" 2>/dev/null ||         { die "Не удалось скачать main.rs"; rm -rf "$src_dir"; return 1; }
+    curl -fsSL --max-time 30 "${raw}/Cargo.toml" -o "${src_dir}/Cargo.toml" 2>/dev/null ||         { die "Не удалось скачать Cargo.toml"; rm -rf "$src_dir"; }
+    curl -fsSL --max-time 30 "${raw}/src/main.rs" -o "${src_dir}/src/main.rs" 2>/dev/null ||         { die "Не удалось скачать main.rs"; rm -rf "$src_dir"; }
 
     info "Сборка (может занять 2-5 минут)..."
     local old_pwd; old_pwd="$(pwd)"
@@ -247,7 +247,6 @@ _hy_sub_injector_build() {
     else
         rm -rf "$src_dir"
         die "Сборка sub-injector завершилась с ошибкой"
-        return 1
     fi
 }
 
