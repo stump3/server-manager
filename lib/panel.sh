@@ -5,14 +5,18 @@
 # Этот файл — loader. Реализация панели разбита на подмодули в
 # lib/panel/{core,cert,cli,install,compose,compose/common,compose/colocated,compose/remote,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,xray/templates/render,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
 #
-# Поддерживаются оба способа загрузки:
-#   1. _sm_source_file / _load_module panel  (обычный путь из server-manager.sh,
-#      SCRIPT_DIR уже выставлен, source идёт по абсолютному пути)
-#   2. прямой `source lib/panel.sh` из lib/migrate.sh (относительный путь,
-#      SCRIPT_DIR может быть не выставлен) — см. panel_migrate() в migrate.sh
+# Обычный путь загрузки: _sm_source_file / _load_module panel из
+# server-manager.sh (SCRIPT_DIR уже выставлен, source идёт по
+# абсолютному пути). Путь к подмодулям вычисляется от BASH_SOURCE[0]
+# этого файла, а не от SCRIPT_DIR.
 #
-# В обоих случаях путь к подмодулям вычисляется от BASH_SOURCE[0] этого
-# файла, а не от SCRIPT_DIR, чтобы loader работал одинаково в обоих случаях.
+# (До A-2 здесь также поддерживался прямой `source lib/panel.sh` из
+# lib/migrate.sh: panel_migrate() пыталась подгрузить panel.sh сама,
+# в расчёте на do_migrate() как обычную sourced-функцию. Этот путь
+# убран вместе с той логикой в panel_migrate() — do_migrate()
+# существует только как текст heredoc в генерируемом
+# /usr/local/bin/remnawave_panel (lib/panel/mgmt_script.sh), а не как
+# функция, которую могло бы найти это подключение.)
 
 _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
 
