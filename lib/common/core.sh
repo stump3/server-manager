@@ -82,7 +82,7 @@ ask() {
     # Переменная доступна в вызывающем контексте через printf -v.
 }
 
-check_root()    { [ "$EUID" -ne 0 ] && err "Запустите от root: sudo bash $0" || true; }
+check_root()    { [ "$EUID" -ne 0 ] && die "Запустите от root: sudo bash $0" || true; }
 need_root()     { [ "$(id -u)" -eq 0 ] || die "Эта операция требует прав root."; }
 
 spinner() {
