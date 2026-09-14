@@ -97,7 +97,6 @@ _hy_integration_install() {
         if ! curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh" \
                 -o "$install_script" 2>/dev/null; then
             die "Не удалось скачать hy-sub-install.sh"
-            return 1
         fi
         chmod +x "$install_script"
         cleanup_tmp=true
@@ -227,7 +226,7 @@ _hy_sub_injector_build() {
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path 2>/dev/null
         source "$HOME/.cargo/env" 2>/dev/null || true
     fi
-    command -v cargo &>/dev/null || { die "Не удалось установить Rust/cargo"; return 1; }
+    command -v cargo &>/dev/null || { die "Не удалось установить Rust/cargo"; }
 
     # Скачиваем исходники
     local src_dir; src_dir=$(mktemp -d /tmp/sub-injector-src.XXXXXX)
