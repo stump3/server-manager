@@ -47,7 +47,21 @@ print(ip_days, traffic_days)
         return 1
     fi
 
-    TELEMT_TRAFFIC_DB="$db" TELEMT_IP_RETENTION_DAYS="$new_ip_days" TELEMT_TRAFFIC_RETENTION_DAYS="$new_traffic_days" python3 -c "
+    # F6 fix: same exclusive-lock serialization as telemt_fetch_links()
+    # (api.sh) -- this function performs its own separate
+    # read-modify-write cycle against the identical file, so without a
+    # shared lock the two can still interleave across two concurrent
+    # server-manager.sh sessions (lost update, or a torn mid-write read).
+    # `return 1` is deliberately NOT issued from inside the subshell --
+    # a `return` there would only exit the subshell, not this function,
+    # silently losing the original error path. Instead the subshell's
+    # own exit status (from flock's `|| exit 1`, or from python3's own
+    # exit code) is captured via $? right after it, and the original
+    # warn+return 1 issued from here, in the real function scope.
+    mkdir -p "$(dirname "$db")" 2>/dev/null
+    (
+        flock -x -w 15 201 || exit 1
+        TELEMT_TRAFFIC_DB="$db" TELEMT_IP_RETENTION_DAYS="$new_ip_days" TELEMT_TRAFFIC_RETENTION_DAYS="$new_traffic_days" python3 -c "
 import os, json
 from datetime import datetime, timezone, timedelta
 db=os.environ.get('TELEMT_TRAFFIC_DB','')
@@ -108,7 +122,12 @@ if db:
     os.makedirs(os.path.dirname(db), exist_ok=True)
     with open(db,'w',encoding='utf-8') as f:
         json.dump(state,f,ensure_ascii=False,indent=2)
-" 2>/dev/null || { warn "Не удалось сохранить настройки"; return 1; }
+" 2>/dev/null
+    ) 201>"${db}.lock"
+    if [ $? -ne 0 ]; then
+        warn "Не удалось сохранить настройки"
+        return 1
+    fi
     ok "Сохранено: IP $new_ip_days дн, трафик $new_traffic_days дн."
 }
 
