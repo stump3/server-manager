@@ -78,13 +78,13 @@ panel_cli_select_webserver() {
     if ! core_deployment_web_server_ok "$MODE" "$WEB_SERVER"; then
         case "$MODE" in
             F)
-                err "Режим F сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy для F требует отдельной сборки (caddy-l4, не входит в official caddy:2.11 image) — не реализовано в этом проходе."
+                die "Режим F сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy для F требует отдельной сборки (caddy-l4, не входит в official caddy:2.11 image) — не реализовано в этом проходе."
                 ;;
             J)
-                err "Режим J сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant J (Vision + XHTTP)."
+                die "Режим J сейчас поддерживается только с Nginx (WEB_SERVER=1). Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant J (Vision + XHTTP)."
                 ;;
             *)
-                err "Режим $MODE сейчас поддерживается только с Nginx (WEB_SERVER=1) — Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant $MODE."
+                die "Режим $MODE сейчас поддерживается только с Nginx (WEB_SERVER=1) — Caddy не поддерживает nginx stream{}-маршрутизацию, необходимую для Variant $MODE."
                 ;;
         esac
     fi
