@@ -25,10 +25,10 @@ panel_migrate() {
             return $?
         fi
 
-        err "В panel.sh не найдена функция do_migrate/panel_menu."
+        die "В panel.sh не найдена функция do_migrate/panel_menu."
         return 1
     fi
-    err "Модуль panel.sh не найден. Запустите через главное меню."
+    die "Модуль panel.sh не найден. Запустите через главное меню."
     return 1
 }
 
