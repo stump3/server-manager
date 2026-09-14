@@ -216,157 +216,34 @@ do_close_port() {
     _ok "Порт 8443 закрыт"
 }
 do_migrate() {
-    header "📦 Перенос Panel на другой сервер"
-
-    # ── Проверки ───────────────────────────────────────────────────
-    [ -d /opt/remnawave ] || { die "Панель не установлена"; return 1; }
-    [ -f /opt/remnawave/docker-compose.yml ] || { die "docker-compose.yml не найден"; return 1; }
-    command -v sshpass &>/dev/null || apt-get install -y -q sshpass 2>/dev/null
-
-    # ── Данные нового сервера ──────────────────────────────────────
-    ask_ssh_target
-    init_ssh_helpers panel
-    check_ssh_connection || return 1
-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
-
-    # ── Проверка свободного места ──────────────────────────────────
-    _info "Проверяем свободное место на новом сервере..."
-    local remote_free local_used
-    remote_free=$(RUN "df -BM /opt --output=avail | tail -1 | tr -d 'M'" 2>/dev/null || echo "0")
-    local_used=$(du -sm /opt/remnawave 2>/dev/null | awk '{print $1}' || echo "0")
-    if [ "$remote_free" -lt "$((local_used * 2))" ] 2>/dev/null; then
-        _warn "Мало места на новом сервере: ${remote_free}MB свободно, нужно ~$((local_used * 2))MB"
-        read -rp "  Продолжить всё равно? (y/n): " fc < /dev/tty
-        [[ "$fc" =~ ^[yY]$ ]] || return 1
+    # A-2 fix: this used to be a standalone reimplementation of Panel
+    # migration, but it called six project-specific SSH helpers
+    # (ask_ssh_target/init_ssh_helpers/check_ssh_connection/
+    # remote_install_deps/RUN/PUT) that were never embedded here -- they
+    # only exist in lib/common/ssh.sh, sourced by the normal
+    # server-manager.sh runtime, not by this standalone generated
+    # script (see this file's own header comment). Embedding a second
+    # copy of them here would fork F1-sensitive SSH timeout/signal/
+    # argv-security logic (init_ssh_helpers' RUN/PUT) into a
+    # separately-maintained duplicate -- not done. Instead, delegate to
+    # the already-working migrate_prepare_target()+migrate_transfer_panel()
+    # pipeline (lib/migrate.sh, via panel_migrate()) by re-running
+    # server-manager.sh itself, using the same source-tree convention
+    # migrate_copy_script() already relies on ("${SCRIPT_DIR:-/root/server-manager}"),
+    # bootstrapping it via the same curl fallback migrate_copy_script()
+    # already uses if it isn't present.
+    _info "📦 Перенос Panel на другой сервер"
+    local sm_src="${SCRIPT_DIR:-/root/server-manager}"
+    if [ -f "${sm_src}/server-manager.sh" ]; then
+        exec bash "${sm_src}/server-manager.sh" migrate
     fi
-
-    # ── Установка зависимостей на новом сервере ────────────────────
-    remote_install_deps panel "$(_detect_ws)"
-
-    # ── Дамп БД ────────────────────────────────────────────────────
-    _info "Создаём дамп базы данных..."
-    local dump="/tmp/panel_migrate_$(date +%Y%m%d_%H%M%S).sql.gz"
-    cd /opt/remnawave
-    docker compose exec -T remnawave-db pg_dumpall -c -U postgres 2>/dev/null | gzip -9 > "$dump"
-
-    # Проверяем размер дампа
-    local dump_size; dump_size=$(stat -c%s "$dump" 2>/dev/null || echo "0")
-    if [ "$dump_size" -lt 1000 ]; then
-        die "Дамп БД подозрительно мал (${dump_size} байт) — возможна ошибка"
-        rm -f "$dump"
+    _warn "server-manager не найден в ${sm_src} — устанавливаем..."
+    if curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash >/dev/null 2>&1 \
+            && [ -f "${sm_src}/server-manager.sh" ]; then
+        _ok "server-manager установлен. Запустите ещё раз: remnawave_panel migrate"
+    else
+        _warn "Не удалось установить server-manager. Установите вручную и повторите: curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash"
         return 1
-    fi
-    _ok "Дамп БД создан ($(du -sh "$dump" | cut -f1))"
-
-    # ── Передача файлов ────────────────────────────────────────────
-    _info "Передаём файлы панели..."
-    local ws_cfg_src
-    [ -f /opt/remnawave/Caddyfile ] && ws_cfg_src=/opt/remnawave/Caddyfile || ws_cfg_src=/opt/remnawave/nginx.conf
-    PUT "$dump" \
-        /opt/remnawave/.env \
-        /opt/remnawave/docker-compose.yml \
-        "$ws_cfg_src" \
-        "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null \
-        && _ok "Файлы панели переданы" || { die "Ошибка передачи файлов панели"; return 1; }
-
-    # SSL сертификаты
-    _info "Передаём SSL сертификаты..."
-    if [ -d /etc/letsencrypt/live ] && [ -d /etc/letsencrypt/archive ]; then
-        PUT /etc/letsencrypt/live \
-            /etc/letsencrypt/archive \
-            /etc/letsencrypt/renewal \
-            "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null \
-            && _ok "SSL сертификаты переданы" || _warn "Ошибка передачи SSL — перевыпустите вручную"
-    else
-        _warn "SSL сертификаты не найдены в /etc/letsencrypt"
-    fi
-
-    # Hysteria сертификаты (если есть)
-    if [ -d /etc/ssl/certs/hysteria ]; then
-        _info "Передаём сертификаты Hysteria2..."
-        PUT /etc/ssl/certs/hysteria \
-            "${ruser}@${rip}:/etc/ssl/certs/" 2>/dev/null \
-            && _ok "Сертификаты Hysteria2 переданы" || _warn "Ошибка передачи сертификатов Hysteria2"
-    fi
-
-    # Selfsteal сайт
-    if [ -d /var/www/html ] && [ "$(ls -A /var/www/html 2>/dev/null)" ]; then
-        _info "Передаём selfsteal сайт..."
-        PUT /var/www/html/. "${ruser}@${rip}:/var/www/html/" 2>/dev/null \
-            && _ok "Selfsteal сайт передан" || _warn "Ошибка передачи сайта"
-    fi
-
-    _ok "Все файлы переданы"
-
-    # ── Запуск на новом сервере ────────────────────────────────────
-    _info "Запускаем стек на новом сервере..."
-    local dumpb; dumpb=$(basename "$dump")
-    RUN bash -s << RSTART
-set -e
-cd /opt/remnawave
-
-# Удаляем старый volume БД если есть
-docker volume rm remnawave-db-data 2>/dev/null || true
-
-# Запускаем только БД и Redis
-docker compose up -d remnawave-db remnawave-redis >/dev/null 2>&1
-echo "Ждём запуска БД..."
-_pw=0
-until docker compose exec -T remnawave-db pg_isready -U postgres -q 2>/dev/null; do
-    sleep 2; _pw=$((_pw+1))
-    [ "$_pw" -ge 30 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
-done
-
-# Восстанавливаем дамп
-echo "Восстанавливаем базу данных..."
-zcat /opt/remnawave/$dumpb | docker compose exec -T remnawave-db psql -U postgres postgres >/dev/null 2>&1 || true
-
-# Запускаем весь стек
-docker compose up -d >/dev/null 2>&1
-echo "Стек запущен"
-RSTART
-    _ok "Стек запущен на новом сервере"
-
-    # ── Копируем скрипты управления ────────────────────────────────
-    PUT /usr/local/bin/remnawave_panel \
-        "${ruser}@${rip}:/usr/local/bin/remnawave_panel" 2>/dev/null && \
-    RUN "chmod +x /usr/local/bin/remnawave_panel" 2>/dev/null && \
-    RUN "grep -q 'alias rp=' /etc/bash.bashrc || echo \"alias rp='remnawave_panel'\" >> /etc/bash.bashrc" 2>/dev/null
-    _ok "Скрипт управления установлен"
-
-    # ── Копируем репозиторий server-manager ───────────────────────
-    local _sm_dir="${SCRIPT_DIR:-$(dirname "$(realpath "$0" 2>/dev/null || echo "$0")")}"
-    if [ -d "$_sm_dir" ] && [ -f "$_sm_dir/server-manager.sh" ]; then
-        RUN "mkdir -p /root/server-manager" 2>/dev/null || true
-        PUT "$_sm_dir/." "${ruser}@${rip}:/root/server-manager/" 2>/dev/null || true
-        RUN "chmod +x /root/server-manager/server-manager.sh &&             ln -sf /root/server-manager/server-manager.sh /usr/local/bin/server-manager" 2>/dev/null || true
-        _ok "server-manager скопирован на новый сервер"
-    else
-        warn "Не удалось определить каталог server-manager — скопируйте вручную"
-    fi
-
-    # ── Очистка ────────────────────────────────────────────────────
-    rm -f "$dump"
-    RUN "rm -f /opt/remnawave/$dumpb" 2>/dev/null || true
-
-    # ── Итог ───────────────────────────────────────────────────────
-    echo ""
-    _ok "Перенос панели завершён!"
-    echo ""
-    echo -e "  ${WHITE}Следующие шаги:${NC}"
-    echo -e "  ${CYAN}1.${NC} Обновите DNS-записи на новый IP: ${CYAN}${rip}${NC}"
-    echo -e "  ${CYAN}2.${NC} После обновления DNS перевыпустите SSL:"
-    echo -e "     ${CYAN}ssh ${ruser}@${rip} remnawave_panel ssl${NC}"
-    echo -e "  ${CYAN}3.${NC} Проверьте работу панели"
-    echo -e "  ${CYAN}4.${NC} Остановите старый сервер когда всё ОК"
-    echo ""
-
-    read -rp "  Остановить панель на ЭТОМ сервере? (y/n): " stop_old < /dev/tty
-    if [[ "$stop_old" =~ ^[yY]$ ]]; then
-        cd /opt/remnawave && docker compose stop >/dev/null 2>&1
-        _ok "Панель на старом сервере остановлена"
-    else
-        _info "Панель на старом сервере продолжает работать"
     fi
 }
 show_menu() {
