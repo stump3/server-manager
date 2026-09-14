@@ -83,7 +83,7 @@ if not any(r.get('outboundTag') == 'warp-out' for r in rules):
 print(json.dumps(cfg))
 PY
 )
-    [ -z "$cfg_json" ] && { die "Ошибка обработки конфига"; return 1; }
+    [ -z "$cfg_json" ] && { die "Ошибка обработки конфига"; }
     local upd; upd=$(panel_api_request "PATCH" "/api/config-profiles" "$token" "{\"uuid\":\"$uuid\",\"config\":$cfg_json}")
     echo "$upd" | python3 -c 'import sys,json; d=json.load(sys.stdin); exit(0 if d.get("response") else 1)' 2>/dev/null \
         && ok "WARP добавлен в профиль!" || warn "Ошибка обновления: $upd"
@@ -114,7 +114,7 @@ cfg['routing']['rules'] = [r for r in rules if r.get('outboundTag') != 'warp-out
 print(json.dumps(cfg))
 PY
 )
-    [ -z "$cfg_json" ] && { die "Ошибка обработки конфига"; return 1; }
+    [ -z "$cfg_json" ] && { die "Ошибка обработки конфига"; }
     local upd; upd=$(panel_api_request "PATCH" "/api/config-profiles" "$token" "{\"uuid\":\"$uuid\",\"config\":$cfg_json}")
     echo "$upd" | python3 -c 'import sys,json; d=json.load(sys.stdin); exit(0 if d.get("response") else 1)' 2>/dev/null \
         && ok "WARP удалён из профиля!" || warn "Ошибка обновления: $upd"
