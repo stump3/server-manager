@@ -7,12 +7,11 @@
     if ! curl -fsSL --max-time 30 https://get.hy2.sh/ -o "$_hy_script" 2>/dev/null; then
         rm -f "$_hy_script"
         die "Не удалось скачать установщик Hysteria2"
-        return 1
     fi
-    [ -s "$_hy_script" ] || { rm -f "$_hy_script"; die "Установщик Hysteria2 пустой"; return 1; }
+    [ -s "$_hy_script" ] || { rm -f "$_hy_script"; die "Установщик Hysteria2 пустой"; }
     bash "$_hy_script" || _rc=$?
     rm -f "$_hy_script"
-    [ $_rc -ne 0 ] && { die "Ошибка установки Hysteria2"; return 1; }
+    [ $_rc -ne 0 ] && { die "Ошибка установки Hysteria2"; }
     return 0
 }
 
