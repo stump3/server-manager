@@ -6,13 +6,13 @@
     _hy_script=$(mktemp /tmp/hy2-install.XXXXXX.sh)
     if ! curl -fsSL --max-time 30 https://get.hy2.sh/ -o "$_hy_script" 2>/dev/null; then
         rm -f "$_hy_script"
-        err "Не удалось скачать установщик Hysteria2"
+        die "Не удалось скачать установщик Hysteria2"
         return 1
     fi
-    [ -s "$_hy_script" ] || { rm -f "$_hy_script"; err "Установщик Hysteria2 пустой"; return 1; }
+    [ -s "$_hy_script" ] || { rm -f "$_hy_script"; die "Установщик Hysteria2 пустой"; return 1; }
     bash "$_hy_script" || _rc=$?
     rm -f "$_hy_script"
-    [ $_rc -ne 0 ] && { err "Ошибка установки Hysteria2"; return 1; }
+    [ $_rc -ne 0 ] && { die "Ошибка установки Hysteria2"; return 1; }
     return 0
 }
 
@@ -95,7 +95,7 @@ hysteria_install() {
     local server_ip resolved_a resolved_aaaa resolved_a_cf resolved_a_google
     local _placeholder_re='(^|\.)(example|your|test|sample|local|localhost)\.(com|net|org|lan|local)$'
     if [[ "$domain" =~ $_placeholder_re ]]; then
-        err "Похоже на шаблонный домен: ${domain}"
+        die "Похоже на шаблонный домен: ${domain}"
         warn "Укажите реальный FQDN с рабочей DNS-записью (например vpn.your-real-domain.tld)."
         return 1
     fi
