@@ -227,6 +227,22 @@ run_and_signal() {
             # shellcheck source=/dev/null
             source "$EXTRACTED"
             _selfsteal_staging="$(mktemp -d)"
+            # Proven-necessary fix (throwaway diagnostic, not inferred):
+            # this driver's own comment above says it simulates
+            # "interrupted mid-deploy" -- i.e. after a successful PUT,
+            # by which point the real function has already set
+            # _node_remote_owned=1 (see install.sh's PUT-success branch,
+            # outside this awk-extracted prologue range). Without this
+            # assignment, _node_remote_owned stays at its extracted
+            # `local _node_remote_owned=""` initial value for the whole
+            # driver, so the remote-cleanup guard
+            # (`if [ -n "${_node_remote_owned:-}" ]`) correctly never
+            # fires -- that's not a production bug, it's this driver
+            # never reaching the state it claims to simulate. Confirmed
+            # by a throwaway A/B (ownership set vs unset) against this
+            # exact extracted code: cleanup fires correctly when set,
+            # correctly withheld when unset.
+            _node_remote_owned=1
             RUN "cd /opt/remnanode && docker compose up -d"
         }
         _driver
