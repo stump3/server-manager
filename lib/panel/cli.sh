@@ -46,7 +46,7 @@ panel_cli_collect_domains() {
     if [ "$PANEL_DOMAIN" = "$SUB_DOMAIN" ] || \
        [ "$PANEL_DOMAIN" = "$SELFSTEAL_DOMAIN" ] || \
        [ "$SUB_DOMAIN" = "$SELFSTEAL_DOMAIN" ]; then
-        err "Все три домена должны быть уникальными"
+        die "Все три домена должны быть уникальными"
     fi
 }
 
