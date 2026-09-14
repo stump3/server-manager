@@ -31,7 +31,7 @@ hysteria_migrate() {
     local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
 
     info "Проверка подключения..."
-    RUN echo ok >/dev/null 2>&1 || { err "Не удалось подключиться к ${rip}:${rport}"; return 1; }
+    RUN echo ok >/dev/null 2>&1 || { die "Не удалось подключиться к ${rip}:${rport}"; return 1; }
     ok "Подключение успешно"
 
     # Получаем домен из конфига
@@ -41,7 +41,7 @@ hysteria_migrate() {
 
     # 1. Установка Hysteria2 на новом сервере
     info "Установка Hysteria2 на новом сервере..."
-    RUN "curl -fsSL --max-time 30 https://get.hy2.sh/ -o /tmp/hy2-install.sh && bash /tmp/hy2-install.sh; rm -f /tmp/hy2-install.sh" || { err "Ошибка установки"; return 1; }
+    RUN "curl -fsSL --max-time 30 https://get.hy2.sh/ -o /tmp/hy2-install.sh && bash /tmp/hy2-install.sh; rm -f /tmp/hy2-install.sh" || { die "Ошибка установки"; return 1; }
     ok "Hysteria2 установлен"
 
     # 2. Копирование конфига
