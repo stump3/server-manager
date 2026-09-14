@@ -208,6 +208,16 @@ run_and_signal() {
     # returns the exit status. `set -euo pipefail` matches
     # server-manager.sh:13's real, whole-tool setting.
     local sig="$1"
+    # $2: "owned" (default) -- the driver reaches the exact point the real
+    # code sets _node_remote_owned=1 (mirrors install.sh's PUT-success
+    # branch) before the signal arrives, i.e. this invocation has genuinely
+    # written to remote /opt/remnanode. "unowned" -- the driver never sets
+    # it, i.e. the signal arrives somewhere between ask_ssh_target and the
+    # PUT that would set it (check_ssh_connection, remote_install_deps, the
+    # ufw RUN call, or the PUT itself failing/not-yet-completing): remote
+    # /opt/remnanode, if it exists at all on the target, may be a prior
+    # unrelated deployment this invocation must not destroy.
+    local owned="${2:-owned}"
     rm -rf /opt/remnanode
     : > "$RUN_CALL_LOG"
     : > "$WORKDIR/warn.log"
@@ -227,22 +237,28 @@ run_and_signal() {
             # shellcheck source=/dev/null
             source "$EXTRACTED"
             _selfsteal_staging="$(mktemp -d)"
-            # Proven-necessary fix (throwaway diagnostic, not inferred):
-            # this driver's own comment above says it simulates
-            # "interrupted mid-deploy" -- i.e. after a successful PUT,
-            # by which point the real function has already set
-            # _node_remote_owned=1 (see install.sh's PUT-success branch,
-            # outside this awk-extracted prologue range). Without this
-            # assignment, _node_remote_owned stays at its extracted
-            # `local _node_remote_owned=""` initial value for the whole
-            # driver, so the remote-cleanup guard
-            # (`if [ -n "${_node_remote_owned:-}" ]`) correctly never
-            # fires -- that's not a production bug, it's this driver
-            # never reaching the state it claims to simulate. Confirmed
-            # by a throwaway A/B (ownership set vs unset) against this
-            # exact extracted code: cleanup fires correctly when set,
-            # correctly withheld when unset.
-            _node_remote_owned=1
+            if [ "$owned" = "owned" ]; then
+                # Proven-necessary fix (throwaway diagnostic, not inferred):
+                # this driver's own comment above says it simulates
+                # "interrupted mid-deploy" -- i.e. after a successful PUT,
+                # by which point the real function has already set
+                # _node_remote_owned=1 (see install.sh's PUT-success branch,
+                # outside this awk-extracted prologue range). Without this
+                # assignment, _node_remote_owned stays at its extracted
+                # `local _node_remote_owned=""` initial value for the whole
+                # driver, so the remote-cleanup guard
+                # (`if [ -n "${_node_remote_owned:-}" ]`) correctly never
+                # fires -- that's not a production bug, it's this driver
+                # never reaching the state it claims to simulate. Confirmed
+                # by a throwaway A/B (ownership set vs unset) against this
+                # exact extracted code: cleanup fires correctly when set,
+                # correctly withheld when unset.
+                _node_remote_owned=1
+            fi
+            # "unowned" leaves _node_remote_owned="" (its extracted `local`
+            # default) untouched and still reaches this same in-flight-RUN
+            # point, without ever having acquired ownership -- the
+            # symmetric counterpart to the "owned" branch above.
             RUN "cd /opt/remnanode && docker compose up -d"
         }
         _driver
@@ -276,6 +292,24 @@ assert "SIGTERM: process exits via signal death (128+15=143), not success" "$RC"
 assert "SIGTERM: local /opt/remnanode removed" "$([ -d /opt/remnanode ] && echo present || echo removed)" "removed"
 assert "SIGTERM: remote best-effort cleanup (docker compose down) was attempted" \
     "$(grep -c "docker compose down" "$RUN_CALL_LOG")" "1"
+
+echo "=== SIGINT before ownership acquired: remote rollback must NOT fire ==="
+# Coverage gap identified in the F1 audit: every case above exercises
+# _node_remote_owned=1 (ownership genuinely acquired). None of them prove
+# the symmetric, equally load-bearing guarantee -- that when THIS
+# invocation never wrote to remote /opt/remnanode, its signal handler
+# does not issue a destructive "docker compose down" against a target
+# that, per this function's own docstring, may be hosting a prior,
+# unrelated deployment. Local cleanup is unconditional in the real code
+# (_node_install_cleanup is not gated on ownership) and is expected to
+# still fire here -- only the remote side is expected to be withheld.
+RC=$(run_and_signal INT unowned)
+assert "SIGINT (unowned): process still exits via signal death (130)" "$RC" "130"
+assert "SIGINT (unowned): local /opt/remnanode still removed (local cleanup is unconditional)" \
+    "$([ -d /opt/remnanode ] && echo present || echo removed)" "removed"
+assert "SIGINT (unowned): remote best-effort cleanup (docker compose down) was NOT attempted" \
+    "$(grep -c "docker compose down" "$RUN_CALL_LOG")" "0"
+assert "SIGINT (unowned): interruption message still logged" "$(grep -c "Прервано" "$WORKDIR/warn.log")" "1"
 
 echo "=== Cleanup is idempotent / safe when nothing exists yet, and safe called twice ==="
 rm -rf /opt/remnanode
