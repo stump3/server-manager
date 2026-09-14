@@ -147,4 +147,4 @@ _load_module migrate
 _load_module cli/router
 
 check_root
-cli_run
+cli_run "$@"
