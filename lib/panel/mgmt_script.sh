@@ -219,8 +219,8 @@ do_migrate() {
     header "📦 Перенос Panel на другой сервер"
 
     # ── Проверки ───────────────────────────────────────────────────
-    [ -d /opt/remnawave ] || { err "Панель не установлена"; return 1; }
-    [ -f /opt/remnawave/docker-compose.yml ] || { err "docker-compose.yml не найден"; return 1; }
+    [ -d /opt/remnawave ] || { die "Панель не установлена"; return 1; }
+    [ -f /opt/remnawave/docker-compose.yml ] || { die "docker-compose.yml не найден"; return 1; }
     command -v sshpass &>/dev/null || apt-get install -y -q sshpass 2>/dev/null
 
     # ── Данные нового сервера ──────────────────────────────────────
@@ -252,7 +252,7 @@ do_migrate() {
     # Проверяем размер дампа
     local dump_size; dump_size=$(stat -c%s "$dump" 2>/dev/null || echo "0")
     if [ "$dump_size" -lt 1000 ]; then
-        err "Дамп БД подозрительно мал (${dump_size} байт) — возможна ошибка"
+        die "Дамп БД подозрительно мал (${dump_size} байт) — возможна ошибка"
         rm -f "$dump"
         return 1
     fi
@@ -267,7 +267,7 @@ do_migrate() {
         /opt/remnawave/docker-compose.yml \
         "$ws_cfg_src" \
         "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null \
-        && _ok "Файлы панели переданы" || { err "Ошибка передачи файлов панели"; return 1; }
+        && _ok "Файлы панели переданы" || { die "Ошибка передачи файлов панели"; return 1; }
 
     # SSL сертификаты
     _info "Передаём SSL сертификаты..."
