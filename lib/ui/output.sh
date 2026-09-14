@@ -12,15 +12,15 @@ NC='\033[0m'; RESET="$NC"
 
 # Contract 1 (docs/CONTRACTS.md): stdout carries machine-readable return
 # data only; stderr carries all UI text, diagnostics, warnings, and
-# errors. All of ok/info/warn/err/step/detail write to stderr below.
-# err() and die() are kept as two separate fatal helpers (exit 1 each,
-# both now to stderr) — no consolidation/rename here; see
-# docs/ARCHITECTURE.md §8 (err() vs die() — which fatal helper
-# survives) for that still-open, separate question.
+# errors. All of ok/info/warn/die/step/detail write to stderr below.
+# F4 (docs/ARCHITECTURE.md §8): err() vs die() — which fatal helper
+# survives — resolved as die(); err() has been removed from this file
+# and every former call site converted to die() (message text
+# unchanged). die() is now the sole canonical fatal helper (exit 1,
+# stderr).
 ok()      { echo -e "${GREEN}  ✓ $*${NC}" >&2; }
 info()    { echo -e "${BLUE}  · $*${NC}" >&2; }
 warn()    { echo -e "${YELLOW}  ⚠  $*${NC}" >&2; }
-err()     { echo -e "\n${RED}  ✗  $*${NC}\n" >&2; exit 1; }
 die()     { echo -e "${RED}  ✗  $*${NC}" >&2; exit 1; }
 detail()  { echo -e "${GRAY}    $*${NC}" >&2; }
 
