@@ -42,8 +42,8 @@ panel_reality_dest_val() {
 panel_reality_inbound_port() {
     local MODE="$1"
     case "$MODE" in
-        F) echo "${F_XRAY_VISION_PORT:-8443}" ;;
-        J) echo "${J_XRAY_VISION_PORT:-18443}" ;;
+        F) core_port_allocation_internal "F" "vision" ;;
+        J) core_port_allocation_internal "J" "vision" ;;
         *) echo 443 ;;
     esac
 }
