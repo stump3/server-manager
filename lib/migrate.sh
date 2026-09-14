@@ -12,7 +12,7 @@
 # которым уже пользуется migrate_all() для своей Panel-части.
 panel_migrate() {
     header "📦 Перенос Panel на другой сервер"
-    migrate_prepare_target || return 1
+    migrate_prepare_target panel || return 1
     local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
     migrate_transfer_panel
 }
@@ -21,17 +21,31 @@ panel_migrate() {
 # ═══════════════════════════════════════════════════════════════════
 
 migrate_prepare_target() {
+    # A-2 follow-up: this used to always request "full" dependency
+    # installation (remote_install_deps full ...) regardless of caller,
+    # even when called from panel_migrate() -- a Panel-only transfer.
+    # remote_install_deps's own docstring: "full — base + unzip cron
+    # qrencode + /etc/hysteria" (lib/common/ssh.sh) -- none of which a
+    # Panel-only migration needs; the pre-A-2 do_migrate() correctly
+    # used "panel" here (`remote_install_deps panel "$(_detect_ws)"`).
+    # init_ssh_helpers's own mode branching only distinguishes "telemt"
+    # from everything else (panel and full hit the same `*` case,
+    # producing identical _SSH_OPTS/_SCP_OPTS) -- passing the variant
+    # through there is harmless/for-consistency, not a functional fix.
+    # Default stays "full" so migrate_all()'s existing no-argument call
+    # (below) is byte-for-byte unaffected.
+    local variant="${1:-full}"
     ensure_sshpass
 
     # ── Данные нового сервера ──────────────────────────────────────
     ask_ssh_target || { warn "Ошибка ввода данных SSH"; return 1; }
-    init_ssh_helpers full
+    init_ssh_helpers "$variant"
     check_ssh_connection || return 1
 
     # ── Зависимости ────────────────────────────────────────────────
     local _remote_ws="nginx"
     [ -f /opt/remnawave/docker-compose.yml ] && grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml && _remote_ws="caddy"
-    remote_install_deps full "$_remote_ws"
+    remote_install_deps "$variant" "$_remote_ws"
     return 0
 }
 
