@@ -41,7 +41,40 @@ telemt_fetch_links() {
             echo ""
             local traffic_db
             traffic_db=$(telemt_traffic_db_path)
-            TELEMT_TRAFFIC_DB="$traffic_db" echo "$resp" | python3 -c "
+            # ENV bug fix (F6 audit): a `VAR=val cmd1 | cmd2` prefix only
+            # binds VAR for cmd1 (here, `echo`) -- each stage of a pipeline
+            # is its own process, and the assignment does not cross the
+            # pipe. python3 (cmd2, the process that actually reads
+            # TELEMT_TRAFFIC_DB via os.environ.get) never saw it: db_path
+            # was always empty, so the `if db_path:` write guard below
+            # always skipped, and this function's entire traffic/IP-history
+            # accumulation was silently never persisted to disk (confirmed
+            # empirically: same construct in isolation reproduces db_path
+            # == ''). Moving the assignment onto python3 -- the process
+            # that consumes it -- fixes it; $resp still reaches python3
+            # via the same pipe, only stdin, unaffected by this.
+            # F6 fix: exclusive lock for the duration of this
+            # read-modify-write, so a second, concurrent invocation of
+            # this same function (a simultaneous server-manager.sh
+            # session) or of telemt_menu_stats_settings() (menu.sh, its
+            # own separate read-modify-write against the same file)
+            # cannot interleave with it. Without this, two overlapping
+            # writers racing on read-then-write can silently lose one
+            # side's update (last writer wins), or -- json.dump() opens
+            # the file with 'w' and truncates it immediately, before
+            # writing -- one process can read a momentarily
+            # truncated/partial file mid-write from the other, which the
+            # `except Exception: state = {...defaults...}` fallback below
+            # then treats indistinguishably from "no prior state",
+            # silently discarding accumulated history rather than erroring.
+            # mkdir -p first: the lock file's own directory (e.g.
+            # /var/lib/telemt) may not exist yet on a fresh install, before
+            # this python3 call's own os.makedirs(...) below would
+            # otherwise create it.
+            mkdir -p "$(dirname "$traffic_db")" 2>/dev/null
+            (
+                flock -x -w 15 201 || true
+                echo "$resp" | TELEMT_TRAFFIC_DB="$traffic_db" python3 -c "
 import sys, json
 import os
 from datetime import datetime, timezone, timedelta
@@ -193,6 +226,7 @@ if db_path:
     except Exception:
         pass
 " 2>/dev/null || echo "$resp"
+            ) 201>"${traffic_db}.lock"
             [ -n "$traffic_db" ] && info "Накопленная статистика: $traffic_db"
             return 0
         fi
