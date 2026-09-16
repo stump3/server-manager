@@ -156,11 +156,62 @@ panel_install_summary() {
     echo ""
 }
 
+# panel_install_existing_state_detected — true if the remnawave-db-data
+# named Docker volume already exists, i.e. a prior panel_install() run
+# already brought Postgres up for this Panel.
+#
+# CONFIRMED DEFECT (this session, mechanically reproduced against the
+# real extracted lib/panel/api.sh register/login block, mocked only at
+# the panel_api()/panel_api_status() HTTP boundary): panel_generate_env()
+# unconditionally mints a brand-new SUPERADMIN_USER/SUPERADMIN_PASS on
+# every call and never reads any existing state -- these credentials
+# are not persisted anywhere (not in .env, not anywhere else; see that
+# function's own header). remnawave-db-data is a named, non-external
+# volume (lib/panel/compose/common.sh) that plain `docker compose up -d`
+# (panel_setup_api(), lib/panel/api.sh) neither creates fresh nor wipes,
+# so it survives a second panel_install() run untouched. If it already
+# holds a superadmin from an earlier run, panel_setup_api()'s
+# register-then-login fallback (POST /api/auth/register -> confirmed
+# 403/E000 "already registered" -> POST /api/auth/login) logs in with
+# THIS run's newly-generated credentials, which do not match whatever
+# the DB actually has -- login fails and panel_install() dies partway
+# through, after already having overwritten .env/docker-compose.yml and
+# mutated UFW/SSL/packages for nothing.
+#
+# This check is deliberately coarse: it does not try to distinguish
+# "DB already has a superadmin" from "Postgres container started but
+# /api/auth/register was never reached" (e.g. the readiness-wait loop
+# in panel_setup_api() died first) -- narrowing that further would need
+# to inspect inside the DB or hit the Panel API before this guard runs,
+# neither of which is available yet at this point in the lifecycle.
+# The volume's mere existence is treated as "existing installation" and
+# errs toward directing the operator to the already-correct, explicitly
+# destructive panel_reinstall() (lib/panel/management.sh — docker
+# compose down -v + docker system prune -a --volumes -f + rm -rf
+# /opt/remnawave, gated on a typed "YES") rather than guessing further.
+# panel_reinstall() itself is unaffected: it removes this exact volume
+# synchronously before its own, later call to panel_install(), so by
+# the time this guard runs there, the volume is already gone and this
+# function correctly returns false.
+panel_install_existing_state_detected() {
+    command -v docker &>/dev/null || return 1
+    docker volume inspect remnawave-db-data >/dev/null 2>&1
+}
+
 panel_install() {
     STEP_NUM=0; TOTAL_STEPS=5
     step "Установка Remnawave Panel"
     STEP_NUM=1
     check_root
+
+    # Fail fast, before any mutation (CLI collection is not a mutation;
+    # everything from panel_install_prerequisites() onward is: package
+    # installation, Docker, UFW, SSL, .env/compose generation,
+    # containers). See panel_install_existing_state_detected()'s own
+    # comment for the exact defect this prevents.
+    if panel_install_existing_state_detected; then
+        die "Panel уже установлен (обнаружено существующее состояние БД: volume remnawave-db-data). Обычная установка не предназначена для повторного использования поверх существующей установки. Для полного сброса и переустановки используйте пункт меню «Переустановить (сброс всех данных!)»."
+    fi
 
     # ── Сбор данных (lib/panel/cli.sh) ──────────────────────────────
     local MODE PANEL_DOMAIN SUB_DOMAIN SELFSTEAL_DOMAIN WEB_SERVER
