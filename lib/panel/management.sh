@@ -212,6 +212,61 @@ panel_reinstall_mgmt() {
     info "Перезапустите терминал или выполните: source /etc/bash.bashrc"
 }
 
+# panel_cleanup_xhttp_ufw_rules — removes the F/J XHTTP public-port UFW
+# rules this tool may have opened for a PREVIOUS install
+# (lib/panel/install.sh's `ufw allow "${_xhttp_ufw_port_desc}/tcp"`,
+# gated on core_deployment_has_capability("XHTTP")).
+#
+# CONFIRMED GAP (this session's UFW lifecycle audit): that rule's own
+# add-condition is per-deployment (which topology, whether XHTTP is
+# turned on) — unlike 22/tcp, 443/tcp, or Remote Node's 2222/tcp, which
+# are unconditional/host-baseline and deliberately left untouched here.
+# Neither panel_reinstall() nor panel_remove() previously removed it, so
+# switching topology via reinstall (e.g. F+XHTTP -> plain F, or F+XHTTP
+# -> J) left a firewall rule open for a port with no listener behind it
+# — confirmed by direct reading of both functions (no `ufw` call
+# anywhere in this file before this fix).
+#
+# Both callers wipe /opt/remnawave's .env/docker-compose.yml/nginx.conf
+# in the same operation, so by the time this runs, the OLD deployment's
+# MODE/XHTTP state can no longer be read back out of them (unlike, say,
+# TeleMT's own removal flow in lib/telemt/menu.sh, which greps its port
+# out of its config file before deleting it — there is no equivalent
+# already-resolved Deployment/MODE lying around here to ask). Since
+# lib/core/port_allocation.sh's table only has two possible XHTTP public
+# ports at all (F=9443, J=8443 — core_port_allocation_public()), deleting
+# both unconditionally covers every case without needing to know which
+# (if either) applied to the install being torn down. Safe and
+# idempotent: `ufw delete allow` on an absent rule is a no-op, the same
+# convention lib/panel/cert.sh's own ACME 80/tcp cleanup already relies
+# on. core/port_allocation is loaded unconditionally before panel in
+# server-manager.sh's module loader, so the accessor is always available
+# here regardless of call order.
+panel_cleanup_xhttp_ufw_rules() {
+    command -v ufw &>/dev/null || return 0
+    local _p
+    # `if`, not `cond && action`: this project runs under `set -euo
+    # pipefail` (server-manager.sh); `ufw delete` on a rule that isn't
+    # currently present is a realistic, expected outcome here (most
+    # calls will find at most one of the two ports actually open), not
+    # an error -- a bare `[ -n "$_p" ] && ufw delete ...` would let that
+    # non-zero status abort this function (and, since neither caller
+    # wraps this call in `if`, the whole panel_reinstall()/panel_remove()
+    # invocation) the first time the rule is already absent. Same
+    # set -e hazard already documented and fixed the same way elsewhere
+    # in this codebase (lib/panel/node/install.sh's
+    # _node_install_cleanup()).
+    _p="$(core_port_allocation_public "F" "xhttp" 2>/dev/null)" || _p=""
+    if [ -n "$_p" ]; then
+        ufw delete allow "${_p}/tcp" >/dev/null 2>&1 || true
+    fi
+    _p="$(core_port_allocation_public "J" "xhttp" 2>/dev/null)" || _p=""
+    if [ -n "$_p" ]; then
+        ufw delete allow "${_p}/tcp" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
 # ── Удаление панели ───────────────────────────────────────────────
 panel_remove() {
     header "Удалить панель"
@@ -238,6 +293,7 @@ panel_remove() {
             info "Останавливаем контейнеры..."
             cd /opt/remnawave 2>/dev/null && docker compose down -v --rmi all --remove-orphans 2>/dev/null || true
             docker system prune -a --volumes -f >/dev/null 2>&1 || true
+            panel_cleanup_xhttp_ufw_rules
             rm -rf /opt/remnawave
             rm -f "$0"
             ok "Панель и скрипт удалены"
@@ -259,6 +315,7 @@ panel_reinstall() {
     info "Удаляем старую установку..."
     cd /opt/remnawave 2>/dev/null && docker compose down -v --rmi all --remove-orphans >/dev/null 2>&1 || true
     docker system prune -a --volumes -f >/dev/null 2>&1 || true
+    panel_cleanup_xhttp_ufw_rules
     rm -rf /opt/remnawave
     # server-manager хранится в /root/server-manager — он НЕ в /opt/remnawave,
     # поэтому удалять его не нужно. Симлинк /usr/local/bin/server-manager
