@@ -7,7 +7,16 @@ telemt_menu_stats_settings() {
     local db
     db=$(telemt_traffic_db_path)
     local cur_ip_days cur_traffic_days
-    read -r cur_ip_days cur_traffic_days < <(TELEMT_TRAFFIC_DB="$db" python3 -c "
+    # F6: shared flock guard across every reader/writer of this file (see
+    # api.sh's telemt_fetch_links for the full rationale) -- this read
+    # was already correct on its own (no pipe, env var reaches python3
+    # fine), but a concurrent writer's json.dump is not atomic, so an
+    # unguarded read here could see a torn/partial file mid-write.
+    mkdir -p "$(dirname "$db")" 2>/dev/null
+    read -r cur_ip_days cur_traffic_days < <(
+        (
+            flock -w 5 9 || exit 1
+            TELEMT_TRAFFIC_DB="$db" python3 -c "
 import os, json
 db=os.environ.get('TELEMT_TRAFFIC_DB','')
 ip_days=30
@@ -24,7 +33,9 @@ if db and os.path.exists(db):
 if traffic_days not in (60, 90):
     traffic_days = 90
 print(ip_days, traffic_days)
-" 2>/dev/null || echo "30 90")
+" 2>/dev/null
+        ) 9>"${db}.lock" || echo "30 90"
+    )
     [ -z "${cur_ip_days:-}" ] && cur_ip_days=30
     [ -z "${cur_traffic_days:-}" ] && cur_traffic_days=90
 
@@ -47,20 +58,15 @@ print(ip_days, traffic_days)
         return 1
     fi
 
-    # F6 fix: same exclusive-lock serialization as telemt_fetch_links()
-    # (api.sh) -- this function performs its own separate
-    # read-modify-write cycle against the identical file, so without a
-    # shared lock the two can still interleave across two concurrent
-    # server-manager.sh sessions (lost update, or a torn mid-write read).
-    # `return 1` is deliberately NOT issued from inside the subshell --
-    # a `return` there would only exit the subshell, not this function,
-    # silently losing the original error path. Instead the subshell's
-    # own exit status (from flock's `|| exit 1`, or from python3's own
-    # exit code) is captured via $? right after it, and the original
-    # warn+return 1 issued from here, in the real function scope.
+    # F6: same shared lock as the read above and as api.sh's writer --
+    # this is the write side of the only two functions that ever touch
+    # this file's content (the fetch_links write is the other, now fixed
+    # to also participate). Without this, two genuinely concurrent
+    # server-manager.sh sessions saving/refreshing at the same moment
+    # could interleave a read-modify-write here.
     mkdir -p "$(dirname "$db")" 2>/dev/null
     (
-        flock -x -w 15 201 || exit 1
+        flock -w 5 9 || exit 1
         TELEMT_TRAFFIC_DB="$db" TELEMT_IP_RETENTION_DAYS="$new_ip_days" TELEMT_TRAFFIC_RETENTION_DAYS="$new_traffic_days" python3 -c "
 import os, json
 from datetime import datetime, timezone, timedelta
@@ -123,11 +129,7 @@ if db:
     with open(db,'w',encoding='utf-8') as f:
         json.dump(state,f,ensure_ascii=False,indent=2)
 " 2>/dev/null
-    ) 201>"${db}.lock"
-    if [ $? -ne 0 ]; then
-        warn "Не удалось сохранить настройки"
-        return 1
-    fi
+    ) 9>"${db}.lock" || { warn "Не удалось сохранить настройки"; return 1; }
     ok "Сохранено: IP $new_ip_days дн, трафик $new_traffic_days дн."
 }
 
