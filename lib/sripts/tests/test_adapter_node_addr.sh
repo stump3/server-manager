@@ -69,7 +69,24 @@ echo "== 2. api.sh NODE_ADDR decision region: no raw MODE comparison, calls the 
 # lib/panel/api.sh legitimately contains other MODE checks (reality
 # inbound ports, XHTTP host port, F/J dispatch) explicitly out of scope
 # for Adapter #5.
-NODE_ADDR_REGION=$(awk '/local NODE_ADDR/,/^    panel_api "POST" "http:\/\/\$API\/api\/nodes"/' lib/panel/api.sh)
+#
+# End-anchor is the structural close of the if/else block itself
+# (`^    fi$`, 4-space indent -- matches this if's own indent level,
+# same awk idiom this file's neighbor already uses for its own
+# NODE_BLOCK/HOST_BLOCK extraction, see
+# test_adapter_colocated_node_host_lookup.sh's
+# `awk '/local EXISTING_NODE/,/^    fi$/'`), not a distant, unrelated
+# line further down the function. A prior version anchored on the
+# nearest-following `panel_api "POST" ".../api/nodes"` line instead --
+# that string is Contract 13 lookup-before-create code, added after
+# this test was written, sitting between NODE_ADDR's own `fi` and that
+# POST call. Anchoring past it silently pulled that unrelated block
+# (including its own, unrelated $SELFSTEAL_DOMAIN uses, as a jq --arg
+# for the POST payload, not part of the NODE_ADDR decision) into the
+# region, drifting the 172.30.0.1:SELFSTEAL_DOMAIN count from 1:1 to
+# 1:3. The `fi` anchor tracks the decision's own structural boundary
+# and is not vulnerable to unrelated code growing after it.
+NODE_ADDR_REGION=$(awk '/local NODE_ADDR/,/^    fi$/' lib/panel/api.sh)
 # Code-only view (strips comment lines) -- the region legitimately
 # contains a doc comment that MENTIONS the old raw MODE check for
 # historical/audit context (see the diff itself); that mention must not
