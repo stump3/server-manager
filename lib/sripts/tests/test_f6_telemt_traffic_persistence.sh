@@ -140,21 +140,21 @@ src = open(src_path, encoding='utf-8').read()
 if lock_mode == "strip_lock":
     open_block = '''            mkdir -p "$(dirname "$traffic_db")" 2>/dev/null
             (
-                flock -x -w 15 201 || true
-                echo "$resp" | TELEMT_TRAFFIC_DB="$traffic_db" python3 -c "'''
-    open_replacement = '''            echo "$resp" | TELEMT_TRAFFIC_DB="$traffic_db" python3 -c "'''
-    close_block = '''" 2>/dev/null || echo "$resp"
-            ) 201>"${traffic_db}.lock"
+                flock -w 5 9 || exit 1
+                TELEMT_TRAFFIC_DB="$traffic_db" python3 -c "'''
+    open_replacement = '''            TELEMT_TRAFFIC_DB="$traffic_db" python3 -c "'''
+    close_block = '''" 2>/dev/null
+            ) 9>"${traffic_db}.lock" <<< "$resp" || echo "$resp"
 '''
-    close_replacement = '''" 2>/dev/null || echo "$resp"
+    close_replacement = '''" 2>/dev/null <<< "$resp" || echo "$resp"
 '''
     assert open_block in src, "F6 test: flock open-block text not found -- api.sh source drifted, update this test's extraction string"
     assert close_block in src, "F6 test: flock close-block text not found -- api.sh source drifted, update this test's extraction string"
     src = src.replace(open_block, open_replacement)
     src = src.replace(close_block, close_replacement)
-    assert 'flock' not in src, "F6 test: flock still present after stripping -- extraction incomplete"
+    assert 'flock -w 5 9' not in src, "F6 test: flock command still present after stripping -- extraction incomplete"
 elif lock_mode == "keep_lock":
-    assert 'flock -x -w 15 201' in src, "F6 test: expected flock line not found -- api.sh source drifted, update this test's extraction string"
+    assert 'flock -w 5 9' in src, "F6 test: expected flock line not found -- api.sh source drifted, update this test's extraction string"
 else:
     raise SystemExit(f"unknown lock_mode {lock_mode!r}")
 
@@ -257,6 +257,181 @@ if [ "$DERIVE_UNLOCKED_RC" -eq 0 ]; then
     run_race "$UNLOCKED_VARIANT" "$WORKDIR/s3" "$UNLOCKED_RESULT"
     assert "unlocked control: the SAME race loses an update (proves the lock in the real code is load-bearing)" \
         "$(both_users_survived "$UNLOCKED_RESULT")" "no"
+fi
+
+# ============================================================
+# Section 4 -- reader locks: load-bearing, not symmetry-for-its-own-
+# -sake. This is the actual subject of this review: api.sh/menu.sh's
+# writer and all three readers (menu.sh settings-read,
+# users.sh:telemt_menu_user_ips's list-read and detail-read) share one
+# lock ("${db}.lock", fd 9). The question is whether the read side of
+# that sharing is load-bearing or decorative.
+#
+# It is load-bearing IF AND ONLY IF the writer's file replacement is
+# non-atomic (direct truncate-in-place, not write-to-temp + rename) --
+# an atomic rename can never be observed half-done by a concurrent
+# open(); a direct `open(path,'w')` truncates the instant it opens, so
+# a reader landing in the open-to-close window sees a transiently
+# empty/partial file. api.sh's writer (grep above) does
+# `with open(db_path,'w') as f: json.dump(...)` -- no temp file, no
+# os.replace -- confirming the non-atomic case applies here.
+#
+# This section proves the consequence directly rather than just citing
+# that mechanism: a writer variant gets a delay injected at the exact
+# truncate point (not before-the-read, like Sections 2/3's delay --
+# this one models the write's own internal window, faithfully
+# reproducing what real disk I/O timing does on a larger/slower write,
+# just deterministically), and users.sh's first reader
+# (telemt_menu_user_ips's list-of-users-with-history read) is raced
+# against it, both with its real lock intact and -- as a control -- with
+# just that one read's lock stripped (menu.sh's read and users.sh's
+# second read are left untouched either way; this isolates the one
+# reader under test).
+echo "=== Section 4: reader lock -- load-bearing, proven against a faithfully-modeled torn write ==="
+
+derive_slow_writer() {
+    # $1 = source api.sh, $2 = dest -- injects a delay at the writer's
+    # own truncate-then-write point (inside its `with open(db_path,'w')`
+    # block), gated on TEST_WRITE_DELAY so normal (non-test) behavior,
+    # and Sections 1-3 above, are completely unaffected.
+    python3 - "$1" "$2" << 'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+src = open(src_path, encoding='utf-8').read()
+anchor = '''        with open(db_path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)'''
+hook = '''        with open(db_path, 'w', encoding='utf-8') as f:
+            import time as _wt, os as _wo
+            _wd = float(_wo.environ.get('TEST_WRITE_DELAY', '0') or 0)
+            if _wd:
+                f.flush()
+                _wt.sleep(_wd)
+            json.dump(state, f, ensure_ascii=False, indent=2)'''
+assert anchor in src, "F6 test: writer truncate-point anchor not found -- api.sh source drifted, update this test's extraction string"
+src = src.replace(anchor, hook)
+open(dst_path, 'w', encoding='utf-8').write(src)
+PYEOF
+}
+
+derive_reader_variant() {
+    # $1 = source users.sh, $2 = dest -- extracts ONLY the read snippet
+    # itself (the flock-wrapped python invocation that lists users with
+    # ip_history), wrapped in a minimal driver function, rather than
+    # sourcing the whole file and calling telemt_menu_user_ips(): that
+    # function has its own internal auto-refresh call to
+    # telemt_fetch_links() (an independent, uncontrolled second writer
+    # that would confound this race) and ends by blocking on a
+    # `read ... < /dev/tty` this non-interactive test can't satisfy.
+    # Extracting just the snippet under test avoids both -- same
+    # narrowing principle test_ssh_reliability_f1.sh's real-code-
+    # extraction convention uses. $3 = "keep_lock" | "strip_lock".
+    python3 - "$1" "$2" "$3" << 'PYEOF'
+import sys
+src_path, dst_path, lock_mode = sys.argv[1], sys.argv[2], sys.argv[3]
+src = open(src_path, encoding='utf-8').read()
+
+open_block = '''        (
+            flock -w 5 9 || exit 1
+            TELEMT_TRAFFIC_DB="$db" python3 -c "'''
+open_replacement = '''        TELEMT_TRAFFIC_DB="$db" python3 -c "'''
+close_block = '''" 2>/dev/null
+        ) 9>"${db}.lock" || true'''
+close_replacement = '''" 2>/dev/null'''
+
+start_marker = "    while IFS= read -r u; do"
+end_marker = '''        ) 9>"${db}.lock" || true
+    )'''
+start_i = src.index(start_marker)
+end_i = src.index(end_marker) + len(end_marker)
+snippet = src[start_i:end_i]
+
+assert open_block in snippet, "F6 test: users.sh first-read open-block not found -- source drifted, update this test's extraction string"
+assert close_block in snippet, "F6 test: users.sh first-read close-block not found -- source drifted, update this test's extraction string"
+
+if lock_mode == "strip_lock":
+    snippet = snippet.replace(open_block, open_replacement)
+    snippet = snippet.replace(close_block, close_replacement)
+elif lock_mode != "keep_lock":
+    raise SystemExit(f"unknown lock_mode {lock_mode!r}")
+
+driver = (
+    "reader_driver() {\n"
+    "    local db=\"$1\"\n"
+    "    local -a users=()\n"
+    + snippet + "\n"
+    "    printf '%s\\n' \"${users[@]}\"\n"
+    "}\n"
+)
+open(dst_path, 'w', encoding='utf-8').write(driver)
+PYEOF
+}
+
+run_reader_race() {
+    # $1 = api variant (slow writer), $2 = reader driver script, $3 = workdir, $4 = result file
+    local api_variant="$1" reader_driver_script="$2" wd="$3" outfile="$4"
+    (
+        set -uo pipefail
+        export TELEMT_MODE=docker
+        export TELEMT_WORK_DIR_DOCKER="$wd"
+        mkdir -p "$wd"
+        ok()   { :; }
+        warn() { :; }
+        info() { :; }
+        # shellcheck source=/dev/null
+        source "$api_variant"
+        # shellcheck source=/dev/null
+        source "$reader_driver_script"
+
+        # Seed: one normal (non-delayed) write establishing 'erin' with
+        # real ip_history, exactly as production code would produce it.
+        telemt_api() {
+            cat << JSON
+[{"username":"erin","total_octets":500,"links":{"tls":["tg://proxy?z"]},"current_connections":1,"active_unique_ips":1,"active_unique_ips_list":["9.9.9.9"],"recent_unique_ips":0,"recent_unique_ips_list":[]}]
+JSON
+        }
+        telemt_fetch_links 1 >/dev/null 2>&1
+
+        local db; db="$(telemt_traffic_db_path)"
+
+        # Race: a slow rewrite of the SAME state (erin still present,
+        # still with ip_history -- the seeded file and the post-write
+        # file are the same in content, only the moment in between is
+        # transiently empty) against the reader landing mid-delay.
+        ( export TEST_WRITE_DELAY=1.0; telemt_fetch_links 1 >/dev/null 2>&1 ) &
+        W=$!
+        sleep 0.15   # let the writer get past its own read/compute and into the delayed truncate-write window
+        reader_driver "$db" > "$outfile" 2>&1 &
+        R=$!
+        wait "$W"; wait "$R"
+    )
+}
+
+echo -n > "$WORKDIR/s4_locked_out.txt"
+echo -n > "$WORKDIR/s4_unlocked_out.txt"
+
+SLOW_WRITER="$WORKDIR/api_slow_writer.sh"
+derive_slow_writer "$REPO_ROOT/lib/telemt/api.sh" "$SLOW_WRITER"
+DERIVE_SLOW_RC=$?
+assert "slow-writer variant successfully derived (delay injected at the real truncate point)" "$DERIVE_SLOW_RC" "0"
+
+READER_LOCKED="$WORKDIR/users_reader_locked.sh"
+derive_reader_variant "$REPO_ROOT/lib/telemt/users.sh" "$READER_LOCKED" "keep_lock"
+assert "locked-reader variant successfully derived (lock verified present, untouched)" "$?" "0"
+
+READER_UNLOCKED="$WORKDIR/users_reader_unlocked.sh"
+derive_reader_variant "$REPO_ROOT/lib/telemt/users.sh" "$READER_UNLOCKED" "strip_lock"
+assert "unlocked-reader variant successfully derived (lock stripped from just this one read)" "$?" "0"
+
+if [ "$DERIVE_SLOW_RC" -eq 0 ]; then
+    run_reader_race "$SLOW_WRITER" "$READER_LOCKED" "$WORKDIR/s4_locked" "$WORKDIR/s4_locked_out.txt"
+    LOCKED_SAW_ERIN=$(grep -c '^erin$' "$WORKDIR/s4_locked_out.txt" 2>/dev/null); LOCKED_SAW_ERIN="${LOCKED_SAW_ERIN:-0}"
+    assert "locked reader: waits for the writer, always sees erin (never the transient empty window)" \
+        "$LOCKED_SAW_ERIN" "1"
+
+    run_reader_race "$SLOW_WRITER" "$READER_UNLOCKED" "$WORKDIR/s4_unlocked" "$WORKDIR/s4_unlocked_out.txt"
+    UNLOCKED_SAW_ERIN=$(grep -c '^erin$' "$WORKDIR/s4_unlocked_out.txt" 2>/dev/null); UNLOCKED_SAW_ERIN="${UNLOCKED_SAW_ERIN:-0}"
+    assert "unlocked reader: CAN land in the transient empty window and silently report no users (proves the lock is load-bearing)" \
+        "$UNLOCKED_SAW_ERIN" "0"
 fi
 
 echo ""
