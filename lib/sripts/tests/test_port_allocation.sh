@@ -229,29 +229,35 @@ assert "self-repair: F/xhttp internal_port is back to 19444 after restore" \
     "$(bash -c 'source lib/core/port_allocation.sh; core_port_allocation_internal F xhttp')" "19444"
 
 echo ""
-echo "== 10. UPDATED 2026-09-08 (Candidate 1 + Candidate 2 wiring landed): exactly two production consumers, both in Panel, never inside Core =="
+echo "== 10. UPDATED 2026-09-17 (Candidate 1 + 2 + 3 wiring landed): exactly three production consumers, all in Panel, never inside Core =="
 # This section originally asserted "zero production consumers" (pre-
-# Candidate 1), then "exactly one" (post-Candidate 1, api.sh only).
-# Candidate 2 (lib/panel/install.sh's UFW XHTTP-port branch) added a
-# second, real production consumer -- updating the count again is the
-# same kind of "describes the new correct architecture" update as
-# Candidate 1's own change to this section, not a weakening: the
+# Candidate 1), then "exactly one" (post-Candidate 1, api.sh only), then
+# "exactly two" (post-Candidate 2, + install.sh's UFW XHTTP-port
+# branch). Candidate 3 (lib/panel/management.sh's
+# panel_cleanup_xhttp_ufw_rules(), added by commit 89a2aa1 and hardened
+# by 9ae1d80/this session's own UFW-lifecycle audit) reuses the same
+# accessor to look up the two ports it is allowed to remove an install-
+# time UFW rule for -- same kind of "describes the new correct
+# architecture" update as the two prior ones, not a weakening: the
 # boundary invariant being checked (consumers are only ever in Panel,
 # Core never calls back into Panel) is unchanged and still enforced
 # below. Full production-behavior proof for each consumer lives in its
 # own focused test (lib/sripts/tests/test_port_allocation_wiring.sh for
 # api.sh, lib/sripts/tests/test_adapter_install_xhttp_ufw.sh for
-# install.sh) -- this section only re-confirms the boundary shape from
-# this file's own side.
+# install.sh, lib/sripts/tests/test_adapter_ufw_cleanup_ownership.sh for
+# management.sh) -- this section only re-confirms the boundary shape
+# from this file's own side.
 CONSUMER_FILES="$(grep -rl 'core_port_allocation_' lib/ 2>/dev/null | grep -v 'lib/core/port_allocation.sh' | grep -v 'lib/sripts/tests/')"
-assert "PortAllocation now has exactly two production consumer files" \
-    "$(echo "$CONSUMER_FILES" | grep -c .)" "2"
-assert "both production consumers are in lib/panel/ (Panel), never another lib/core/*.sh file" \
+assert "PortAllocation now has exactly three production consumer files" \
+    "$(echo "$CONSUMER_FILES" | grep -c .)" "3"
+assert "all three production consumers are in lib/panel/ (Panel), never another lib/core/*.sh file" \
     "$(echo "$CONSUMER_FILES" | grep -vc '^lib/panel/')" "0"
-assert "lib/panel/api.sh is one of the two consumers" \
+assert "lib/panel/api.sh is one of the three consumers" \
     "$(echo "$CONSUMER_FILES" | grep -c '^lib/panel/api\.sh$')" "1"
-assert "lib/panel/install.sh is the other of the two consumers" \
+assert "lib/panel/install.sh is another of the three consumers" \
     "$(echo "$CONSUMER_FILES" | grep -c '^lib/panel/install\.sh$')" "1"
+assert "lib/panel/management.sh is the third consumer (UFW XHTTP cleanup)" \
+    "$(echo "$CONSUMER_FILES" | grep -c '^lib/panel/management\.sh$')" "1"
 PRXIP_BODY="$(awk '/^panel_reality_xhttp_inbound_port\(\) \{$/{grab=1} grab{print} grab&&/^}$/{exit}' lib/panel/api.sh)"
 PRXIP_CODE_ONLY="$(grep -vE '^\s*#' <<<"$PRXIP_BODY")"
 assert "lib/panel/api.sh's function body actually extracted (non-empty)" \
