@@ -234,36 +234,68 @@ panel_reinstall_mgmt() {
 # out of its config file before deleting it — there is no equivalent
 # already-resolved Deployment/MODE lying around here to ask). Since
 # lib/core/port_allocation.sh's table only has two possible XHTTP public
-# ports at all (F=9443, J=8443 — core_port_allocation_public()), deleting
+# ports at all (F=9443, J=8443 — core_port_allocation_public()), checking
 # both unconditionally covers every case without needing to know which
-# (if either) applied to the install being torn down. Safe and
-# idempotent: `ufw delete allow` on an absent rule is a no-op, the same
-# convention lib/panel/cert.sh's own ACME 80/tcp cleanup already relies
-# on. core/port_allocation is loaded unconditionally before panel in
-# server-manager.sh's module loader, so the accessor is always available
-# here regardless of call order.
+# (if either) applied to the install being torn down.
+#
+# OWNERSHIP FIX (follow-up UFW-lifecycle audit, same session): the first
+# version of this function issued a bare `ufw delete allow "${_p}/tcp"`
+# for each candidate port. That is a plain port/proto specification with
+# no comment filter, so against a real ufw it deletes *any* existing
+# `ALLOW IN <port>/tcp Anywhere` rule regardless of who added it or what
+# comment (if any) it carries — it is not scoped to a rule this tool
+# itself created. J's own public XHTTP port (8443) is also the literal
+# port lib/panel/mgmt_script.sh's do_open_port()/do_close_port() open
+# and close for MODE=1/2 emergency admin access
+# (`ufw allow 8443/tcp`/`ufw delete allow 8443/tcp`, no comment at all —
+# confirmed by direct reading of that file). do_open_port() itself
+# refuses to run for MODE=F/J, so that rule can only exist while the
+# *current* generated management script's baked-in $MODE is 1 or 2, but
+# a firewall rule an admin opened under an earlier MODE=1/2 install
+# outlives that script and is still just "ALLOW IN 8443/tcp Anywhere" at
+# the ufw level when this function's blind port-only delete runs during
+# a later panel_remove()/panel_reinstall() — indistinguishable, by that
+# bare spec, from this tool's own XHTTP rule. install.sh already tags
+# its own rule for exactly this reason
+# (`ufw allow "${_xhttp_ufw_port_desc}/tcp" comment "Variant $MODE
+# XHTTP"`); the fix here is to make the delete side actually use that
+# existing tag — via `ufw status numbered`'s (read-only) listing — instead
+# of introducing any new ownership-tracking mechanism, so an unrelated,
+# uncommented same-port rule (mgmt_script.sh's admin rule, or any other
+# co-located service's own `allow <port>/tcp`) is left untouched. Safe
+# and idempotent either way: no matching numbered line means nothing is
+# deleted, the same no-op-on-absent-rule guarantee the original bare
+# `ufw delete allow` relied on.
 panel_cleanup_xhttp_ufw_rules() {
     command -v ufw &>/dev/null || return 0
-    local _p
-    # `if`, not `cond && action`: this project runs under `set -euo
-    # pipefail` (server-manager.sh); `ufw delete` on a rule that isn't
-    # currently present is a realistic, expected outcome here (most
-    # calls will find at most one of the two ports actually open), not
-    # an error -- a bare `[ -n "$_p" ] && ufw delete ...` would let that
-    # non-zero status abort this function (and, since neither caller
-    # wraps this call in `if`, the whole panel_reinstall()/panel_remove()
-    # invocation) the first time the rule is already absent. Same
-    # set -e hazard already documented and fixed the same way elsewhere
-    # in this codebase (lib/panel/node/install.sh's
-    # _node_install_cleanup()).
-    _p="$(core_port_allocation_public "F" "xhttp" 2>/dev/null)" || _p=""
-    if [ -n "$_p" ]; then
-        ufw delete allow "${_p}/tcp" >/dev/null 2>&1 || true
-    fi
-    _p="$(core_port_allocation_public "J" "xhttp" 2>/dev/null)" || _p=""
-    if [ -n "$_p" ]; then
-        ufw delete allow "${_p}/tcp" >/dev/null 2>&1 || true
-    fi
+    local _p _mode _status _nums _num
+    for _mode in F J; do
+        # `|| _p=""`, not a bare `&&`/failing assignment: same `set -euo
+        # pipefail` (server-manager.sh) hazard as below — a failing
+        # command substitution assigned to a local must not abort this
+        # function (or, unguarded by either caller, the whole
+        # panel_reinstall()/panel_remove() invocation).
+        _p="$(core_port_allocation_public "$_mode" "xhttp" 2>/dev/null)" || _p=""
+        [ -n "$_p" ] || continue
+        _status="$(ufw status numbered 2>/dev/null)" || continue
+        # Only rule numbers whose line has BOTH this exact port/tcp AND
+        # the exact comment install.sh stamps its own XHTTP rule with
+        # ("Variant F XHTTP" / "Variant J XHTTP") — never a bare port
+        # match — so a same-port rule with no comment or a different
+        # comment (not this tool's own) is never selected. Deleted in
+        # descending numeric order so an earlier deletion in the same
+        # pass never shifts a still-pending rule number out from under
+        # this loop.
+        _nums="$(printf '%s\n' "$_status" \
+            | grep -F "${_p}/tcp" \
+            | grep -F "Variant ${_mode} XHTTP" \
+            | grep -oE '^\[ *[0-9]+' \
+            | grep -oE '[0-9]+' \
+            | sort -rn)" || _nums=""
+        for _num in $_nums; do
+            ufw --force delete "$_num" >/dev/null 2>&1 || true
+        done
+    done
     return 0
 }
 
