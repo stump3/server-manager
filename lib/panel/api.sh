@@ -205,8 +205,26 @@ panel_setup_api() {
     # lib/core/adapter_reality.sh:panel_core_reality_needs_2222_ufw_rule()
     # — same decision, now sourced from the already-resolved Deployment's
     # RuntimeComponent inventory instead of a raw MODE comparison.
+    #
+    # UFW LIFECYCLE FOLLOW-UP (this session): this rule is
+    # topology-conditional in exactly the same shape as install.sh's own
+    # XHTTP rule (added only for co-located deployments; never touched by
+    # panel_remove()/panel_reinstall() before this fix) -- confirmed by
+    # grepping the whole repo for "2222" and finding no delete/cleanup
+    # call anywhere. Unlike XHTTP's public-internet port, this one is
+    # scoped to the Docker bridge subnet (172.30.0.0/16), so the blast
+    # radius of a stale rule is narrower, but not zero: Docker compose's
+    # own subnet allocation can later reuse the same /16 for an unrelated
+    # network, at which point a stale rule silently grants that network's
+    # containers reach to this host's :2222 without ever having been the
+    # actual co-located remnanode. The `comment` here is the fix's only
+    # change on this side: it gives
+    # lib/panel/management.sh:panel_cleanup_colocated_api_ufw_rule() an
+    # ownership tag to match on via `ufw status numbered`, the same
+    # comment-anchored technique (not a bare port-only delete) the XHTTP
+    # cleanup already uses and was already proven necessary for.
     panel_core_reality_needs_2222_ufw_rule && \
-        ufw allow from 172.30.0.0/16 to any port 2222 proto tcp >/dev/null 2>&1
+        ufw allow from 172.30.0.0/16 to any port 2222 proto tcp comment "Colocated Node API" >/dev/null 2>&1
 
     docker compose up -d >/dev/null 2>&1 & spinner $! "Запуск контейнеров..."
     ok "Контейнеры запущены"
