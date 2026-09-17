@@ -309,6 +309,46 @@ panel_cleanup_xhttp_ufw_rules() {
     return 0
 }
 
+# UFW LIFECYCLE FOLLOW-UP (same session as panel_cleanup_xhttp_ufw_rules,
+# found while re-auditing this file for other install/reinstall-created
+# rules with the same "conditional add, no cleanup" shape): tears down
+# the UFW rule lib/panel/api.sh:panel_setup_api() may have opened for a
+# co-located deployment's remnanode-to-Panel-API access
+# (`ufw allow from 172.30.0.0/16 to any port 2222 proto tcp comment
+# "Colocated Node API"`, gated on
+# panel_core_reality_needs_2222_ufw_rule() -- true only for MODE=1/F/J,
+# never MODE=2). Same shape as the XHTTP gap: neither panel_reinstall()
+# nor panel_remove() removed it before this fix -- confirmed by grepping
+# this whole repo for "2222" and finding no delete/cleanup call at all.
+# Narrower blast radius than XHTTP (scoped to the Docker bridge subnet,
+# not a public port), but not zero: Docker's own subnet allocation can
+# later reuse 172.30.0.0/16 for an unrelated network, and a stale rule
+# would silently grant that network's containers reach to this host's
+# :2222 without ever having been the real co-located remnanode.
+#
+# Same ownership-safe technique as panel_cleanup_xhttp_ufw_rules: reads
+# `ufw status numbered` (read-only) and deletes only a rule matching BOTH
+# the exact port and the exact comment this tool's own rule carries --
+# never a bare port-only spec, so an unrelated/uncommented 2222/tcp rule
+# (or one with a different comment) is left untouched. Comment match is
+# end-anchored for the same reason the XHTTP cleanup's is: ufw always
+# renders a rule's comment as the last field on its numbered-status line.
+panel_cleanup_colocated_api_ufw_rule() {
+    command -v ufw &>/dev/null || return 0
+    local _status _nums _num
+    _status="$(ufw status numbered 2>/dev/null)" || return 0
+    _nums="$(printf '%s\n' "$_status" \
+        | grep -F "2222/tcp" \
+        | grep -E "# Colocated Node API[[:space:]]*\$" \
+        | grep -oE '^\[ *[0-9]+' \
+        | grep -oE '[0-9]+' \
+        | sort -rn)" || _nums=""
+    for _num in $_nums; do
+        ufw --force delete "$_num" >/dev/null 2>&1 || true
+    done
+    return 0
+}
+
 # ── Удаление панели ───────────────────────────────────────────────
 panel_remove() {
     header "Удалить панель"
@@ -336,6 +376,7 @@ panel_remove() {
             cd /opt/remnawave 2>/dev/null && docker compose down -v --rmi all --remove-orphans 2>/dev/null || true
             docker system prune -a --volumes -f >/dev/null 2>&1 || true
             panel_cleanup_xhttp_ufw_rules
+            panel_cleanup_colocated_api_ufw_rule
             rm -rf /opt/remnawave
             rm -f "$0"
             ok "Панель и скрипт удалены"
@@ -358,6 +399,7 @@ panel_reinstall() {
     cd /opt/remnawave 2>/dev/null && docker compose down -v --rmi all --remove-orphans >/dev/null 2>&1 || true
     docker system prune -a --volumes -f >/dev/null 2>&1 || true
     panel_cleanup_xhttp_ufw_rules
+    panel_cleanup_colocated_api_ufw_rule
     rm -rf /opt/remnawave
     # server-manager хранится в /root/server-manager — он НЕ в /opt/remnawave,
     # поэтому удалять его не нужно. Симлинк /usr/local/bin/server-manager
