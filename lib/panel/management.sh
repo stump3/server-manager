@@ -282,13 +282,23 @@ panel_cleanup_xhttp_ufw_rules() {
         # the exact comment install.sh stamps its own XHTTP rule with
         # ("Variant F XHTTP" / "Variant J XHTTP") — never a bare port
         # match — so a same-port rule with no comment or a different
-        # comment (not this tool's own) is never selected. Deleted in
-        # descending numeric order so an earlier deletion in the same
+        # comment (not this tool's own) is never selected. The comment
+        # match is anchored ("# Variant $_mode XHTTP", end-of-line, only
+        # trailing whitespace allowed after it) rather than a plain
+        # substring test: ufw always renders a rule's comment as the
+        # last field on its numbered-status line, so this is the actual
+        # shape of "this exact comment, nothing else" for that field —
+        # a bare substring test would also fire on an unrelated rule
+        # whose comment merely happens to contain this text as part of
+        # something longer (e.g. "Not Variant J XHTTP", "Variant J
+        # XHTTP something"), which is a real, if contrived, adversarial
+        # rule this ownership check must not treat as its own. Deleted
+        # in descending numeric order so an earlier deletion in the same
         # pass never shifts a still-pending rule number out from under
         # this loop.
         _nums="$(printf '%s\n' "$_status" \
             | grep -F "${_p}/tcp" \
-            | grep -F "Variant ${_mode} XHTTP" \
+            | grep -E "# Variant ${_mode} XHTTP[[:space:]]*\$" \
             | grep -oE '^\[ *[0-9]+' \
             | grep -oE '[0-9]+' \
             | sort -rn)" || _nums=""
