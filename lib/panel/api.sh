@@ -572,16 +572,35 @@ panel_setup_api() {
     if [ "$XHTTP_ENABLE" = "1" ] && [ -n "$XHTTP_IBD_UUID" ]; then
         local XHTTP_PUBLIC_PORT_VAL
         XHTTP_PUBLIC_PORT_VAL="$(core_port_allocation_public "$MODE" "xhttp")"
+        # FIXED (XHTTP Host lookup investigation): this fallback was the
+        # exact `(.response.hosts // .response // [])` idiom the Vision
+        # Host neighbor above was already converted away from -- jq's
+        # `//` does not rescue a hard type error, and `.response.hosts`
+        # on an already-array `.response` raises "Cannot index array
+        # with string \"hosts\"" (confirmed directly with jq), aborting
+        # before 2>/dev/null's suppression is anything but cosmetic.
+        # The open question this comment used to flag -- object vs flat
+        # array -- is now settled against the real contract, not an
+        # assumption: @remnawave/backend-contract's GetHostsCommand
+        # (libs/contract/commands/hosts/get-hosts.command.ts, upstream
+        # remnawave/backend) defines `response: z.array(HostsSchema)` --
+        # .response for GET /api/hosts is always the flat array, never
+        # `{hosts:[...]}`. This project's own test fixtures already
+        # encode the same fact (lib/sripts/tests/harness.sh mocks this
+        # endpoint as `{"response":[...]}` throughout). So the object
+        # branch was never a real production shape here; the flat array
+        # was, and the old expression raised a hard error on it every
+        # time, meaning this lookup always failed silently and
+        # recreated the XHTTP Host on every re-run -- the exact failure
+        # Contract 13 exists to prevent. Rewritten to branch on
+        # `.response`'s actual type, matching the Vision Host lookup's
+        # already-verified pattern exactly (object-with-hosts and
+        # flat-array shapes both verified directly with jq before this
+        # change). Scope: this touches only this XHTTP-Host lookup.
         local EXISTING_XHTTP_HOST
         EXISTING_XHTTP_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
             jq -r --arg iu "$XHTTP_IBD_UUID" \
-            '(.response.hosts // .response // [])[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid' 2>/dev/null | head -1)
-        # NOTE: точное имя поля в ответе GET /api/hosts (`.response.hosts`
-        # vs `.response` как плоский массив) не подтверждено напрямую —
-        # jq-выражение выше пробует оба варианта через `//`, по аналогии
-        # с уже существующим defensive-паттерном в этом файле
-        # (`.response.configProfiles[]?`). Смотри итоговый отчёт,
-        # раздел OPEN QUESTIONS.
+            '(if (.response|type)=="object" then (.response.hosts // []) else (.response // []) end)[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid' 2>/dev/null | head -1)
         if [ -n "$EXISTING_XHTTP_HOST" ]; then
             ok "Хост для XHTTP уже существует, используется существующий"
         else
