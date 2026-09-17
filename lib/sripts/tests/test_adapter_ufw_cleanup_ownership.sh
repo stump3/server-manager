@@ -186,6 +186,52 @@ assert "D8: delete was attempted" "$(grep '^DELETE_CALL:' <<<"$R")" "DELETE_CALL
 assert "D8: subshell survives the failed delete" "$(grep '^SUBSHELL_RC:' <<<"$R")" "SUBSHELL_RC:0"
 assert "D8: function itself still returns 0" "$(grep '^FUNCTION_RC:' <<<"$R")" "FUNCTION_RC:0"
 
+echo ""
+echo "== D8b. ADVERSARIAL COMMENT: substring-only matches must NOT be treated as this tool's own rule =="
+STATUS_ADVERSARIAL='[ 1] 8443/tcp                   ALLOW IN    Anywhere                   # Not Variant J XHTTP
+[ 2] 8443/tcp                   ALLOW IN    Anywhere                   # Variant J XHTTP something
+[ 3] 8443/tcp                   ALLOW IN    Anywhere                   # SSH
+[ 4] 8443/tcp                   ALLOW IN    Anywhere'
+R="$(run_cleanup "$STATUS_ADVERSARIAL")"
+assert "D8b: none of [1]-[4] (foreign/lookalike comments, unrelated comment, no comment) is ever deleted" \
+    "$(grep -c '^DELETE_CALL:' <<<"$R")" "0"
+
+# ---------------------------------------------------------------------
+# D9/D10 -- NUMBER-SHIFT, the load-bearing question this follow-up audit
+# was specifically asked to settle: is it safe to delete matched rules
+# by number when deleting one rule renumbers every rule above it? None
+# of D1-D8 above ever has more than one matching rule in the same
+# mode-pass, so the `sort -rn` + delete-loop in the production function
+# (the part of the code that exists *specifically* to handle this) was,
+# until now, never actually exercised by more than a single candidate.
+# ---------------------------------------------------------------------
+echo ""
+echo "== D9. NUMBER-SHIFT: J XHTTP has TWO matching rules (v4 + v6-style duplicate at [3]/[4]) below which sits an unrelated admin 8443 rule at [2] =="
+STATUS_J_TWO_PLUS_ADMIN='[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 8443/tcp                   ALLOW IN    Anywhere
+[ 3] 8443/tcp                   ALLOW IN    Anywhere                   # Variant J XHTTP
+[ 4] 8443/tcp (v6)              ALLOW IN    Anywhere (v6)               # Variant J XHTTP
+[ 5] 443/tcp                    ALLOW IN    Anywhere'
+R="$(run_cleanup "$STATUS_J_TWO_PLUS_ADMIN")"
+assert "D9: deletes [4] then [3], strictly in that descending order -- proves the higher-numbered match is removed before the lower one is referenced, so the lower one's number can never have shifted out from under it" \
+    "$(grep '^DELETE_CALL:' <<<"$R")" "$(printf 'DELETE_CALL:4\nDELETE_CALL:3')"
+assert "D9: the unrelated admin rule [2] (uncommented, same port, LOWER number than both matches) is never referenced" \
+    "$(grep -c '^DELETE_CALL:2$' <<<"$R")" "0"
+
+echo ""
+echo "== D10. NUMBER-SHIFT (non-adjacent): three J XHTTP matches interspersed with foreign/admin rules on the SAME port at every intervening position -- if descending order were NOT used (or matches were re-numbered after each delete), an earlier deletion could shift a still-pending match's number onto a foreign row, deleting it by mistake =="
+STATUS_J_INTERSPERSED='[ 1] 8443/tcp                   ALLOW IN    Anywhere
+[ 2] 8443/tcp                   ALLOW IN    Anywhere                   # Variant J XHTTP
+[ 3] 8443/tcp                   ALLOW IN    Anywhere
+[ 4] 8443/tcp                   ALLOW IN    Anywhere                   # Variant J XHTTP
+[ 5] 8443/tcp                   ALLOW IN    Anywhere
+[ 6] 8443/tcp                   ALLOW IN    Anywhere                   # Variant J XHTTP'
+R="$(run_cleanup "$STATUS_J_INTERSPERSED")"
+assert "D10: deletes exactly [6], [4], [2] in strictly descending order" \
+    "$(grep '^DELETE_CALL:' <<<"$R")" "$(printf 'DELETE_CALL:6\nDELETE_CALL:4\nDELETE_CALL:2')"
+assert "D10: none of the interspersed foreign rules [1]/[3]/[5] (same port, no/other comment) is ever referenced" \
+    "$(grep -cE '^DELETE_CALL:(1|3|5)$' <<<"$R")" "0"
+
 # ---------------------------------------------------------------------
 # E. LOAD-BEARING NEGATIVE CONTROL
 #
@@ -245,6 +291,89 @@ assert "negative control: original code's delete call is a bare port spec, not a
     "$(grep -c '^OLD_DELETE_SPEC:delete allow 8443/tcp$' <<<"$MUT_R")" "1"
 assert "negative control: original code has no mechanism to reference a specific rule number at all" \
     "$(grep -c -- '--force' <<<"$MUTATED_FN")" "0"
+
+# ---------------------------------------------------------------------
+# E2. LOAD-BEARING NEGATIVE CONTROL for the NUMBER-SHIFT property itself
+# (D9/D10 above): mutate the REAL extracted function body -- not a
+# hand-copied reimplementation -- by flipping its one `sort -rn`
+# (descending) to `sort -n` (ascending), the exact property D9/D10 exist
+# to prove. Never written to any file on disk.
+# ---------------------------------------------------------------------
+echo ""
+echo "== E2. NEGATIVE CONTROL: ascending-order deletion (sort -n instead of sort -rn) against the D10 interspersed fixture =="
+ASCENDING_MUTANT_FN="${FN_BLOCK//sort -rn/sort -n}"
+assert "sanity: the mutation actually changed something (mutant differs from the real function body)" \
+    "$([ "$ASCENDING_MUTANT_FN" != "$FN_BLOCK" ] && echo mutated || echo UNCHANGED)" "mutated"
+run_ascending_mutant() {
+    local _status_output="$1"
+    local _capture="$WORKDIR/ufw_capture_asc_$$_$RANDOM"
+    : > "$_capture"
+    (
+        set -euo pipefail
+        source lib/core/config.sh
+        source lib/core/topology.sh
+        source lib/core/deployment.sh
+        source lib/core/port_allocation.sh
+        eval "$ASCENDING_MUTANT_FN"
+        ufw() {
+            if [ "$1" = "status" ]; then printf '%s\n' "$_status_output"
+            elif [ "$1" = "--force" ] && [ "$2" = "delete" ]; then echo "DELETE_CALL:$3" >> "$_capture"; fi
+        }
+        panel_cleanup_xhttp_ufw_rules
+    )
+    cat "$_capture"
+    rm -f "$_capture"
+}
+MUT_R2="$(run_ascending_mutant "$STATUS_J_INTERSPERSED")"
+assert "negative control: ascending-order mutant requests deletes in [2],[4],[6] order (NOT descending) -- diverges from D10's proven-correct [6],[4],[2] sequence, proving D10 actually exercises and would fail against this real, plausible-looking regression" \
+    "$MUT_R2" "$(printf 'DELETE_CALL:2\nDELETE_CALL:4\nDELETE_CALL:6')"
+# (Note: this mock does not itself simulate ufw's real renumbering-on-
+# delete side effect, so it cannot show the mutant deleting a wrong ROW
+# the way a real ufw would -- it proves the mutant issues a different,
+# unproven *sequence* of numbers than the one D9/D10 assert is correct.
+# That divergence is exactly what would make D9/D10 fail against this
+# mutant if it were the production code.)
+
+# ---------------------------------------------------------------------
+# E3. LOAD-BEARING NEGATIVE CONTROL for D8b: mutate the REAL extracted
+# function body by reverting its anchored comment match back to a bare
+# substring test (grep -F, no anchor) -- the exact pre-hardening shape
+# -- and confirm it mis-fires on D8b's adversarial fixture. Never
+# written to any file on disk.
+# ---------------------------------------------------------------------
+echo ""
+echo "== E3. NEGATIVE CONTROL: unanchored substring comment match against D8b's adversarial fixture =="
+# sed (not bash's ${var/pat/rep}, whose glob-pattern escaping for this
+# much punctuation is error-prone) replaces the one line doing the
+# anchored comment match with the pre-hardening bare substring form.
+UNANCHORED_MUTANT_FN="$(printf '%s\n' "$FN_BLOCK" | sed -E 's/\| grep -E "# Variant \$\{_mode\} XHTTP.*/| grep -F "Variant ${_mode} XHTTP" \\/')"
+assert "sanity: the mutation actually changed something" \
+    "$([ "$UNANCHORED_MUTANT_FN" != "$FN_BLOCK" ] && echo mutated || echo UNCHANGED)" "mutated"
+assert "sanity: the mutant is still syntactically valid bash" \
+    "$(bash -n <(echo "$UNANCHORED_MUTANT_FN") 2>&1; echo $?)" "0"
+run_unanchored_mutant() {
+    local _status_output="$1"
+    local _capture="$WORKDIR/ufw_capture_unanch_$$_$RANDOM"
+    : > "$_capture"
+    (
+        set -euo pipefail
+        source lib/core/config.sh
+        source lib/core/topology.sh
+        source lib/core/deployment.sh
+        source lib/core/port_allocation.sh
+        eval "$UNANCHORED_MUTANT_FN"
+        ufw() {
+            if [ "$1" = "status" ]; then printf '%s\n' "$_status_output"
+            elif [ "$1" = "--force" ] && [ "$2" = "delete" ]; then echo "DELETE_CALL:$3" >> "$_capture"; fi
+        }
+        panel_cleanup_xhttp_ufw_rules
+    )
+    cat "$_capture"
+    rm -f "$_capture"
+}
+MUT_R3="$(run_unanchored_mutant "$STATUS_ADVERSARIAL")"
+assert "negative control: unanchored mutant wrongly deletes the two lookalike-comment rules [1] and [2] that D8b proves the real (anchored) code leaves alone" \
+    "$MUT_R3" "$(printf 'DELETE_CALL:2\nDELETE_CALL:1')"
 
 echo ""
 echo "== F. no residual mutation: lib/panel/management.sh unchanged by running this test =="
