@@ -394,6 +394,156 @@ assert "management.sh's CODE still has no bare ownership-blind delete line" \
     "$(grep -c 'ufw delete allow "\${_p}/tcp"' <<<"$FN_CODE_AFTER")" "0"
 
 echo ""
+echo "== G. panel_cleanup_colocated_api_ufw_rule() -- same-session follow-up finding =="
+echo "   (lib/panel/api.sh's colocated-deployment UFW rule for 172.30.0.0/16:2222 had"
+echo "   the identical 'conditional add, no cleanup' shape as the XHTTP gap above, but"
+echo "   was missed by the original audit -- confirmed by grepping this whole repo for"
+echo "   '2222' and finding no delete/cleanup call anywhere before this fix.)"
+
+assert "panel_cleanup_colocated_api_ufw_rule() defined exactly once" \
+    "$(grep -c '^panel_cleanup_colocated_api_ufw_rule() {' lib/panel/management.sh)" "1"
+assert "called from panel_remove() exactly once" \
+    "$(awk '/^panel_remove\(\)/,/^}/' lib/panel/management.sh | grep -c 'panel_cleanup_colocated_api_ufw_rule$')" "1"
+assert "called from panel_reinstall() exactly once" \
+    "$(awk '/^panel_reinstall\(\)/,/^}/' lib/panel/management.sh | grep -c 'panel_cleanup_colocated_api_ufw_rule$')" "1"
+
+COLO_FN_BLOCK="$(extract_fn lib/panel/management.sh panel_cleanup_colocated_api_ufw_rule)"
+assert "function body actually extracted (non-empty)" \
+    "$([ -n "$COLO_FN_BLOCK" ] && echo present || echo MISSING)" "present"
+assert "reads ufw status numbered (read-only), not a raw port-only delete" \
+    "$(grep -c 'ufw status numbered' <<<"$COLO_FN_BLOCK")" "1"
+assert "filters by the exact comment lib/panel/api.sh now stamps its rule with" \
+    "$(grep -c 'Colocated Node API' <<<"$COLO_FN_BLOCK")" "1"
+assert "deletes by explicit rule number (--force delete \$_num), not by re-specifying the rule" \
+    "$(grep -c 'ufw --force delete \"\$_num\"' <<<"$COLO_FN_BLOCK")" "1"
+
+assert "lib/panel/api.sh's rule creation now carries the matching comment" \
+    "$(grep -c 'ufw allow from 172.30.0.0/16 to any port 2222 proto tcp comment \"Colocated Node API\"' lib/panel/api.sh)" "1"
+
+run_colo_cleanup() {
+    # Same harness shape as run_cleanup() above, for the simpler
+    # (single-rule, no F/J loop) colocated-API cleanup function.
+    local _status_output="$1" _status_mode="${2:-ok}" _delete_mode="${3:-ok}" _ufw_present="${4:-yes}"
+    local _capture="$WORKDIR/colo_capture_$$_$RANDOM"
+    : > "$_capture"
+    (
+        set -euo pipefail
+        eval "$COLO_FN_BLOCK"
+        if [ "$_ufw_present" = "no" ]; then
+            command() { [ "$1" = "-v" ] && [ "$2" = "ufw" ] && return 1; builtin command "$@"; }
+        else
+            ufw() {
+                if [ "$1" = "status" ]; then
+                    [ "$_status_mode" = "status_fail" ] && return 1
+                    printf '%s\n' "$_status_output"
+                elif [ "$1" = "--force" ] && [ "$2" = "delete" ]; then
+                    echo "DELETE_CALL:$3" >> "$_capture"
+                    [ "$_delete_mode" = "delete_fail" ] && return 1 || return 0
+                fi
+            }
+        fi
+        panel_cleanup_colocated_api_ufw_rule
+        echo "FUNCTION_RC:$?" >> "$_capture"
+    )
+    echo "SUBSHELL_RC:$?" >> "$_capture"
+    cat "$_capture"
+    rm -f "$_capture"
+}
+
+STATUS_COLO_ONLY='[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 443/tcp                    ALLOW IN    Anywhere
+[ 3] 2222/tcp                   ALLOW IN    172.30.0.0/16              # Colocated Node API'
+
+STATUS_COLO_PLUS_FOREIGN='[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 2222/tcp                   ALLOW IN    172.30.0.0/16              # Colocated Node API
+[ 3] 2222/tcp                   ALLOW IN    Anywhere
+[ 4] 2222/tcp                   ALLOW IN    10.0.0.0/8                 # Not Colocated Node API'
+
+STATUS_FOREIGN_ONLY='[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 2222/tcp                   ALLOW IN    Anywhere'
+
+STATUS_COLO_NOTHING='[ 1] 22/tcp                     ALLOW IN    Anywhere'
+
+echo ""
+echo "== G1. rule present alone -> deleted (rule [3]) =="
+R="$(run_colo_cleanup "$STATUS_COLO_ONLY")"
+assert "G1: deletes exactly rule [3]" "$(grep '^DELETE_CALL:' <<<"$R")" "DELETE_CALL:3"
+
+echo ""
+echo "== G2. LOAD-BEARING: own rule [2] coexists with an unrelated uncommented 2222 rule [3] and a lookalike-comment rule [4] -- only [2] is touched =="
+R="$(run_colo_cleanup "$STATUS_COLO_PLUS_FOREIGN")"
+assert "G2: deletes ONLY the exact-comment rule [2]" "$(grep '^DELETE_CALL:' <<<"$R")" "DELETE_CALL:2"
+
+echo ""
+echo "== G3. only a foreign, uncommented 2222/tcp rule exists (no owned rule at all) -> untouched =="
+R="$(run_colo_cleanup "$STATUS_FOREIGN_ONLY")"
+assert "G3: issues no delete call at all" "$(grep -c '^DELETE_CALL:' <<<"$R")" "0"
+
+echo ""
+echo "== G4. nothing to clean up (idempotent no-op) =="
+R="$(run_colo_cleanup "$STATUS_COLO_NOTHING")"
+assert "G4: issues no delete call, function still returns 0" \
+    "$(grep -c '^DELETE_CALL:' <<<"$R"):$(grep '^FUNCTION_RC:' <<<"$R")" "0:FUNCTION_RC:0"
+
+echo ""
+echo "== G5. ufw not installed at all -> no crash, no calls =="
+R="$(run_colo_cleanup "" "ok" "ok" "no")"
+assert "G5: function returns 0, no ufw calls" \
+    "$(grep -c '^DELETE_CALL:' <<<"$R"):$(grep '^FUNCTION_RC:' <<<"$R")" "0:FUNCTION_RC:0"
+
+echo ""
+echo "== G6. set -e safety: 'ufw status' itself fails -> caller survives =="
+R="$(run_colo_cleanup "" "status_fail" "ok" "yes")"
+assert "G6: subshell survives (does not abort under set -e)" "$(grep '^SUBSHELL_RC:' <<<"$R")" "SUBSHELL_RC:0"
+assert "G6: function itself returns 0" "$(grep '^FUNCTION_RC:' <<<"$R")" "FUNCTION_RC:0"
+
+echo ""
+echo "== G7. set -e safety: 'ufw --force delete' itself fails -> lifecycle not aborted =="
+R="$(run_colo_cleanup "$STATUS_COLO_ONLY" "ok" "delete_fail" "yes")"
+assert "G7: delete was attempted" "$(grep '^DELETE_CALL:' <<<"$R")" "DELETE_CALL:3"
+assert "G7: subshell survives the failed delete" "$(grep '^SUBSHELL_RC:' <<<"$R")" "SUBSHELL_RC:0"
+assert "G7: function itself still returns 0" "$(grep '^FUNCTION_RC:' <<<"$R")" "FUNCTION_RC:0"
+
+echo ""
+echo "== G8. LOAD-BEARING NEGATIVE CONTROL: pre-fix-style bare port delete against G2's ownership-critical fixture =="
+# Never written to any file on disk -- proves this test suite actually
+# fails without the ownership fix, i.e. G2 is not vacuously true.
+COLO_MUTATED_FN='panel_cleanup_colocated_api_ufw_rule() {
+    command -v ufw &>/dev/null || return 0
+    ufw delete allow from 172.30.0.0/16 to any port 2222 proto tcp >/dev/null 2>&1 || true
+    return 0
+}'
+run_colo_mutated() {
+    local _capture="$WORKDIR/colo_capture_mut_$$_$RANDOM"
+    : > "$_capture"
+    (
+        set -euo pipefail
+        eval "$COLO_MUTATED_FN"
+        ufw() {
+            if [ "$1" = "delete" ]; then
+                echo "OLD_DELETE_SPEC:$*" >> "$_capture"
+            fi
+        }
+        panel_cleanup_colocated_api_ufw_rule
+    )
+    cat "$_capture"
+    rm -f "$_capture"
+}
+MUT_R="$(run_colo_mutated)"
+assert "negative control: original-shape code issues one indiscriminate spec-based delete, no rule number or comment involved" \
+    "$(grep -c '^OLD_DELETE_SPEC:delete allow from 172.30.0.0/16 to any port 2222 proto tcp$' <<<"$MUT_R")" "1"
+assert "negative control: mutant has no mechanism to reference a specific rule number at all" \
+    "$(grep -c -- '--force' <<<"$COLO_MUTATED_FN")" "0"
+
+echo ""
+echo "== H. no residual mutation: lib/panel/management.sh unchanged by running this test =="
+COLO_FN_BLOCK_AFTER="$(extract_fn lib/panel/management.sh panel_cleanup_colocated_api_ufw_rule)"
+assert "management.sh's colocated-cleanup function body still readable from disk after this test run" \
+    "$([ -n "$COLO_FN_BLOCK_AFTER" ] && echo present || echo MISSING)" "present"
+assert "management.sh's colocated-cleanup CODE still calls ufw status numbered" \
+    "$(grep -vE '^\s*#' <<<"$COLO_FN_BLOCK_AFTER" | grep -c 'ufw status numbered')" "1"
+
+echo ""
 echo "==================================="
 echo "PASS=$PASS FAIL=$FAIL"
 echo "==================================="
