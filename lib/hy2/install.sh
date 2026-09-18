@@ -458,6 +458,78 @@ TRAFFICEOF
 
 }
 
+# hy_ufw_cleanup_service_port — CONFIRMED DEFECT (lifecycle audit, UFW
+# inventory pass, HY2 install/uninstall symmetry): hysteria_uninstall()
+# below never removed the UFW rule(s) install.sh's own install path
+# opened (`ufw allow "${port}/udp"`+`"${port}/tcp"` for single-port mode,
+# or `ufw allow "${port_hop_start}:${port_hop_end}/udp"` for Port
+# Hopping mode) -- confirmed by direct reading of this whole function
+# (no `ufw` call anywhere in it before this fix) and reproduced against
+# a real ufw: a rule opened at install time was still present and
+# ALLOWing traffic after uninstall removed the binary/config/service
+# that used to listen on it -- the same "port open, nothing behind it"
+# class of gap already fixed elsewhere in this codebase for XHTTP's
+# public port (lib/panel/management.sh:panel_cleanup_xhttp_ufw_rules()).
+#
+# Unlike that XHTTP fix, HY2's own `ufw allow` calls (install.sh, above)
+# carry no `comment` tag at all, so there is no existing tag this
+# cleanup could key off via `ufw status numbered` the way the XHTTP fix
+# does. What IS available, and is this port's actual identity, is the
+# `listen:` line in $HYSTERIA_CONFIG itself -- so this reads that line
+# BEFORE hysteria_uninstall() deletes the config file, and deletes
+# exactly the port/range this specific install actually opened. Same
+# "read the value this component itself persisted, delete exactly that"
+# technique lib/telemt/menu.sh's own uninstall already uses for its own
+# port (greps the port out of its own config before deleting it) --
+# not a new invention, the established precedent for a rule with no
+# comment to match on.
+#
+# 22/tcp and 80/tcp are deliberately NOT touched here, same reasoning
+# already established for other host-baseline/ACME ports in this
+# codebase: 22/tcp is host-wide SSH access, unrelated to whether HY2
+# specifically is installed; 80/tcp here is Hysteria's own built-in ACME
+# HTTP-01 client's port and, like Caddy's own permanent ACME 80/tcp
+# rule (lib/panel/cert.sh), is also bare/uncommented, so there is no
+# way to prove THIS rule (vs. Caddy's, or certbot's own temporary one)
+# owns it -- deleting it blind risks exactly the ownership collision
+# Step C.4 exists to catch, for a port far more likely to be
+# legitimately shared by another co-located component than HY2's own
+# service port is. Per C.5: ownership of the bare 22/80 rules can't be
+# established here, so they are left as LEGACY/UNOWNED-equivalent,
+# untouched -- only the port(s)/range this function can prove are
+# HY2's own (parsed straight from HY2's own config, the moment before
+# that config is deleted) are removed.
+#
+# Parses BOTH real `listen:` shapes install.sh actually writes
+# (confirmed by direct reading of install.sh's listen_addr construction,
+# both IPv4 0.0.0.0 and IPv6 [::] forms):
+#   single port:  listen: 0.0.0.0:44444        (or [::]:44444)
+#   Port Hopping: listen: 0.0.0.0:20000-30000  (or [::]:20000-30000)
+# This is deliberately a fresh, self-contained parse rather than a call
+# to hy_get_port() (lib/hy2/core.sh): hy_get_port()'s own regex expects
+# a comma-separated `PORT,START-END` shape that install.sh never
+# actually writes (confirmed empirically: hy_get_port() returns empty
+# on the real dash-separated Port Hopping listen line install.sh
+# produces) -- a separate, pre-existing bug with its own further
+# downstream consumers (hy_menu_migrate()'s destination-side `ufw allow
+# ${hy_port}/...`, hysteria_publish_sub()'s URI port) that this pass
+# did not verify end-to-end and is NOT fixing here, to keep this change
+# to exactly the uninstall-cleanup gap Step C's HY2 task asked about.
+hy_ufw_cleanup_service_port() {
+    command -v ufw &>/dev/null || return 0
+    [ -f "$HYSTERIA_CONFIG" ] || return 0
+    local _listen _rest
+    _listen=$(grep -m1 -E '^[[:space:]]*listen:[[:space:]]*' "$HYSTERIA_CONFIG" 2>/dev/null) || return 0
+    _rest=$(printf '%s\n' "$_listen" | sed -E 's/^[[:space:]]*listen:[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^["'"'"']//; s/["'"'"']$//')
+    if [[ "$_rest" =~ :([0-9]+)-([0-9]+)$ ]]; then
+        ufw delete allow "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}/udp" >/dev/null 2>&1 || true
+    elif [[ "$_rest" =~ :([0-9]+)$ ]]; then
+        ufw delete allow "${BASH_REMATCH[1]}/udp" >/dev/null 2>&1 || true
+        ufw delete allow "${BASH_REMATCH[1]}/tcp" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
 hysteria_uninstall() {
     header "Hysteria2 — Удалить полностью"
     echo ""
@@ -470,6 +542,12 @@ hysteria_uninstall() {
     systemctl stop    "${HYSTERIA_SVC:-hysteria-server}" 2>/dev/null || true
     systemctl disable "${HYSTERIA_SVC:-hysteria-server}" 2>/dev/null || true
 
+    # UFW: снимаем правило(а) именно того порта/диапазона, который был
+    # сконфигурирован (см. hy_ufw_cleanup_service_port() выше) -- ДО
+    # удаления конфига ниже, поскольку это единственный источник, откуда
+    # можно узнать, какой именно порт/диапазон открывал install.
+    hy_ufw_cleanup_service_port
+
     # Официальный деинсталлятор (если доступен)
     if command -v hysteria &>/dev/null; then
         local _hy_script; _hy_script=$(mktemp /tmp/hy2-install.XXXXXX.sh)
@@ -477,36 +555,6 @@ hysteria_uninstall() {
             env HYSTERIA_FORCE_NO_DETECT=1 bash "$_hy_script" --remove 2>/dev/null || true
         fi
         rm -f "$_hy_script"
-    fi
-
-    # UFW LIFECYCLE FINDING (this session): this function removed the
-    # binary/config/systemd unit but never the UFW rule(s)
-    # hysteria_install()/hysteria_menu.sh's own `ufw allow` calls open
-    # for Hysteria's own port -- either a single "$port/udp"+"$port/tcp"
-    # pair, or, for Port Hopping, the "$port_hop_start:$port_hop_end/udp"
-    # range -- confirmed by grepping this file and lib/hy2/menu.sh for
-    # every `ufw allow`/`ufw delete` call: zero deletes exist for either
-    # form anywhere. The firewall stayed permanently open after a
-    # "complete" removal, contrary to this function's own promise (only
-    # certs/URI files are disclosed above as being kept). Reads the
-    # listen: line directly, before the config is deleted below, and
-    # handles the range form explicitly (hy_get_port() only returns the
-    # range's start port, not its end -- not reused here since deleting
-    # just the start would leave the rest of the range open). SSH(22)/
-    # HTTP(80), opened by the same install step, are deliberately left
-    # alone -- those are shared/OS-owned, not Hysteria's own.
-    if command -v ufw &>/dev/null; then
-        local _hy_listen _hy_listen_val
-        _hy_listen=$(grep -m1 -E '^[[:space:]]*listen:[[:space:]]*' "${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}" 2>/dev/null || true)
-        _hy_listen_val="${_hy_listen##*:}"
-        _hy_listen_val="${_hy_listen_val%%[[:space:]]*}"
-        _hy_listen_val="${_hy_listen_val%\"}"; _hy_listen_val="${_hy_listen_val#\"}"
-        if [[ "$_hy_listen_val" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            ufw delete allow "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}/udp" >/dev/null 2>&1 || true
-        elif [[ "$_hy_listen_val" =~ ^([0-9]+)$ ]]; then
-            ufw delete allow "${BASH_REMATCH[1]}/udp" >/dev/null 2>&1 || true
-            ufw delete allow "${BASH_REMATCH[1]}/tcp" >/dev/null 2>&1 || true
-        fi
     fi
 
     # Страховка — удаляем напрямую если deinstaller не сработал
