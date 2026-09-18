@@ -72,9 +72,55 @@ migrate_transfer_panel_ssl() {
     fi
 }
 
+
+# migrate_dest_existing_state_detected — remote analog of
+# panel_install_existing_state_detected() (lib/panel/install.sh): true if
+# the DESTINATION server already has the remnawave-db-data named Docker
+# volume, i.e. an existing Panel installation whose data
+# migrate_transfer_panel() below is about to overwrite/destroy. Same
+# identity check, same semantics -- executed over RUN (which returns the
+# remote command's exact exit code, lib/common/ssh.sh) instead of
+# locally. `command -v docker` is checked first, same as the local
+# version, so a genuinely blank destination (no Docker yet) correctly
+# reads as "no existing state" rather than erroring.
+migrate_dest_existing_state_detected() {
+    RUN "command -v docker >/dev/null 2>&1 && docker volume inspect remnawave-db-data >/dev/null 2>&1" 2>/dev/null
+}
+
 migrate_transfer_panel() {
     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
         info "Переносим Panel..."
+
+        # CONFIRMED DEFECT (lifecycle audit, migration destination-DB
+        # pass): everything below this point -- PUT overwriting the
+        # destination's .env/docker-compose.yml, then `docker volume rm
+        # remnawave-db-data` followed by restoring this run's
+        # `pg_dumpall -c` dump -- silently destroyed any ALREADY-EXISTING
+        # Panel installation on the destination, with no confirmation of
+        # any kind. `pg_dumpall -c` itself emits DROP DATABASE/DROP ROLE
+        # statements ahead of the restore, so the destination's existing
+        # data was lost even on the branch where `docker volume rm`
+        # fails silently because a running container still holds the
+        # volume open -- precisely the case a live existing install
+        # produces. This is the same class of operation
+        # panel_remove()/panel_reinstall() (lib/panel/management.sh) both
+        # gate behind an explicit warning + typed 'YES' confirmation;
+        # migrate had no destination-side equivalent, only
+        # panel_install_existing_state_detected() for the LOCAL side of a
+        # plain install. Fix: same detection semantics via
+        # migrate_dest_existing_state_detected() above, gated the same
+        # way as panel_reinstall()'s own confirmation prompt, placed
+        # before ANY destination mutation begins (PUT included).
+        if migrate_dest_existing_state_detected; then
+            warn "На новом сервере уже обнаружена существующая установка Panel (volume remnawave-db-data)."
+            warn "Продолжение ПЕРЕЗАПИШЕТ конфигурацию и УНИЧТОЖИТ текущие данные БД на новом сервере!"
+            local _dest_confirm
+            read -rp "  Продолжить и перезаписать данные на новом сервере? Введите 'YES': " _dest_confirm < /dev/tty
+            if [ "$_dest_confirm" != "YES" ]; then
+                info "Перенос отменён"
+                return 1
+            fi
+        fi
 
         # Дамп БД со сжатием
         local dump="/tmp/panel_migrate_$(date +%Y%m%d_%H%M%S).sql.gz"
