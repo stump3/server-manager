@@ -172,6 +172,80 @@ panel_reality_listen_addr() {
     fi
 }
 
+# ── Colocated API object rollback (DEFECT #2 fix — lifecycle audit
+# Step D.7): panel_setup_api()'s Config Profile/Node/Host chain used to
+# `warn` and keep going on a Node or Host CREATE failure, with no
+# rollback of what had already been created earlier in the same run,
+# and no propagated failure — the function fell through to Squad/token/
+# restart and returned success. These three helpers give it the same
+# best-effort, never-mask-the-original-failure compensation shape the
+# Remote Node path already has in production
+# (lib/panel/node/api.sh:_panel_node_rollback_node/_panel_node_rollback_
+# profile) — same panel_api_status()-based 2xx/other status handling.
+# Defined locally here rather than called cross-file from node/api.sh:
+# reusing those would add a new file-to-file dependency between two
+# siblings purely to remove duplication, which this project's own
+# SAFE-refactor criteria (existing accessor must not introduce a new
+# architectural dependency / must not exist merely to eliminate
+# duplication) rule out. node/api.sh itself is untouched by this fix.
+#
+# Called only for an object THIS invocation actually created (callers
+# gate every call on the matching *_EXISTING=false — an object a
+# lookup found already present is never touched). Best-effort: a
+# rollback failure is warned about, requires manual follow-up, and
+# never flips the original failure into a false success — every caller
+# still `return 1`s regardless of whether the rollback below succeeded.
+_panel_setup_api_rollback_host() {
+    local _api="$1" _token="$2" _uuid="$3" _label="${4:-хост}"
+    [ -n "$_uuid" ] || return 0
+    warn "Откат: удаляется $_label, созданный(ая) в этом запуске (uuid: $_uuid)"
+    local _raw _rc=0
+    _raw=$(panel_api_status "DELETE" "http://$_api/api/hosts/$_uuid" "$_token" 2>/dev/null) || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        warn "Не удалось откатить создание объекта \"$_label\" (uuid: $_uuid): сетевая ошибка (transport failure) — требуется ручная проверка"
+        return
+    fi
+    local _status="${_raw: -3}"
+    case "$_status" in
+        2??) ok "$_label удалён (rollback)" ;;
+        *)   warn "Не удалось откатить создание объекта \"$_label\" (uuid: $_uuid): HTTP $_status — требуется ручная проверка" ;;
+    esac
+}
+
+_panel_setup_api_rollback_node() {
+    local _api="$1" _token="$2" _uuid="$3"
+    [ -n "$_uuid" ] || return 0
+    warn "Откат: удаляется нода, созданная в этом запуске (uuid: $_uuid)"
+    local _raw _rc=0
+    _raw=$(panel_api_status "DELETE" "http://$_api/api/nodes/$_uuid" "$_token" 2>/dev/null) || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        warn "Не удалось откатить создание ноды (uuid: $_uuid): сетевая ошибка (transport failure) — требуется ручная проверка"
+        return
+    fi
+    local _status="${_raw: -3}"
+    case "$_status" in
+        2??) ok "Нода удалена (rollback)" ;;
+        *)   warn "Не удалось откатить создание ноды (uuid: $_uuid): HTTP $_status — требуется ручная проверка" ;;
+    esac
+}
+
+_panel_setup_api_rollback_profile() {
+    local _api="$1" _token="$2" _uuid="$3"
+    [ -n "$_uuid" ] || return 0
+    warn "Откат: удаляется конфиг-профиль, созданный в этом запуске (uuid: $_uuid)"
+    local _raw _rc=0
+    _raw=$(panel_api_status "DELETE" "http://$_api/api/config-profiles/$_uuid" "$_token" 2>/dev/null) || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        warn "Не удалось откатить создание конфиг-профиля (uuid: $_uuid): сетевая ошибка (transport failure) — требуется ручная проверка"
+        return
+    fi
+    local _status="${_raw: -3}"
+    case "$_status" in
+        2??) ok "Конфиг-профиль удалён (rollback)" ;;
+        *)   warn "Не удалось откатить создание конфиг-профиля (uuid: $_uuid): HTTP $_status — требуется ручная проверка" ;;
+    esac
+}
+
 panel_setup_api() {
     local SUPERADMIN_USER="$1"
     local SUPERADMIN_PASS="$2"
@@ -389,7 +463,13 @@ panel_setup_api() {
     # существующего профиля (EXISTING_PROFILE), что для только что
     # созданного (PROFILE_R) — единственное различие между этими двумя
     # веток ниже.
-    local CFG_UUID="" IBD_UUID="" XHTTP_IBD_UUID=""
+    # PROFILE_EXISTING (DEFECT #2 fix): records which branch below was
+    # taken — true if StealConfig already existed (lookup hit), false if
+    # this invocation just created it — so a later Node/Host CREATE
+    # failure knows whether it is safe to roll this profile back.
+    # Read-only bookkeeping only: does not change which branch runs or
+    # what either branch does.
+    local CFG_UUID="" IBD_UUID="" XHTTP_IBD_UUID="" PROFILE_EXISTING=false
     local EXISTING_PROFILE
     EXISTING_PROFILE=$(panel_api "GET" "http://$API/api/config-profiles" "$TOKEN" | \
         jq -c '.response.configProfiles[]? | select(.name=="StealConfig")' 2>/dev/null | head -1)
@@ -414,6 +494,7 @@ panel_setup_api() {
     fi
 
     if [ -n "$CFG_UUID" ] && [ -n "$IBD_UUID" ]; then
+        PROFILE_EXISTING=true
         ok "Конфиг-профиль StealConfig уже существует, используется существующий"
     else
         local PROFILE_R
@@ -477,16 +558,44 @@ panel_setup_api() {
     # isn't defined anywhere and isn't invented here. Duplicate-match
     # handling (`head -1`) mirrors the Config Profile lookup above,
     # unchanged assumption.
-    local EXISTING_NODE
+    # DEFECT #2 fix: NODE_UUID/NODE_EXISTING now tracked explicitly (same
+    # shape as PROFILE_EXISTING above and as lib/panel/node/api.sh's own
+    # Node lookup), and the CREATE branch below now reads the response
+    # BODY for `.response.uuid` instead of only checking panel_api()'s
+    # own exit code. panel_api() is a thin curl wrapper with no `-f` —
+    # its exit status is curl's transport-level result, 0 for any
+    # completed HTTP request including a 4xx/5xx application error (same
+    # "Contract 4" fact node/api.sh's own header comment already
+    # documents for this exact reason) — so the previous `&& ok || warn`
+    # here could not actually detect a real Panel-side CREATE failure,
+    # only a genuine transport failure, and either way fell through to
+    # Host/Squad/token/restart regardless. Reading the body for the
+    # UUID is the same detection method node/api.sh's own Node CREATE
+    # already uses.
+    local EXISTING_NODE NODE_UUID="" NODE_EXISTING=false
     EXISTING_NODE=$(panel_api "GET" "http://$API/api/nodes" "$TOKEN" | \
         jq -r '.response[]? | select(.name=="Steal") | .uuid' 2>/dev/null | head -1)
     if [ -n "$EXISTING_NODE" ]; then
+        NODE_UUID="$EXISTING_NODE"
+        NODE_EXISTING=true
         ok "Нода Steal уже существует, используется существующая"
     else
-        panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
+        local NODE_R
+        NODE_R=$(panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
             --arg na "$NODE_ADDR" --arg cu "$CFG_UUID" --argjson ai "$ACTIVE_INBOUNDS_JSON" \
-            '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)" >/dev/null 2>&1 \
-            && ok "Нода создана" || warn "Ошибка создания ноды"
+            '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)")
+        NODE_UUID=$(echo "$NODE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
+        if [ -z "$NODE_UUID" ]; then
+            warn "Ошибка создания ноды: $NODE_R"
+            # Fatal: do not continue to Host/Squad/token/restart. Only
+            # the Config Profile could have been created by this same
+            # run at this point (Node CREATE itself just failed, so
+            # there is no Node to roll back) — compensated only if this
+            # run created it (PROFILE_EXISTING=false).
+            [ "$PROFILE_EXISTING" = false ] && _panel_setup_api_rollback_profile "$API" "$TOKEN" "$CFG_UUID"
+            return 1
+        fi
+        ok "Нода создана"
     fi
 
     # Contract 13 (lookup-before-create): same pattern as the XHTTP Host
@@ -521,17 +630,37 @@ panel_setup_api() {
     # established fall-through-to-create convention unchanged). Scope:
     # this touches only this Vision-Host lookup, not the XHTTP Host
     # neighbor, which is precedent for this change and out of scope.
-    local EXISTING_VISION_HOST
+    # DEFECT #2 fix: same shape as the Node fix above — HOST_UUID/
+    # HOST_EXISTING tracked explicitly, CREATE failure detected from the
+    # response body (`.response.uuid`) rather than panel_api()'s own
+    # (transport-only) exit code, and a genuine failure is now fatal
+    # with reverse-order rollback instead of a `warn` that fell through
+    # to Squad/token/restart regardless.
+    local EXISTING_VISION_HOST HOST_UUID="" HOST_EXISTING=false
     EXISTING_VISION_HOST=$(panel_api "GET" "http://$API/api/hosts" "$TOKEN" | \
         jq -r --arg iu "$IBD_UUID" \
         '(if (.response|type)=="object" then (.response.hosts // []) else (.response // []) end)[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid' 2>/dev/null | head -1)
     if [ -n "$EXISTING_VISION_HOST" ]; then
+        HOST_UUID="$EXISTING_VISION_HOST"
+        HOST_EXISTING=true
         ok "Хост уже существует, используется существующий"
     else
-        panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
+        local HOST_R
+        HOST_R=$(panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
             --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" \
-            '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
-            && ok "Хост создан" || warn "Ошибка создания хоста"
+            '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)")
+        HOST_UUID=$(echo "$HOST_R" | jq -r '.response.uuid // empty' 2>/dev/null)
+        if [ -z "$HOST_UUID" ]; then
+            warn "Ошибка создания хоста: $HOST_R"
+            # Fatal: do not continue to XHTTP Host/Squad/token/restart.
+            # Reverse order of creation — Host itself was never created
+            # here, so only Node then Profile are candidates, each
+            # compensated only if THIS run created it.
+            [ "$NODE_EXISTING" = false ] && _panel_setup_api_rollback_node "$API" "$TOKEN" "$NODE_UUID"
+            [ "$PROFILE_EXISTING" = false ] && _panel_setup_api_rollback_profile "$API" "$TOKEN" "$CFG_UUID"
+            return 1
+        fi
+        ok "Хост создан"
     fi
 
     # Variant J / XHTTP_ENABLE=1: second Host for XHTTP, only when
