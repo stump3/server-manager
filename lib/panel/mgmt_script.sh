@@ -191,9 +191,42 @@ do_open_port() {
     local nc="/opt/remnawave/nginx.conf"
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     ss -tuln|grep -q ":8443" && { _warn "Порт 8443 занят"; return 1; }
+    # UFW lifecycle audit (this session): checked BEFORE touching
+    # anything below, and before the `ufw allow` call further down.
+    # Confirmed live against a real ufw: `ufw allow 8443/tcp comment
+    # "X"` does NOT add a second rule when a `8443/tcp ALLOW IN
+    # Anywhere` rule already exists under a *different* comment (or no
+    # comment) -- it silently RELABELS that existing rule to comment
+    # "X" ("Rule updated"), because ufw treats the underlying spec as
+    # one rule slot regardless of comment. So this function's own
+    # ownership comment on the rule it adds (see below) cannot, by
+    # itself, stop it from taking over -- under a fresh label -- a
+    # rule that already belongs to something else (Hysteria2's own
+    # documented recommended default port, lib/hy2/install.sh: "1)
+    # 8443 — рекомендуется", opened bare/uncommented; or a live Variant
+    # J XHTTP rule, if this MODE=1/2 script is stale leftover from
+    # before a reinstall to J -- panel_remove() never deletes this
+    # generated script). The `ss -tuln` check above only catches a
+    # service currently *listening*, not a firewall rule for a service
+    # that is merely stopped/not-yet-started, so it does not cover
+    # this. Refusing here, before any relabeling can happen, is the
+    # only point this can safely be caught at.
+    if command -v ufw &>/dev/null; then
+        local _existing_8443
+        _existing_8443="$(ufw status numbered 2>/dev/null | grep -F '8443/tcp' | grep -vE '# Panel emergency admin[[:space:]]*$' || true)"
+        if [ -n "$_existing_8443" ]; then
+            _warn "Порт 8443/tcp уже используется другим UFW-правилом (не этой командой) — вероятно, другим сервисом (например, Hysteria2 или Variant J XHTTP). open_port не будет его трогать."
+            printf '%s\n' "$_existing_8443" | sed 's/^/  /' >&2
+            return 1
+        fi
+    fi
     sed -i "/server_name $pd;/a \\    listen 8443 ssl;" "$nc"
     cd /opt/remnawave && docker compose restart remnawave-nginx>/dev/null 2>&1
-    ufw allow 8443/tcp>/dev/null 2>&1; ufw reload>/dev/null 2>&1
+    # Tagged with an ownership comment so do_close_port() below can
+    # delete exactly this rule, never a same-port rule belonging to
+    # something else -- safe now that the check above guarantees no
+    # pre-existing, differently-owned 8443/tcp rule exists to relabel.
+    ufw allow 8443/tcp comment "Panel emergency admin">/dev/null 2>&1; ufw reload>/dev/null 2>&1
     local ck cv
     ck=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '~\*\K\w+(?==)')
     cv=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '=\K\w+(?=" 1)')
@@ -212,7 +245,34 @@ do_close_port() {
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     sed -i "/server_name $pd;/,/}/{s/    listen 8443 ssl;//}" "$nc"
     cd /opt/remnawave && docker compose restart remnawave-nginx>/dev/null 2>&1
-    ufw delete allow 8443/tcp>/dev/null 2>&1; ufw reload>/dev/null 2>&1
+    # Same finding as do_open_port() above: deletes ONLY the rule this
+    # function itself owns (port 8443/tcp AND its own "Panel emergency
+    # admin" comment, matched via read-only `ufw status numbered` and
+    # removed by rule number -- same technique already proven for
+    # panel_cleanup_xhttp_ufw_rules()/panel_cleanup_colocated_api_ufw_rule()
+    # in lib/panel/management.sh, inlined here since this is a
+    # standalone generated script with no access to that sourced
+    # helper). A bare `ufw delete allow 8443/tcp` (this function's old
+    # form) matches and removes ANY existing rule on that port
+    # regardless of comment -- confirmed live -- which could silently
+    # take down Hysteria2 (same default port, no comment of its own)
+    # or a live Variant J XHTTP rule (if this MODE=1/2 script is stale
+    # leftover from before a reinstall to J; panel_remove() never
+    # deletes this generated script).
+    if command -v ufw &>/dev/null; then
+        local _status _nums _num
+        _status="$(ufw status numbered 2>/dev/null)" || _status=""
+        _nums="$(printf '%s\n' "$_status" \
+            | grep -F "8443/tcp" \
+            | grep -E "# Panel emergency admin[[:space:]]*\$" \
+            | grep -oE '^\[ *[0-9]+' \
+            | grep -oE '[0-9]+' \
+            | sort -rn)" || _nums=""
+        for _num in $_nums; do
+            ufw --force delete "$_num" >/dev/null 2>&1
+        done
+        ufw reload>/dev/null 2>&1
+    fi
     _ok "Порт 8443 закрыт"
 }
 do_migrate() {
