@@ -479,6 +479,36 @@ hysteria_uninstall() {
         rm -f "$_hy_script"
     fi
 
+    # UFW LIFECYCLE FINDING (this session): this function removed the
+    # binary/config/systemd unit but never the UFW rule(s)
+    # hysteria_install()/hysteria_menu.sh's own `ufw allow` calls open
+    # for Hysteria's own port -- either a single "$port/udp"+"$port/tcp"
+    # pair, or, for Port Hopping, the "$port_hop_start:$port_hop_end/udp"
+    # range -- confirmed by grepping this file and lib/hy2/menu.sh for
+    # every `ufw allow`/`ufw delete` call: zero deletes exist for either
+    # form anywhere. The firewall stayed permanently open after a
+    # "complete" removal, contrary to this function's own promise (only
+    # certs/URI files are disclosed above as being kept). Reads the
+    # listen: line directly, before the config is deleted below, and
+    # handles the range form explicitly (hy_get_port() only returns the
+    # range's start port, not its end -- not reused here since deleting
+    # just the start would leave the rest of the range open). SSH(22)/
+    # HTTP(80), opened by the same install step, are deliberately left
+    # alone -- those are shared/OS-owned, not Hysteria's own.
+    if command -v ufw &>/dev/null; then
+        local _hy_listen _hy_listen_val
+        _hy_listen=$(grep -m1 -E '^[[:space:]]*listen:[[:space:]]*' "${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}" 2>/dev/null || true)
+        _hy_listen_val="${_hy_listen##*:}"
+        _hy_listen_val="${_hy_listen_val%%[[:space:]]*}"
+        _hy_listen_val="${_hy_listen_val%\"}"; _hy_listen_val="${_hy_listen_val#\"}"
+        if [[ "$_hy_listen_val" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            ufw delete allow "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}/udp" >/dev/null 2>&1 || true
+        elif [[ "$_hy_listen_val" =~ ^([0-9]+)$ ]]; then
+            ufw delete allow "${BASH_REMATCH[1]}/udp" >/dev/null 2>&1 || true
+            ufw delete allow "${BASH_REMATCH[1]}/tcp" >/dev/null 2>&1 || true
+        fi
+    fi
+
     # Страховка — удаляем напрямую если deinstaller не сработал
     rm -f /usr/bin/hysteria /usr/local/bin/hysteria
     rm -f /etc/systemd/system/hysteria-server.service
