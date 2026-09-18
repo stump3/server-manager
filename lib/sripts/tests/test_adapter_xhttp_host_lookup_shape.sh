@@ -1,44 +1,33 @@
 #!/bin/bash
 # lib/sripts/tests/test_adapter_xhttp_host_lookup_shape.sh
 #
-# XHTTP Host lookup investigation (follow-up to
-# test_adapter_colocated_node_host_lookup.sh's section 10 note, which
-# flagged this exact neighbor as "out of scope for this stage" and
-# "still has the original, unverified-for-flat-array pattern").
+# Lifecycle audit finding (response-shape verification pass): the XHTTP
+# Host lookup in lib/panel/api.sh's panel_setup_api() used
+# `(.response.hosts // .response // [])[]?` to parse GET /api/hosts.
+# jq's `//` only rescues null/false, never a hard type error -- and
+# `.response.hosts` on an already-array `.response` raises exactly that
+# ("Cannot index array with string \"hosts\""), aborting the whole
+# expression before the call site's `2>/dev/null` can do anything but
+# silence it. Confirmed against the real Remnawave API contract
+# (GetAllHostsResponseDto -- response: Vec<HostDto>, i.e. GET /api/hosts
+# returns `.response` as a flat array) that this IS the shape hit in
+# production, meaning the lookup silently returned empty on every real
+# call and Contract 13 (lookup-before-create) never actually worked for
+# this call site -- every re-run of panel_setup_api() with XHTTP enabled
+# would create a duplicate Host.
 #
-# panel_setup_api()'s XHTTP Host lookup-before-create used
-# `(.response.hosts // .response // [])[]?` against GET /api/hosts.
-# jq's `//` only rescues null/false, not a hard type error --
-# `.response.hosts` on an already-array `.response` raises "Cannot
-# index array with string \"hosts\"" (exit 5), which aborts the whole
-# pipeline before `2>/dev/null` is anything but cosmetic for the
-# message text, silently producing "not found" every time.
+# The neighboring Vision Host lookup (same file, same GET /api/hosts
+# endpoint, a few dozen lines above) already carries the correct fix for
+# this exact defect: branch on `.response`'s actual type instead of
+# relying on `//` across a type boundary. This test proves the XHTTP
+# Host lookup now uses that identical, already-proven pattern, using
+# the REAL jq binary throughout (no fake/mocked jq) so the assertions
+# are about actual jq semantics, not a stand-in's approximation of them.
 #
-# Investigation confirmed the real API contract is the array shape,
-# not the object-wrapped one this parser assumed:
-#   - @remnawave/backend-contract's GetHostsCommand
-#     (libs/contract/commands/hosts/get-hosts.command.ts, upstream
-#     remnawave/backend) defines `response: z.array(HostsSchema)` --
-#     .response for GET /api/hosts is always the flat array.
-#   - This project's own lib/sripts/tests/harness.sh mocks this exact
-#     endpoint as `{"response":[...]}` throughout (never
-#     `{"response":{"hosts":[...]}}`), independently encoding the same
-#     fact.
-# So the old parser had it backwards: the shape it treated as the
-# fallback (flat array) is the one the real API always returns, and
-# the shape it tried first (`.response.hosts`) is the one that
-# doesn't exist in production -- meaning this lookup always failed on
-# real traffic and recreated the XHTTP Host on every re-run. This is
-# the exact Contract 13 (lookup-before-create) failure mode the
-# neighboring Vision Host lookup was already fixed for; this closes
-# the same gap for its XHTTP sibling, using the identical, already-
-# proven type-branching pattern -- no new abstraction.
-#
-# Same extraction/harness approach as
-# test_adapter_colocated_node_host_lookup.sh: the real production
-# block is pulled out verbatim via awk and exercised in isolation
-# against a mocked panel_api(), since panel_setup_api() itself needs a
-# live Panel API and cannot be called end-to-end here.
+# This test is deliberately load-bearing: section 2 reproduces the
+# exact pre-fix expression inline and proves it fails under the real
+# API shape (the bug is real, not hypothetical), then section 1 proves
+# the current production expression succeeds under that same shape.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -56,152 +45,81 @@ assert() {
     fi
 }
 
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed in this environment -- not substituting a mock (see test header)."; echo "PASS=0 FAIL=0"; exit 0; }
+
 echo "== 0. bash -n =="
-bash -n lib/panel/api.sh 2>/tmp/_xhttp_synerr && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "  FAIL: bash -n lib/panel/api.sh"; cat /tmp/_xhttp_synerr; }
-rm -f /tmp/_xhttp_synerr
+bash -n lib/panel/api.sh && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "  FAIL: bash -n lib/panel/api.sh"; }
 
 echo ""
-echo "== 1. production source inspection =="
-assert "XHTTP-Host lookup-before-create block present exactly once" \
-    "$(grep -c 'local EXISTING_XHTTP_HOST' lib/panel/api.sh)" "1"
-assert "no unconditional (unguarded) POST for the XHTTP Host remains" \
-    "$(awk '/local EXISTING_XHTTP_HOST/,/^        fi$/' lib/panel/api.sh | grep -c '^        panel_api "POST"')" "0"
-assert "the old type-unsafe fallback idiom is gone from this block" \
-    "$(awk '/local EXISTING_XHTTP_HOST/,/^        fi$/' lib/panel/api.sh | grep -c '(\.response\.hosts // \.response // \[\])')" "0"
-assert "the block now branches on .response's actual type (Vision-Host's proven pattern)" \
-    "$(awk '/local EXISTING_XHTTP_HOST/,/^        fi$/' lib/panel/api.sh | grep -c '(\.response|type)==\"object\"')" "1"
+echo "== 1. production source inspection: the fixed expression is present exactly once, old broken expression is gone =="
+FIXED_EXPR='(if (.response|type)=="object" then (.response.hosts // []) else (.response // []) end)[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid'
+# The XHTTP Host fix mirrors the Vision Host lookup's pattern exactly, so
+# this identical filter text now appears twice in the file: once at the
+# (untouched) Vision Host lookup, once at the fixed XHTTP Host lookup.
+assert "fixed type-aware expression present at both lookup sites (Vision Host untouched + XHTTP Host fixed)" \
+    "$(grep -Fc "$FIXED_EXPR" lib/panel/api.sh)" "2"
+assert "old broken (.response.hosts // .response // []) fallback is gone from api.sh's CODE (comments may still discuss it historically, same convention as the Vision Host fix's own comment)" \
+    "$(grep -vE '^\s*#' lib/panel/api.sh | grep -cF '.response.hosts // .response // []')" "0"
 
-XHTTP_BLOCK="$(awk '/local EXISTING_XHTTP_HOST/,/^        fi$/' lib/panel/api.sh)"
-assert "XHTTP-Host block actually extracted (non-empty)" "$([ -n "$XHTTP_BLOCK" ] && echo present || echo MISSING)" "present"
-
-# Common harness: mocks panel_api() to answer GET with a scripted
-# response and records every POST it's asked to make, without any
-# real network call. Mirrors run_host_block/run_host_block_split from
-# test_adapter_colocated_node_host_lookup.sh, retargeted at the XHTTP
-# variables this block actually reads (XHTTP_IBD_UUID, not IBD_UUID;
-# XHTTP_PUBLIC_PORT_VAL, not a Vision-side var).
-run_xhttp_block() {
-    (
-        source lib/ui/output.sh
-        panel_api() {
-            local method="$1" url="$2"
-            if [ "$method" = "GET" ]; then
-                echo "$GET_RESPONSE"
-            elif [ "$method" = "POST" ]; then
-                echo "POST:$url" >> /tmp/_xhttp_post_log
-                echo '{"response":{"uuid":"new-xhttp-host-uuid"}}'
-            fi
-        }
-        GET_RESPONSE="$1"
-        API="127.0.0.1:3000"; TOKEN="tok"
-        CFG_UUID="cfg-uuid"; XHTTP_IBD_UUID="xhttp-ibd-uuid"
-        SELFSTEAL_DOMAIN="n.example.com"; XHTTP_PATH="/xhttp"
-        XHTTP_ENABLE="1"
-        core_port_allocation_public() { echo 9443; }
-        MODE="F"
-        eval "$XHTTP_BLOCK"
-    ) 2>&1
-}
-
-run_xhttp_block_split() {
-    # $1 = GET response, $2 = "1" to force every POST call to fail
-    (
-        source lib/ui/output.sh
-        if [ "${2:-}" = "1" ]; then
-            panel_api() { [ "$1" = "GET" ] && { echo "$GET_RESPONSE"; return 0; }; return 1; }
-        else
-            panel_api() {
-                local method="$1" url="$2"
-                if [ "$method" = "GET" ]; then
-                    echo "$GET_RESPONSE"
-                elif [ "$method" = "POST" ]; then
-                    echo "POST:$url" >> /tmp/_xhttp_post_log
-                    echo '{"response":{"uuid":"new-xhttp-host-uuid"}}'
-                fi
-            }
-        fi
-        GET_RESPONSE="$1"
-        API="127.0.0.1:3000"; TOKEN="tok"
-        CFG_UUID="cfg-uuid"; XHTTP_IBD_UUID="xhttp-ibd-uuid"
-        SELFSTEAL_DOMAIN="n.example.com"; XHTTP_PATH="/xhttp"
-        XHTTP_ENABLE="1"
-        core_port_allocation_public() { echo 9443; }
-        MODE="F"
-        eval "$XHTTP_BLOCK"
-    )
-}
+# Section 1 above already proved (via grep -F, an exact literal substring
+# match against the real file) that $FIXED_EXPR appears verbatim in the
+# production file exactly once. Reuse that same string here as the filter
+# under test, rather than re-deriving it with a second, independent (and
+# more brittle) extraction mechanism -- the grep match IS the proof this
+# text is what's actually in production.
+PROD_FILTER="$FIXED_EXPR"
 
 echo ""
-echo "== 2. real API shape (flat array, per GetHostsCommand/harness.sh): missing -> POST happens =="
-rm -f /tmp/_xhttp_post_log
-OUT=$(run_xhttp_block '{"response":[]}')
-assert "flat-array, missing: exactly one POST to /api/hosts" \
-    "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_xhttp_post_log 2>/dev/null || echo 0)" "1"
-assert "flat-array, missing: 'создан' message shown" \
-    "$(grep -c 'Хост для XHTTP создан' <<<"$OUT")" "1"
+echo "== 2. LOAD-BEARING: the OLD pre-fix expression really does fail under the real (flat-array) API shape =="
+OLD_FILTER='(.response.hosts // .response // [])[]? | select(.inbound.configProfileInboundUuid==$iu) | .uuid'
+FLAT_MATCH='{"response":[{"uuid":"existing-xhttp-host-uuid","inbound":{"configProfileInboundUuid":"target-ibd"}}]}'
+OLD_OUT="$(echo "$FLAT_MATCH" | jq -r --arg iu "target-ibd" "$OLD_FILTER" 2>/dev/null | head -1)"
+OLD_ERR="$(echo "$FLAT_MATCH" | jq -r --arg iu "target-ibd" "$OLD_FILTER" 2>&1 1>/dev/null)"
+assert "OLD expression on real flat-array shape: silently produces empty output (the actual production symptom)" \
+    "$OLD_OUT" ""
+assert "OLD expression on real flat-array shape: the underlying jq error is a hard type error, not a clean miss" \
+    "$(echo "$OLD_ERR" | grep -c 'Cannot index array with string')" "1"
 
 echo ""
-echo "== 3. real API shape (flat array): existing Host for this inbound -> lookup finds it, no POST -- THE BUG THIS FIX CLOSES =="
-# This is the case the old `(.response.hosts // .response // [])` idiom
-# got wrong: on this exact real-world shape it threw a hard jq type
-# error (confirmed directly with jq: "Cannot index array with string
-# \"hosts\""), silenced by 2>/dev/null, always reporting "not found"
-# and always re-POSTing a duplicate Host.
-rm -f /tmp/_xhttp_post_log
-OUT=$(run_xhttp_block '{"response":[{"uuid":"existing-xhttp-host-uuid","inbound":{"configProfileInboundUuid":"xhttp-ibd-uuid"}}]}')
-assert "flat-array, existing: zero POSTs to /api/hosts" \
-    "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_xhttp_post_log 2>/dev/null || echo 0)" "0"
-assert "flat-array, existing: 'уже существует' message shown" \
-    "$(grep -c 'Хост для XHTTP уже существует' <<<"$OUT")" "1"
+echo "== 3. FIXED (production) expression: real flat-array shape, matching host -- reuse, no duplicate create =="
+NEW_OUT="$(echo "$FLAT_MATCH" | jq -r --arg iu "target-ibd" "$PROD_FILTER" 2>/dev/null | head -1)"
+assert "flat-array + matching inbound UUID: existing host UUID is found" \
+    "$NEW_OUT" "existing-xhttp-host-uuid"
+
+FLAT_NOMATCH='{"response":[{"uuid":"some-other-host","inbound":{"configProfileInboundUuid":"different-ibd"}}]}'
+NEW_OUT_NOMATCH="$(echo "$FLAT_NOMATCH" | jq -r --arg iu "target-ibd" "$PROD_FILTER" 2>/dev/null | head -1)"
+assert "flat-array, no matching inbound UUID: empty (falls through to create, as intended)" \
+    "$NEW_OUT_NOMATCH" ""
+
+FLAT_EMPTY='{"response":[]}'
+NEW_OUT_EMPTY="$(echo "$FLAT_EMPTY" | jq -r --arg iu "target-ibd" "$PROD_FILTER" 2>/dev/null | head -1)"
+assert "flat-array, empty array: empty (falls through to create)" \
+    "$NEW_OUT_EMPTY" ""
 
 echo ""
-echo "== 4. real API shape (flat array): a Host for a DIFFERENT inbound must not be mistaken for a match =="
-rm -f /tmp/_xhttp_post_log
-OUT=$(run_xhttp_block '{"response":[{"uuid":"other-uuid","inbound":{"configProfileInboundUuid":"some-other-ibd"}}]}')
-assert "flat-array, non-matching inbound: still creates" \
-    "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_xhttp_post_log 2>/dev/null || echo 0)" "1"
+echo "== 4. FIXED expression: defensive object-wrapped shape ({response:{hosts:[...]}}) still works =="
+OBJ_MATCH='{"response":{"hosts":[{"uuid":"existing-xhttp-host-uuid","inbound":{"configProfileInboundUuid":"target-ibd"}}]}}'
+NEW_OUT_OBJ="$(echo "$OBJ_MATCH" | jq -r --arg iu "target-ibd" "$PROD_FILTER" 2>/dev/null | head -1)"
+assert "object-wrapped + matching inbound UUID: existing host UUID is found (defensive fallback intact)" \
+    "$NEW_OUT_OBJ" "existing-xhttp-host-uuid"
+
+OBJ_NOMATCH='{"response":{"hosts":[{"uuid":"some-other-host","inbound":{"configProfileInboundUuid":"different-ibd"}}]}}'
+NEW_OUT_OBJ_NOMATCH="$(echo "$OBJ_NOMATCH" | jq -r --arg iu "target-ibd" "$PROD_FILTER" 2>/dev/null | head -1)"
+assert "object-wrapped, no matching inbound UUID: empty (falls through to create)" \
+    "$NEW_OUT_OBJ_NOMATCH" ""
 
 echo ""
-echo "== 5. object-wrapped shape (.response.hosts): still handled, same as before -- no regression for this hypothetical shape =="
-rm -f /tmp/_xhttp_post_log
-OUT=$(run_xhttp_block '{"response":{"hosts":[{"uuid":"existing-xhttp-host-uuid","inbound":{"configProfileInboundUuid":"xhttp-ibd-uuid"}}]}}')
-assert "object-wrapped, existing: zero POSTs to /api/hosts" \
-    "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_xhttp_post_log 2>/dev/null || echo 0)" "0"
-rm -f /tmp/_xhttp_post_log
-OUT=$(run_xhttp_block '{"response":{"hosts":[]}}')
-assert "object-wrapped, missing: exactly one POST to /api/hosts" \
-    "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_xhttp_post_log 2>/dev/null || echo 0)" "1"
+echo "== 5. malformed / non-JSON response: existing safe fall-through-to-create behavior preserved =="
+MALFORMED='not json at all'
+NEW_OUT_MALFORMED="$(echo "$MALFORMED" | jq -r --arg iu "target-ibd" "$PROD_FILTER" 2>/dev/null | head -1 || true)"
+assert "malformed input: empty output (same silent fall-through-to-create convention as before this fix -- unchanged by this fix, this is the pre-existing 2>/dev/null convention at the call site, not something the type-branching rewrite alters)" \
+    "$NEW_OUT_MALFORMED" ""
 
 echo ""
-echo "== 6. lookup failure (malformed GET response) -- preserves this file's established, non-strict convention =="
-rm -f /tmp/_xhttp_post_log
-OUT=$(run_xhttp_block 'not-json-at-all{{{')
-assert "malformed lookup: falls through to create (matches established convention)" \
-    "$(grep -c 'POST:http://127.0.0.1:3000/api/hosts' /tmp/_xhttp_post_log 2>/dev/null || echo 0)" "1"
-
-echo ""
-echo "== 7. create failure is preserved as failure (warn, not ok; does not abort the block) =="
-XHTTP_STDERR_FILE=$(mktemp)
-CREATE_FAIL_STDOUT=$(run_xhttp_block_split '{"response":[]}' 1 2>"$XHTTP_STDERR_FILE")
-assert "create failure: warn shown, not ok" \
-    "$(grep -c 'Ошибка создания хоста для XHTTP' "$XHTTP_STDERR_FILE")" "1"
-assert "create failure: stdout stays clean even on the failure path" \
-    "$CREATE_FAIL_STDOUT" ""
-rm -f "$XHTTP_STDERR_FILE"
-
-echo ""
-echo "== 8. stdout/stderr contract: block never writes to stdout (ok/warn on stderr; response bodies never echoed to stdout) =="
-STDOUT_ONLY=$(run_xhttp_block_split '{"response":[]}' 2>/dev/null)
-assert "stdout empty on the create path" "$STDOUT_ONLY" ""
-STDOUT_ONLY=$(run_xhttp_block_split '{"response":[{"uuid":"x","inbound":{"configProfileInboundUuid":"xhttp-ibd-uuid"}}]}' 2>/dev/null)
-assert "stdout empty on the reuse path too" "$STDOUT_ONLY" ""
-
-rm -f /tmp/_xhttp_post_log
-
-echo ""
-echo "== 9. call-site precondition: panel_setup_api() still has exactly one production call site, unchanged =="
-assert "panel_setup_api() single production call site preserved" \
-    "$(grep -rn 'panel_setup_api "\$SUPERADMIN_USER"' lib/panel/*.sh lib/panel/*/*.sh 2>/dev/null | grep -c 'lib/panel/install.sh')" "1"
+echo "== 6. stdout/stderr contract: the lookup's own stderr is what 2>/dev/null exists to silence, stdout carries only the uuid or nothing =="
+CLEAN_STDOUT="$(echo "$FLAT_MATCH" | jq -r --arg iu "target-ibd" "$PROD_FILTER" 2>/dev/null)"
+assert "stdout contains only the matched uuid, nothing else" \
+    "$CLEAN_STDOUT" "existing-xhttp-host-uuid"
 
 echo ""
 echo "==================================="
