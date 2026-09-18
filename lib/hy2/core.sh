@@ -100,9 +100,28 @@ hy_get_port() {
     [ -f "$HYSTERIA_CONFIG" ] || { echo ""; return 1; }
     local _listen_line _port
     _listen_line=$(grep -m1 -E '^[[:space:]]*listen:[[:space:]]*' "$HYSTERIA_CONFIG" 2>/dev/null || true)
+    # FIXED (lifecycle audit, this session): hysteria_install()
+    # (lib/hy2/install.sh) writes Port Hopping's listen line as
+    # `listen: 0.0.0.0:START-END` (a bare hyphen right after the start
+    # port -- confirmed by reading its own `listen_addr=` assignment).
+    # The old pattern's optional group only recognized a
+    # COMMA-delimited suffix (`,[0-9]+-[0-9]+`), which no producer in
+    # this codebase ever emits (grepped every `listen:` writer to
+    # confirm) -- so on a real Port Hopping config the whole regex
+    # failed to match at all (confirmed directly with sed) and this
+    # returned empty, silently breaking every caller that depends on
+    # it for a real port number (share-URI generation in
+    # lib/hy2/users.sh, subscription publishing and the migration
+    # UFW-reopen step in lib/hy2/menu.sh, lib/hy2/integration.sh).
+    # Matches the hyphen form instead; the captured port is the range's
+    # START, the exact same value install.sh's own `port="$port_hop_start"`
+    # (its comment: "Основной порт — первый в диапазоне") already treats
+    # as *the* port for a Port Hopping deployment elsewhere in this same
+    # file -- not a new convention. Single-port configs (no hyphen
+    # suffix) are unaffected: same capture group, same result as before.
     _port=$(
         printf '%s\n' "$_listen_line" \
-            | sed -nE 's/^[[:space:]]*listen:[[:space:]]*["'"'"']?.*:([0-9]+)(,[0-9]+-[0-9]+)?["'"'"']?([[:space:]]*#.*)?[[:space:]]*$/\1/p' \
+            | sed -nE 's/^[[:space:]]*listen:[[:space:]]*["'"'"']?.*:([0-9]+)(-[0-9]+)?["'"'"']?([[:space:]]*#.*)?[[:space:]]*$/\1/p' \
             | head -1
     )
     echo "${_port}"
