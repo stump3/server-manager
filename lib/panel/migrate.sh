@@ -164,26 +164,14 @@ migrate_transfer_panel() {
             && ok "Сертификаты Hysteria2 переданы" || true
 
         # Восстановление
-        # CONFIRMED DEFECT (destination-guard follow-up pass, verified
-        # directly against THIS file — not against the module-shadowed
-        # lib/panel/migrate.sh copy): this heredoc's delimiter (RPANEL)
-        # is unquoted, so the LOCAL shell expands every unescaped
-        # `$name`/`$((...))` in its body while building the heredoc
-        # text, before `RUN bash -s` ever runs — deliberate for
-        # `$dumpb` below (must become a literal filename baked into the
-        # remote script), but `_pg_wait` is a loop counter meant to
-        # live only in the REMOTE bash reading this heredoc as its own
-        # script. Reproduced directly against this exact block under
-        # this project's own `set -euo pipefail` (server-manager.sh:13):
-        # the local shell hits `_pg_wait` unset (never assigned outside
-        # this heredoc) while constructing the heredoc text, and `set -u`
-        # aborts the whole process right there — before RUN is even
-        # invoked, so `docker volume rm remnawave-db-data` and the
-        # restore below it never ran in any real invocation that reached
-        # this point. Fix: escape the two `_pg_wait` reads so they pass
-        # through as literal text for the remote shell to expand on its
-        # own, the same way `$dumpb` is already correctly left unescaped
-        # for local expansion.
+        # RPANEL is an UNQUOTED heredoc: the local shell expands every
+        # unescaped $name/$((...)) while building the text, before
+        # `RUN bash -s` runs. $dumpb below is intentionally expanded
+        # locally (baked into the remote script as a literal filename).
+        # _pg_wait is a REMOTE-only loop counter, so its reads are
+        # escaped (\$) — unescaped, `set -u` (server-manager.sh:13)
+        # aborts the local process with "_pg_wait: unbound variable"
+        # before RUN is invoked.
         local dumpb; dumpb=$(basename "$dump")
         RUN bash -s << RPANEL
 set -e; cd /opt/remnawave
