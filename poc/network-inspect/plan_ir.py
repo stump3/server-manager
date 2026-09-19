@@ -80,6 +80,24 @@ def build_routing(match_kind: Optional[str], match_values: Optional[list]) -> Op
     return {"match": {match_kind: list(match_values or [])}}
 
 
+def build_backend(transport: str, loopback_port: Optional[int]) -> Optional[dict]:
+    """The service-side endpoint an ingress mechanism proxies a routed
+    connection to (research/network/shared_udp_topology_planner.md
+    §21) — distinct from `listener`, which is the external, client-
+    facing endpoint. `None` when the service has no mechanism in front
+    of it at all (DIRECT_*/SEPARATE_* placements listen directly; there
+    is nothing to hand a connection to). `kind` mirrors the service's
+    own transport (`loopback_tcp`/`loopback_udp`, per §21's own two
+    examples) rather than being a fixed value. Address is always
+    `127.0.0.1`: placement is unconditionally `\"colocated\"` in the
+    current planner.py (see its own module docstring) — this function
+    does not anticipate `remote_node` addressing before any code path
+    can actually produce it."""
+    if loopback_port is None:
+        return None
+    return {"kind": f"loopback_{transport}", "address": "127.0.0.1", "port": loopback_port}
+
+
 def build_service_entry(
     service_id: str,
     placement: str,
@@ -89,6 +107,7 @@ def build_service_entry(
     routing: Optional[dict],
     required_capabilities: list,
     proxy_protocol: str,
+    backend: Optional[dict],
 ) -> dict:
     if placement not in PLACEMENTS:
         raise ValueError(f"invalid placement: {placement!r}")
@@ -105,6 +124,7 @@ def build_service_entry(
         "routing": routing,
         "required_capabilities": sorted(required_capabilities),
         "proxy_protocol": proxy_protocol,
+        "backend": backend,
     }
 
 
