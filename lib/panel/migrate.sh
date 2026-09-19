@@ -72,40 +72,52 @@ migrate_transfer_panel_ssl() {
     fi
 }
 
+
+# migrate_dest_existing_state_detected — remote analog of
+# panel_install_existing_state_detected() (lib/panel/install.sh): true if
+# the DESTINATION server already has the remnawave-db-data named Docker
+# volume, i.e. an existing Panel installation whose data
+# migrate_transfer_panel() below is about to overwrite/destroy. Same
+# identity check, same semantics -- executed over RUN (which returns the
+# remote command's exact exit code, lib/common/ssh.sh) instead of
+# locally. `command -v docker` is checked first, same as the local
+# version, so a genuinely blank destination (no Docker yet) correctly
+# reads as "no existing state" rather than erroring.
+migrate_dest_existing_state_detected() {
+    RUN "command -v docker >/dev/null 2>&1 && docker volume inspect remnawave-db-data >/dev/null 2>&1" 2>/dev/null
+}
+
 migrate_transfer_panel() {
     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
         info "Переносим Panel..."
 
-        # Lifecycle audit finding: the restore step further down wipes
-        # the DESTINATION's `remnawave-db-data` volume by literal name
-        # (lib/panel/compose/common.sh declares it `name:
-        # remnawave-db-data`, not a compose-project-prefixed name, so
-        # this always targets the same real volume any prior Panel
-        # install on that server would use). Confirmed directly
-        # against a live Docker daemon: `docker volume rm
-        # remnawave-db-data 2>/dev/null || true` against a volume with
-        # no currently-attached container succeeds and permanently
-        # deletes it — the ordinary state of a target that ran `docker
-        # compose down` (no -v) at some earlier point, or carries a
-        # leftover volume from any prior install attempt. This
-        # project's own panel_install() already treats the mere
-        # existence of this exact volume as proof "Panel already
-        # installed" and refuses to proceed without an explicit
-        # reinstall confirmation
-        # (lib/panel/install.sh:panel_install_existing_state_detected)
-        # — the migration destination had no equivalent gate at all,
-        # and remote_install_deps()'s own confirm() (already run
-        # earlier in migrate_prepare_target()) only lists generic
-        # dependency actions (apt/docker/swap/BBR/UFW), never this.
-        # Checked here, before the dump/transfer work below, so a
-        # decline costs nothing. Minimal, additive: no change to the
-        # path where the destination has no such volume (the intended,
-        # common case), no change to stdout/stderr contract, no new
-        # abstraction — reuses this file's own RUN/warn/confirm.
-        if RUN "docker volume inspect remnawave-db-data >/dev/null 2>&1"; then
-            warn "На ${rip} уже есть volume remnawave-db-data (обнаружены существующие данные Panel на целевом сервере)"
-            if ! confirm "Перенос сотрёт эти данные и заменит их дампом с этого сервера. Продолжить?" n; then
-                warn "Перенос Panel отменён пользователем"
+        # CONFIRMED DEFECT (lifecycle audit, migration destination-DB
+        # pass): everything below this point -- PUT overwriting the
+        # destination's .env/docker-compose.yml, then `docker volume rm
+        # remnawave-db-data` followed by restoring this run's
+        # `pg_dumpall -c` dump -- silently destroyed any ALREADY-EXISTING
+        # Panel installation on the destination, with no confirmation of
+        # any kind. `pg_dumpall -c` itself emits DROP DATABASE/DROP ROLE
+        # statements ahead of the restore, so the destination's existing
+        # data was lost even on the branch where `docker volume rm`
+        # fails silently because a running container still holds the
+        # volume open -- precisely the case a live existing install
+        # produces. This is the same class of operation
+        # panel_remove()/panel_reinstall() (lib/panel/management.sh) both
+        # gate behind an explicit warning + typed 'YES' confirmation;
+        # migrate had no destination-side equivalent, only
+        # panel_install_existing_state_detected() for the LOCAL side of a
+        # plain install. Fix: same detection semantics via
+        # migrate_dest_existing_state_detected() above, gated the same
+        # way as panel_reinstall()'s own confirmation prompt, placed
+        # before ANY destination mutation begins (PUT included).
+        if migrate_dest_existing_state_detected; then
+            warn "На новом сервере уже обнаружена существующая установка Panel (volume remnawave-db-data)."
+            warn "Продолжение ПЕРЕЗАПИШЕТ конфигурацию и УНИЧТОЖИТ текущие данные БД на новом сервере!"
+            local _dest_confirm
+            read -rp "  Продолжить и перезаписать данные на новом сервере? Введите 'YES': " _dest_confirm < /dev/tty
+            if [ "$_dest_confirm" != "YES" ]; then
+                info "Перенос отменён"
                 return 1
             fi
         fi
@@ -152,6 +164,33 @@ migrate_transfer_panel() {
             && ok "Сертификаты Hysteria2 переданы" || true
 
         # Восстановление
+        #
+        # CONFIRMED DEFECT (migration destination-DB guard audit,
+        # follow-up pass): this heredoc's delimiter (RPANEL) is
+        # unquoted, so bash expands every unescaped `$name`/`$((...))`
+        # in its body in THIS (local) shell before ever handing the
+        # text to `RUN bash -s` -- that is deliberate for `$dumpb`
+        # below (it must become a literal filename baked into the
+        # remote script), but `_pg_wait` is a loop counter meant to
+        # live only in the REMOTE bash reading this heredoc as its own
+        # script. Confirmed by direct reproduction under this project's
+        # own `set -euo pipefail` (server-manager.sh:13): the local
+        # shell hits `_pg_wait` unset (it is never assigned anywhere
+        # outside this heredoc) while constructing the heredoc text --
+        # i.e. before `RUN` is even invoked -- and `set -u` aborts the
+        # whole process right there. Reproduced for every path that
+        # reaches this point (guard absent, and guard-present-plus-user
+        # confirmed YES); the guard's own decline path
+        # (migrate_dest_existing_state_detected + "YES" prompt above)
+        # returns long before this line and is unaffected. Net effect
+        # before this fix: `docker volume rm remnawave-db-data` on the
+        # line below never actually ran in any real invocation -- not
+        # because the guard stopped it, but because the whole process
+        # crashed first, on every attempted migration that should have
+        # succeeded. Fix: escape the two `_pg_wait` reads so they pass
+        # through as literal text for the remote shell to expand on its
+        # own, the same way `$dumpb` was already correctly left
+        # unescaped for local expansion.
         local dumpb; dumpb=$(basename "$dump")
         RUN bash -s << RPANEL
 set -e; cd /opt/remnawave
@@ -160,8 +199,8 @@ docker compose up -d remnawave-db remnawave-redis >/dev/null 2>&1
 # Ждём готовности PostgreSQL через pg_isready вместо фиксированного sleep
 _pg_wait=0
 until docker compose exec -T remnawave-db pg_isready -U postgres -q 2>/dev/null; do
-    sleep 1; _pg_wait=$((_pg_wait+1))
-    [ "$_pg_wait" -ge 60 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
+    sleep 1; _pg_wait=\$((_pg_wait+1))
+    [ "\$_pg_wait" -ge 60 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
 done
 zcat /opt/remnawave/$dumpb | docker compose exec -T remnawave-db psql -U postgres postgres >/dev/null 2>&1 || true
 docker compose up -d >/dev/null 2>&1
