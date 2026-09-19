@@ -35,9 +35,41 @@ hysteria_migrate() {
     ok "Подключение успешно"
 
     # Получаем домен из конфига
-    local domain hy_port
+    local domain
     domain=$(hy_get_domain)
-    hy_port=$(hy_get_port)
+
+    # FIXED (migration/Port Hopping UFW audit): destination firewall
+    # must mirror hysteria_install()'s own Port Hopping semantics
+    # (lib/hy2/install.sh: `ufw allow "${port_hop_start}:${port_hop_end}/udp"`,
+    # UDP-only, no TCP) rather than hy_get_port()'s single-port value
+    # (=START for Port Hopping) -- hy_get_port() is the canonical
+    # single/public-connection-port accessor (URIs, user-add), not a
+    # firewall-range source, and was never meant to drive this. Reusing
+    # it here previously left the range's remaining ports (START+1..END)
+    # closed on the new server, silently defeating Port Hopping post-migration.
+    # Parses the SAME local $HYSTERIA_CONFIG hy_get_port()/
+    # hy_ufw_cleanup_service_port() already read -- PUT above (line 50)
+    # copies this exact file to the destination and nothing modifies it
+    # afterward, so it's still the authoritative source for what the
+    # destination will actually be listening on. Same regex shape as
+    # hy_ufw_cleanup_service_port() (lib/hy2/install.sh); kept local here
+    # rather than factored into a shared helper -- one prior consumer
+    # doesn't justify a new cross-file abstraction for a minimal fix.
+    # Unsupported/malformed listen: syntax matches neither branch and
+    # intentionally yields no firewall rule at all (matches
+    # hy_ufw_cleanup_service_port()'s own fall-through) rather than
+    # guessing a broad/incorrect one.
+    local _hy_listen _hy_rest hy_fw_rules
+    _hy_listen=$(grep -m1 -E '^[[:space:]]*listen:[[:space:]]*' "$HYSTERIA_CONFIG" 2>/dev/null) || true
+    _hy_rest=$(printf '%s\n' "$_hy_listen" | sed -E 's/^[[:space:]]*listen:[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/^["'"'"']//; s/["'"'"']$//')
+    if [[ "$_hy_rest" =~ :([0-9]+)-([0-9]+)$ ]]; then
+        hy_fw_rules="ufw allow ${BASH_REMATCH[1]}:${BASH_REMATCH[2]}/udp >/dev/null 2>&1 || true"
+    elif [[ "$_hy_rest" =~ :([0-9]+)$ ]]; then
+        hy_fw_rules="ufw allow ${BASH_REMATCH[1]}/udp >/dev/null 2>&1 || true
+ufw allow ${BASH_REMATCH[1]}/tcp >/dev/null 2>&1 || true"
+    else
+        hy_fw_rules=""
+    fi
 
     # 1. Установка Hysteria2 на новом сервере
     info "Установка Hysteria2 на новом сервере..."
@@ -66,8 +98,7 @@ hysteria_migrate() {
     info "Открытие портов и запуск сервиса..."
     RUN bash << REMOTE
 ufw allow 22/tcp  >/dev/null 2>&1 || true
-ufw allow ${hy_port}/udp >/dev/null 2>&1 || true
-ufw allow ${hy_port}/tcp >/dev/null 2>&1 || true
+${hy_fw_rules}
 ufw --force enable >/dev/null 2>&1 || true
 apt-get install -y qrencode >/dev/null 2>&1 || true
 systemctl daemon-reload
