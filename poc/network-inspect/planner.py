@@ -724,6 +724,78 @@ def _candidate_passes_gates(c: dict, inventory: dict, capability_registry: dict,
                     "permanence": "conditional",
                 }
 
+    # Group-level proxy-protocol compatibility — extends the SAME
+    # conservative shim above (module docstring's PROXY-PROTOCOL
+    # CAPABILITY GAP note) to a group-level fact, rather than inventing
+    # a new Capability Registry dimension for it. Gated on the SAME
+    # existing per-mechanism property the shim above already checks
+    # (`_mechanism_supports_proxy_protocol_out(...) is True`) —
+    # deliberately NOT on "any mechanism with a group": the "whole
+    # listener, uniform on/off" limitation traced below is specific
+    # evidence about nginx's `ngx_stream_proxy_module`, not a universal
+    # truth about every possible mechanism. Checked directly against
+    # this project's OWN capability model rather than assumed: HAProxy
+    # (capabilities.py's `_STATIC_CAPABILITY_FACTS["haproxy"]`) has all
+    # the SHARED_TCP_SNI dimensions marked "available", and HAProxy's
+    # real architecture sets `send-proxy`/`send-proxy-v2` per `server`
+    # line inside a backend, selected per `use_backend` ACL — genuinely
+    # differentiable per backend, unlike nginx's static, listener-wide
+    # directive. Since `_PROXY_PROTOCOL_STATIC_ASSUMPTION` doesn't yet
+    # say anything about HAProxy either way (`None`/unresolved), a
+    # "required" service already can't select HAProxy today regardless
+    # of this check (rejected by the per-service check above first) —
+    # but this rule's OWN condition must not silently claim a broader
+    # fact than the one nginx-specific source actually supports, in
+    # case that shim entry is ever extended. Traced directly to source:
+    # lib/panel/nginx/variant_f.sh's own comment states outright that
+    # ngx_stream_proxy_module's `proxy_protocol` directive "cannot be
+    # scoped per-branch in nginx stream{}" — TeleMT sharing that
+    # listener with Vision/REALITY simply INHERITS the one, uniform,
+    # listener-wide `proxy_protocol on;` setting; the real system never
+    # has one backend explicitly "not_supported" behind the same shared
+    # listener as another that's "required" — the "not_supported" side
+    # would instead be reconfigured, at the backend's OWN application
+    # level, to tolerate the header.
+    if _mechanism_supports_proxy_protocol_out(c["mechanism"]) is True:
+        accepts = {(svc.get("proxy_protocol") or {}).get("accept", "not_supported") for svc in services}
+        if "required" in accepts and "not_supported" in accepts:
+            conflicting = sorted(
+                svc["id"] for svc in services
+                if (svc.get("proxy_protocol") or {}).get("accept", "not_supported") in ("required", "not_supported")
+            )
+            return False, {
+                "rejection_class": "capability_unsupported",
+                "reason": f"group {conflicting!r} has jointly-unsatisfiable proxy_protocol.accept "
+                          f"requirements behind one shared listener — mechanism {c['mechanism']!r}'s "
+                          f"proxy_protocol emission is a single, uniform on/off decision for the whole "
+                          f"listener (see module docstring / lib/panel/nginx/variant_f.sh for the "
+                          f"source evidence), not something it can vary per backend",
+                "relevant_fact": {"source": "desired_state", "path": "services[*].proxy_protocol.accept",
+                                  "value": sorted(accepts)},
+                "permanence": "conditional",
+            }
+
+    # Backend endpoint requirement (research/network/shared_udp_topology_planner.md
+    # §13/§21) — any candidate WITH a mechanism needs somewhere concrete
+    # to hand a routed connection to. This is never something Planner
+    # allocates on the operator's behalf (see module docstring's own
+    # "no automatic apply" posture, restated here for a deployment
+    # fact rather than a config mutation) — a candidate whose service
+    # lacks one is rejected here, exactly like any other unsatisfiable
+    # precondition, not silently planned with a missing/invented value.
+    if c["mechanism"] is not None:
+        for svc in services:
+            if not (svc.get("backend_hint") or {}).get("loopback_port"):
+                return False, {
+                    "rejection_class": "unsatisfiable_placement",
+                    "reason": f"{svc['id']!r} would be placed behind mechanism {c['mechanism']!r}, "
+                              f"but declares no backend_hint.loopback_port for it to be proxied to — "
+                              f"Planner does not allocate this value on the operator's behalf",
+                    "relevant_fact": {"source": "desired_state", "path": f"services[{svc['id']!r}].backend_hint",
+                                      "value": svc.get("backend_hint")},
+                    "permanence": "conditional",
+                }
+
     # Firewall authority unknown — only matters for a candidate that
     # would need a NEW port opened beyond what's already bound.
     if _rule_action(safety_policy, "firewall_authority_unknown_no_mutation") == "exclude_from_plan":
@@ -938,6 +1010,10 @@ def _build_plan_ir(selected: list, effective_ds: dict, inventory: dict, safety_p
 
             dims = _required_dimensions_for_service(svc, c["services"]) if c["mechanism"] else []
 
+            backend = None
+            if c["mechanism"] is not None:
+                backend = plan_ir.build_backend(svc.get("transport"), (svc.get("backend_hint") or {}).get("loopback_port"))
+
             services_ir.append(plan_ir.build_service_entry(
                 service_id=svc["id"],
                 placement="colocated",
@@ -947,6 +1023,7 @@ def _build_plan_ir(selected: list, effective_ds: dict, inventory: dict, safety_p
                 routing=routing,
                 required_capabilities=dims,
                 proxy_protocol=(svc.get("proxy_protocol") or {}).get("accept", "not_supported"),
+                backend=backend,
             ))
 
             if svc.get("exclusivity") == "single_ingress_path":
