@@ -280,6 +280,10 @@ def _validate_service(errors: list[ValidationError], svc: dict, path: str, servi
         _err(errors, "invalid_enum_value", f"{path}.exclusivity",
              f"{exclusivity!r} is not one of {_VALID_EXCLUSIVITY!r} (or null)")
 
+    backend_hint = svc.get("backend_hint")
+    if backend_hint is not None:
+        _validate_backend_hint(errors, backend_hint, f"{path}.backend_hint")
+
 
 def _validate_port(errors: list[ValidationError], port: Any, path: str) -> None:
     if port is None:
@@ -374,6 +378,28 @@ def _validate_quic(errors: list[ValidationError], quic: Any, path: str) -> None:
     migration_tolerant = quic.get("migration_tolerant", False)
     if not isinstance(migration_tolerant, bool):
         _err(errors, "invalid_type", f"{path}.migration_tolerant", "migration_tolerant must be a boolean if present (defaults to false)")
+
+
+def _validate_backend_hint(errors: list[ValidationError], backend_hint: Any, path: str) -> None:
+    """`backend_hint.loopback_port` is the operator-declared service-side
+    TCP/UDP loopback endpoint an ingress mechanism would proxy a routed
+    connection to (research/network/shared_udp_topology_planner.md §13)
+    — it is NOT the external listener port/IP this module already
+    validates via `port`/`ip` above, and it carries no opinion at all
+    about whether any particular topology will end up needing it; that
+    determination happens later, in Planner (per-candidate) and Plan
+    Validator (per-assembled-plan), neither of which this module knows
+    about or imports."""
+    if not _is_mapping(backend_hint):
+        _err(errors, "invalid_type", path, "backend_hint must be a mapping")
+        return
+    loopback_port = backend_hint.get("loopback_port")
+    if loopback_port is None:
+        _err(errors, "missing_field", f"{path}.loopback_port", "loopback_port is required when backend_hint is present")
+        return
+    if not isinstance(loopback_port, int) or isinstance(loopback_port, bool) or not (1 <= loopback_port <= 65535):
+        _err(errors, "invalid_port_value", f"{path}.loopback_port",
+             f"{loopback_port!r} is not a valid port number (1-65535)")
 
 
 def _validate_operator_preferences(errors: list[ValidationError], prefs: Any, path: str) -> None:
