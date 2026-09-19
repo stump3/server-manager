@@ -581,10 +581,25 @@ panel_setup_api() {
         ok "Нода Steal уже существует, используется существующая"
     else
         local NODE_R
+        # `|| NODE_R=""` / `|| NODE_UUID=""` REQUIRED: under this
+        # codebase's `set -euo pipefail` (server-manager.sh:13), a bare
+        # `VAR=$(cmd)` assignment aborts the whole panel_install() the
+        # instant `cmd`'s exit status is non-zero -- panel_api()'s own
+        # exit code for a genuine transport failure, or (via pipefail)
+        # jq's parse-error exit code when the CREATE response body isn't
+        # valid JSON (e.g. an nginx/proxy error page). Without this
+        # guard, either case skips the `[ -z "$NODE_UUID" ]` fatal check
+        # below entirely -- the Config Profile this same run may have
+        # just created is never rolled back, and the operator sees a
+        # raw, uncaught shell abort instead of the intended diagnostic.
+        # Same hazard already documented and guarded this same way a
+        # few dozen lines away in this file (REG_RAW/SUB_TOKEN_RAW) and
+        # in lib/panel/install.sh's TeleMT reconfigure block -- not yet
+        # applied to this DEFECT #2 rollback code until now.
         NODE_R=$(panel_api "POST" "http://$API/api/nodes" "$TOKEN" "$(jq -n \
             --arg na "$NODE_ADDR" --arg cu "$CFG_UUID" --argjson ai "$ACTIVE_INBOUNDS_JSON" \
-            '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)")
-        NODE_UUID=$(echo "$NODE_R" | jq -r '.response.uuid // empty' 2>/dev/null)
+            '{name:"Steal",address:$na,port:2222,configProfile:{activeConfigProfileUuid:$cu,activeInbounds:$ai},isTrafficTrackingActive:false,trafficLimitBytes:0,notifyPercent:0,trafficResetDay:31,excludedInbounds:[],countryCode:"XX",consumptionMultiplier:1.0}' 2>/dev/null)") || NODE_R=""
+        NODE_UUID=$(echo "$NODE_R" | jq -r '.response.uuid // empty' 2>/dev/null) || NODE_UUID=""
         if [ -z "$NODE_UUID" ]; then
             warn "Ошибка создания ноды: $NODE_R"
             # Fatal: do not continue to Host/Squad/token/restart. Only
@@ -646,10 +661,14 @@ panel_setup_api() {
         ok "Хост уже существует, используется существующий"
     else
         local HOST_R
+        # Same `set -euo pipefail` hazard as NODE_R/NODE_UUID above --
+        # same guard, same reason (a transport failure or non-JSON body
+        # here must reach the `[ -z "$HOST_UUID" ]` fatal/rollback check
+        # below, not abort the shell before it).
         HOST_R=$(panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
             --arg cu "$CFG_UUID" --arg iu "$IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" \
-            '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)")
-        HOST_UUID=$(echo "$HOST_R" | jq -r '.response.uuid // empty' 2>/dev/null)
+            '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"Steal",address:$addr,port:443,path:"",sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)") || HOST_R=""
+        HOST_UUID=$(echo "$HOST_R" | jq -r '.response.uuid // empty' 2>/dev/null) || HOST_UUID=""
         if [ -z "$HOST_UUID" ]; then
             warn "Ошибка создания хоста: $HOST_R"
             # Fatal: do not continue to XHTTP Host/Squad/token/restart.
@@ -733,11 +752,40 @@ panel_setup_api() {
         if [ -n "$EXISTING_XHTTP_HOST" ]; then
             ok "Хост для XHTTP уже существует, используется существующий"
         else
-            panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
+            # DEFECT #2 follow-up: this block was left on the pre-fix
+            # `&& ok || warn` shape when Config Profile/Node/Vision Host
+            # (above) were converted to fatal-with-rollback -- it
+            # discarded the response body, never checked for a UUID,
+            # and treated ANY CREATE failure (a real Panel-side
+            # rejection, not just a transport hiccup) as a non-fatal
+            # warning that still fell through to Squad/token/restart
+            # and returned overall success. That silently left an
+            # orphaned Vision Host/Node/Config Profile behind with no
+            # XHTTP Host and no rollback -- the exact failure mode
+            # DEFECT #2 exists to prevent, just not yet applied to this
+            # one call site. Same UUID-from-body detection and
+            # `|| VAR=""` set -e guards as NODE_R/HOST_R above.
+            local XHTTP_HOST_R XHTTP_HOST_UUID=""
+            XHTTP_HOST_R=$(panel_api "POST" "http://$API/api/hosts" "$TOKEN" "$(jq -n \
                 --arg cu "$CFG_UUID" --arg iu "$XHTTP_IBD_UUID" --arg addr "$SELFSTEAL_DOMAIN" --arg xpath "$XHTTP_PATH" \
                 --argjson port "$XHTTP_PUBLIC_PORT_VAL" \
-                '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"StealXHTTP",address:$addr,port:$port,path:$xpath,sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)" >/dev/null 2>&1 \
-                && ok "Хост для XHTTP создан" || warn "Ошибка создания хоста для XHTTP"
+                '{inbound:{configProfileUuid:$cu,configProfileInboundUuid:$iu},remark:"StealXHTTP",address:$addr,port:$port,path:$xpath,sni:$addr,host:"",alpn:null,fingerprint:"chrome",allowInsecure:false,isDisabled:false,securityLayer:"DEFAULT"}' 2>/dev/null)") || XHTTP_HOST_R=""
+            XHTTP_HOST_UUID=$(echo "$XHTTP_HOST_R" | jq -r '.response.uuid // empty' 2>/dev/null) || XHTTP_HOST_UUID=""
+            if [ -z "$XHTTP_HOST_UUID" ]; then
+                warn "Ошибка создания хоста для XHTTP: $XHTTP_HOST_R"
+                # Fatal: mirror Vision Host's own contract above.
+                # Reverse order of creation -- XHTTP Host itself was
+                # never created here, so Vision Host, then Node, then
+                # Profile are the candidates, each compensated only if
+                # THIS run created it. _panel_setup_api_rollback_host()
+                # was already defined for exactly this call (its
+                # optional label param) but never wired in until now.
+                [ "$HOST_EXISTING" = false ] && _panel_setup_api_rollback_host "$API" "$TOKEN" "$HOST_UUID" "Vision-хост"
+                [ "$NODE_EXISTING" = false ] && _panel_setup_api_rollback_node "$API" "$TOKEN" "$NODE_UUID"
+                [ "$PROFILE_EXISTING" = false ] && _panel_setup_api_rollback_profile "$API" "$TOKEN" "$CFG_UUID"
+                return 1
+            fi
+            ok "Хост для XHTTP создан"
         fi
     fi
 
