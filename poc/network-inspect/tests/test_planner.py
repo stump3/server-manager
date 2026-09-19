@@ -91,7 +91,7 @@ _CADDY_QUIC_FULL = _provider(**{
 
 def _svc(id, transport="tcp", port_selection="specific", port_value=443, sharing="allowed",
           ip_selection="any_public", ip_value=None, same_as=None, separate_from=None,
-          tls=None, quic=None, proxy_protocol=None, exclusivity=None):
+          tls=None, quic=None, proxy_protocol=None, exclusivity=None, backend_hint=None):
     svc = {
         "id": id, "transport": transport, "exposure": "public",
         "port": {"selection": port_selection, "value": port_value, "sharing": sharing},
@@ -108,6 +108,8 @@ def _svc(id, transport="tcp", port_selection="specific", port_value=443, sharing
         svc["proxy_protocol"] = proxy_protocol
     if exclusivity is not None:
         svc["exclusivity"] = exclusivity
+    if backend_hint is not None:
+        svc["backend_hint"] = backend_hint
     return svc
 
 
@@ -145,9 +147,10 @@ class TestDirectAndShared(unittest.TestCase):
 
     def test_03_shared_tcp_sni(self):
         doc = _doc(
-            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
             _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
-                 tls={"mode": "termination"}),
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
         )
         _assert_valid_ds(doc)
         result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
@@ -160,9 +163,10 @@ class TestDirectAndShared(unittest.TestCase):
     def test_04_shared_udp_quic_sni(self):
         doc = _doc(
             _svc("hy2", transport="udp", sharing="required",
-                 quic={"sni_routing": "passthrough", "migration_tolerant": True}),
+                 quic={"sni_routing": "passthrough", "migration_tolerant": True},
+                 backend_hint={"loopback_port": 9443}),
             _svc("other", transport="udp", sharing="required", ip_selection="same_as_service", same_as="hy2",
-                 quic={"sni_routing": "passthrough", "migration_tolerant": True}),
+                 quic={"sni_routing": "passthrough", "migration_tolerant": True}, backend_hint={"loopback_port": 9444}),
         )
         _assert_valid_ds(doc)
         result = planner.plan(_inventory(), _registry(caddy_l4=_CADDY_QUIC_FULL), doc)
@@ -276,8 +280,10 @@ class TestPortsAndIps(unittest.TestCase):
 
     def test_15_same_as_service_places_on_identical_ip(self):
         doc = _doc(
-            _svc("a", port_value=443, sharing="required", ip_selection="specific", ip_value="203.0.113.99"),
-            _svc("b", port_value=443, sharing="required", ip_selection="same_as_service", same_as="a"),
+            _svc("a", port_value=443, sharing="required", ip_selection="specific", ip_value="203.0.113.99",
+                 backend_hint={"loopback_port": 8001}),
+            _svc("b", port_value=443, sharing="required", ip_selection="same_as_service", same_as="a",
+                 backend_hint={"loopback_port": 8002}),
         )
         _assert_valid_ds(doc)
         result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
@@ -410,8 +416,10 @@ class TestPerServiceRequiredCapabilities(unittest.TestCase):
 
     def test_mixed_tls_group_gets_precise_per_service_capabilities(self):
         doc = _doc(
-            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
-            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
         )
         _assert_valid_ds(doc)
         result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
@@ -427,8 +435,10 @@ class TestPerServiceRequiredCapabilities(unittest.TestCase):
         to every service sharing one listener — must stay common,
         only the TLS-mode-specific dims should be individualized."""
         doc = _doc(
-            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
-            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
         )
         _assert_valid_ds(doc)
         result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
@@ -444,8 +454,10 @@ class TestPerServiceRequiredCapabilities(unittest.TestCase):
         POPULATED per service in the final Plan IR, never which
         mechanisms are considered eligible to serve the group."""
         doc = _doc(
-            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
-            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
         )
         _assert_valid_ds(doc)
         result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
@@ -532,9 +544,11 @@ class TestQuicSafety(unittest.TestCase):
     def _shared_udp_doc(self, migration_tolerant=True):
         return _doc(
             _svc("a", transport="udp", sharing="required",
-                 quic={"sni_routing": "passthrough", "migration_tolerant": migration_tolerant}),
+                 quic={"sni_routing": "passthrough", "migration_tolerant": migration_tolerant},
+                 backend_hint={"loopback_port": 9443}),
             _svc("b", transport="udp", sharing="required", ip_selection="same_as_service", same_as="a",
-                 quic={"sni_routing": "passthrough", "migration_tolerant": migration_tolerant}),
+                 quic={"sni_routing": "passthrough", "migration_tolerant": migration_tolerant},
+                 backend_hint={"loopback_port": 9444}),
         )
 
     def test_22_quic_termination_never_substitutes_for_passthrough(self):
@@ -576,8 +590,10 @@ class TestQuicSafety(unittest.TestCase):
 class TestDeterminism(unittest.TestCase):
     def test_25_deterministic_tie_break_across_repeated_runs(self):
         doc = _doc(
-            _svc("a", sharing="required", tls={"mode": "passthrough"}),
-            _svc("b", sharing="required", ip_selection="same_as_service", same_as="a", tls={"mode": "passthrough"}),
+            _svc("a", sharing="required", tls={"mode": "passthrough", "sni_values": ["a.example.com"]},
+                 backend_hint={"loopback_port": 8001}),
+            _svc("b", sharing="required", ip_selection="same_as_service", same_as="a",
+                 tls={"mode": "passthrough", "sni_values": ["b.example.com"]}, backend_hint={"loopback_port": 8002}),
         )
         _assert_valid_ds(doc)
         reg = _registry(
@@ -618,8 +634,10 @@ class TestReconciliation(unittest.TestCase):
 
     def test_27_reuse_existing_resource_for_a_group(self):
         doc = _doc(
-            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
-            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
         )
         _assert_valid_ds(doc)
         inv = _inventory(listeners=[_listener("tcp", 443, owner={"kind": "process", "comm": "nginx"})])
@@ -642,8 +660,10 @@ class TestReconciliation(unittest.TestCase):
         needed, but the existing resolved owner is a different,
         unrelated process."""
         doc = _doc(
-            _svc("xray", sharing="required", tls={"mode": "passthrough"}),
-            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
         )
         _assert_valid_ds(doc)
         inv = _inventory(listeners=[_listener("tcp", 443, owner={"kind": "process", "comm": "some-other-daemon"})])
@@ -672,12 +692,57 @@ class TestReconciliation(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────
 
 class TestTeleMT(unittest.TestCase):
-    def test_31_telemt_single_ingress_path_with_proxy_protocol(self):
+    def test_31_telemt_proxy_protocol_conflict_rejected(self):
+        """CORRECTED 2026 — this test previously asserted `outcome ==
+        "planned"` for this exact fixture. That expectation was
+        demonstrably wrong: traced to lib/panel/nginx/variant_f.sh's
+        own comment, ngx_stream_proxy_module's `proxy_protocol`
+        directive "cannot be scoped per-branch in nginx stream{}" — it
+        is one uniform on/off decision for the WHOLE shared listener,
+        never differentiable per SNI-routed backend. `telemt` declaring
+        `required` while `xray-reality` declares no proxy_protocol
+        preference at all (defaulting to `not_supported`, same as
+        every other test in this suite that never mentions it) is
+        exactly the jointly-unsatisfiable combination that limitation
+        rules out. The real legacy system never actually has this
+        combination in practice: the non-PROXY-protocol side gets
+        reconfigured at ITS OWN application level to tolerate the
+        header instead. See planner.py's own group-level proxy-protocol
+        compatibility gate for the full trace. The fixture below is
+        UNCHANGED from the original test_31 — only the expected
+        outcome is corrected."""
         doc = _doc(
-            _svc("xray-reality", sharing="required", tls={"mode": "passthrough"}),
+            _svc("xray-reality", sharing="required", tls={"mode": "passthrough", "sni_values": ["reality.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
             _svc("telemt", sharing="required", ip_selection="same_as_service", same_as="xray-reality",
-                 tls={"mode": "passthrough"}, proxy_protocol={"accept": "required"},
-                 exclusivity="single_ingress_path"),
+                 tls={"mode": "passthrough", "sni_values": ["telemt-mask.example.com"]},
+                 proxy_protocol={"accept": "required"}, exclusivity="single_ingress_path",
+                 backend_hint={"loopback_port": 9443}),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
+        self.assertEqual(result["outcome"], "unsatisfiable")
+        self.assertTrue(any(
+            r["rejection_class"] == "capability_unsupported" and "telemt" in r["reason"] and "xray-reality" in r["reason"]
+            for r in result["rejected_alternatives"]
+        ))
+
+    def test_31c_telemt_single_ingress_path_with_compatible_proxy_protocol(self):
+        """Same shape as the original test_31 (single_ingress_path +
+        PROXY protocol over a shared SNI listener), but with a
+        COMPATIBLE combination — xray-reality explicitly tolerates the
+        header instead of leaving it unstated (`not_supported` by
+        default), exactly mirroring how the real legacy system resolves
+        this in practice (see test_31 above). This is the regression
+        anchor for "compatible proxy_protocol requirements in one
+        SHARED_TCP_SNI group remain valid"."""
+        doc = _doc(
+            _svc("xray-reality", sharing="required", tls={"mode": "passthrough", "sni_values": ["reality.example.com"]},
+                 proxy_protocol={"accept": "optional"}, backend_hint={"loopback_port": 8443}),
+            _svc("telemt", sharing="required", ip_selection="same_as_service", same_as="xray-reality",
+                 tls={"mode": "passthrough", "sni_values": ["telemt-mask.example.com"]},
+                 proxy_protocol={"accept": "required"}, exclusivity="single_ingress_path",
+                 backend_hint={"loopback_port": 9443}),
         )
         _assert_valid_ds(doc)
         result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
@@ -811,6 +876,52 @@ class TestAdditionalInvariants(unittest.TestCase):
                           "unsatisfiable_placement", "lower_score"}
         for r in result["rejected_alternatives"]:
             self.assertIn(r["rejection_class"], valid_classes)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Backend endpoint semantics (research/network/shared_udp_topology_planner.md
+# §13/§21) — desired_state.backend_hint.loopback_port threaded through
+# into plan_ir.backend for mechanism-bearing groups only.
+# ─────────────────────────────────────────────────────────────────────
+
+class TestBackendEndpoint(unittest.TestCase):
+    def test_shared_mechanism_with_backend_hint_populates_backend(self):
+        doc = _doc(
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+                 backend_hint={"loopback_port": 8443}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
+        self.assertEqual(result["outcome"], "planned")
+        backends = {s["service_id"]: s["backend"] for s in result["plan_ir"]["groups"][0]["services"]}
+        self.assertEqual(backends["xray"], {"kind": "loopback_tcp", "address": "127.0.0.1", "port": 8443})
+        self.assertEqual(backends["web"], {"kind": "loopback_tcp", "address": "127.0.0.1", "port": 7443})
+
+    def test_direct_topology_has_null_backend(self):
+        doc = _doc(_svc("xray", tls={"mode": "passthrough"}))
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(), _registry(), doc)
+        self.assertEqual(result["outcome"], "planned")
+        self.assertEqual(result["selected_topology"], "DIRECT_TCP")
+        self.assertIsNone(result["plan_ir"]["groups"][0]["services"][0]["backend"])
+
+    def test_missing_backend_hint_for_shared_mechanism_is_unsatisfiable(self):
+        """Mirrors test_03 exactly, minus backend_hint — a mechanism-
+        bearing candidate whose service declares no backend endpoint
+        must never be silently planned (see planner.py's own gate in
+        _candidate_passes_gates: Planner does not allocate this value
+        on the operator's behalf)."""
+        doc = _doc(
+            _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]}),
+            _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+                 tls={"mode": "termination", "sni_values": ["web.example.com"]}),
+        )
+        _assert_valid_ds(doc)
+        result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
+        self.assertEqual(result["outcome"], "unsatisfiable")
+        self.assertTrue(any(r["rejection_class"] == "unsatisfiable_placement" for r in result["rejected_alternatives"]))
 
 
 if __name__ == "__main__":
