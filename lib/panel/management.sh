@@ -409,6 +409,73 @@ panel_reinstall() {
     panel_install
 }
 
+# panel_migrate_env_for_remnawave_v2 — CONFIRMED REGRESSION FIX
+# (migration lifecycle audit): this function used to live in
+# lib/panel/migrate.sh (its entire original content, in fact — see
+# git history at commit a27f62f). Commit 9d6e12d ("Refactor migration
+# script for improved service transfer") replaced that file's content
+# wholesale with a copy of the unrelated host-to-host migration
+# functions (panel_migrate/migrate_all/migrate_transfer_panel/etc.,
+# now also byte-identical to lib/migrate.sh) and never carried this
+# function forward anywhere — panel_update_installed() below kept
+# calling it, so every update on an existing >=2.8.1-or-older install
+# died with "command not found" at the `panel_migrate_env_for_remnawave_v2
+# || return 1` line, before ever reaching `"$PANEL_MGMT_SCRIPT" update`.
+#
+# Restored here rather than back into lib/panel/migrate.sh: that file's
+# remaining purpose is now the host-to-host migration pipeline, and
+# re-hiding this unrelated one-time .env-format helper inside it is
+# exactly the naming collision ("migrate.sh" meaning two unrelated
+# things) that let the original deletion go unnoticed. management.sh
+# is this function's only caller and its natural panel-lifecycle home.
+#
+# Contract 8 still applies: keep this byte-for-byte in sync with the
+# standalone copy in lib/panel/mgmt_script.sh (_migrate_env_for_remnawave_v2)
+# — that generated script has no access to this file at runtime, so
+# the two copies must be hand-maintained identically. See that file's
+# own header comment for the reverse pointer back to here.
+panel_migrate_env_for_remnawave_v2() {
+    local env_file="/opt/remnawave/.env"
+    [ -f "$env_file" ] || { warn ".env не найден: $env_file"; return 1; }
+
+    local -a sed_args=()
+    local secret_action=""
+    if grep -q '^JWT_AUTH_SECRET=' "$env_file" && ! grep -q '^APP_SECRET=' "$env_file"; then
+        sed_args+=(-e 's/^JWT_AUTH_SECRET=/APP_SECRET=/')
+        secret_action="renamed"
+    elif grep -q '^JWT_AUTH_SECRET=' "$env_file" && grep -q '^APP_SECRET=' "$env_file"; then
+        sed_args+=(-e '/^JWT_AUTH_SECRET=/d')
+        secret_action="deduped"
+    fi
+
+    local removed=0
+    for key in JWT_API_TOKENS_SECRET SWAGGER_PATH SCALAR_PATH IS_DOCS_ENABLED; do
+        if grep -q "^${key}=" "$env_file"; then
+            sed_args+=(-e "/^${key}=/d")
+            removed=1
+        fi
+    done
+
+    if [ "${#sed_args[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    # Atomic prepare -> commit (same pattern as $HYSTERIA_CONFIG,
+    # lib/hy2/users.sh): one temp file, one mv, one chmod.
+    local _tmp; _tmp=$(mktemp)
+    if sed "${sed_args[@]}" "$env_file" > "$_tmp" \
+            && mv "$_tmp" "$env_file" && chmod 600 "$env_file"; then
+        [ "$secret_action" = "renamed" ] && ok ".env: JWT_AUTH_SECRET переименован в APP_SECRET"
+        [ "$secret_action" = "deduped" ] && ok ".env: удалён дублирующий JWT_AUTH_SECRET"
+    else
+        rm -f "$_tmp"
+        warn ".env: не удалось применить миграцию атомарно"
+        return 1
+    fi
+    [ "$removed" = "1" ] && ok ".env: удалены устаревшие переменные Remnawave"
+    return 0
+}
+
 panel_update_installed() {
     header "Remnawave Panel — Обновить"
     [ -x "$PANEL_MGMT_SCRIPT" ] || { warn "Панель не установлена."; return 1; }
