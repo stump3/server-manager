@@ -38,9 +38,12 @@ _spinner() {
 }
 _detect_ws() { grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml 2>/dev/null && echo "caddy" || echo "nginx"; }
 # Keep in sync with panel_migrate_env_for_remnawave_v2 in
-# lib/panel/migrate.sh (same migration logic, same atomic-write
+# lib/panel/management.sh (same migration logic, same atomic-write
 # pattern) — this script is deployed standalone and can't source that
 # file at runtime, so the two copies have to be kept identical by hand.
+# (Moved from lib/panel/migrate.sh after commit 9d6e12d overwrote that
+# file with the unrelated host-to-host migration pipeline and silently
+# dropped this function; restored in management.sh, its only caller.)
 _migrate_env_for_remnawave_v2() {
     local env_file="$DIR/.env"
     [ -f "$env_file" ] || { _warn ".env не найден: $env_file"; return 1; }
@@ -78,6 +81,7 @@ _migrate_env_for_remnawave_v2() {
         return 1
     fi
     [ "$removed" = "1" ] && _ok ".env: удалены устаревшие переменные Remnawave"
+    return 0
 }
 do_status() {
     local ws; ws=$(_detect_ws)
