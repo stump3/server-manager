@@ -164,6 +164,7 @@ SUPPORTED_SCHEMA = plan_ir.SCHEMA_VERSION
 _IPV4_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$")
 _VALID_TRANSPORTS = ("tcp", "udp")
 _VALID_PROXY_PROTOCOL = ("required", "optional", "not_supported")
+_VALID_BACKEND_KINDS = ("loopback_tcp", "loopback_udp")
 _SHARED_TOPOLOGIES = ("SHARED_TCP_SNI", "SHARED_UDP_QUIC_SNI")
 _NON_SHARED_TOPOLOGIES = ("DIRECT_TCP", "DIRECT_UDP", "SEPARATE_PORTS", "SEPARATE_IPS")
 
@@ -338,6 +339,22 @@ def _validate_structure(plan: Any) -> list:
             if svc.get("proxy_protocol") not in _VALID_PROXY_PROTOCOL:
                 _err(diags, "invalid_proxy_protocol", sid, f"{spath}.proxy_protocol",
                      f"{svc.get('proxy_protocol')!r} is not one of {_VALID_PROXY_PROTOCOL!r}")
+
+            backend = svc.get("backend")
+            if backend is not None:
+                if not _is_mapping(backend):
+                    _err(diags, "invalid_backend", sid, f"{spath}.backend", "backend must be null or a mapping")
+                else:
+                    if backend.get("kind") not in _VALID_BACKEND_KINDS:
+                        _err(diags, "invalid_backend_kind", sid, f"{spath}.backend.kind",
+                             f"{backend.get('kind')!r} is not one of {_VALID_BACKEND_KINDS!r}")
+                    if not _is_valid_ipv4(backend.get("address")):
+                        _err(diags, "invalid_backend_address", sid, f"{spath}.backend.address",
+                             f"{backend.get('address')!r} is not a syntactically valid IPv4 address")
+                    bport = backend.get("port")
+                    if not isinstance(bport, int) or isinstance(bport, bool) or not (1 <= bport <= 65535):
+                        _err(diags, "invalid_backend_port", sid, f"{spath}.backend.port",
+                             f"{bport!r} is not a valid port number (1-65535)")
 
         for di, sd in enumerate(safety_decisions):
             dpath = f"{gpath}.safety_decisions[{di}]"
@@ -515,6 +532,18 @@ def _validate_routing_safety(plan: dict) -> list:
 
         for svc in group["services"]:
             sid = svc["service_id"]
+            backend = svc.get("backend")
+            if mechanism is None:
+                if backend is not None:
+                    _err(diags, "backend_without_mechanism", sid, "$.groups[].services[].backend",
+                         f"service {sid!r} has a backend endpoint but its group {gid!r} has no "
+                         f"mechanism — a mechanism-less (DIRECT_*/SEPARATE_*) group has no router "
+                         f"in front of the service to hand a routed connection to")
+            elif backend is None:
+                _err(diags, "mechanism_without_backend", sid, "$.groups[].services[].backend",
+                     f"service {sid!r} is placed behind mechanism {mechanism!r} but has no backend "
+                     f"endpoint for it to be proxied to")
+
             routing = svc.get("routing")
             if routing is None:
                 continue
@@ -531,6 +560,27 @@ def _validate_routing_safety(plan: dict) -> list:
                 _err(diags, "routing_topology_mismatch", sid, "$.groups[].services[].routing",
                      f"service {sid!r} has a {match_kind!r} routing entry, which requires "
                      f"topology {expected_topology!r}, but its group {gid!r} is {topology!r}")
+
+        # SHARED_TCP_SNI-specific: at most one service may have an
+        # empty SNI match (an unambiguous default/catch-all route for
+        # ssl_preread-style dispatch) — two or more is undecidable from
+        # the plan alone, and is never a Renderer's decision to resolve
+        # later (see research/network/shared_udp_topology_planner.md
+        # §13's own example, where every service declares real values;
+        # an empty list was never the intended, complete state).
+        if topology == "SHARED_TCP_SNI":
+            empty_sni_ids = []
+            for svc in group["services"]:
+                match = (svc.get("routing") or {}).get("match") or {}
+                if "sni" in match and not match["sni"]:
+                    empty_sni_ids.append(svc["service_id"])
+            if len(empty_sni_ids) > 1:
+                _err(diags, "ambiguous_default_sni_backend", gid,
+                     "$.groups[].services[].routing.match.sni",
+                     f"group {gid!r} is SHARED_TCP_SNI and has {len(empty_sni_ids)} services with "
+                     f"an empty SNI match ({sorted(empty_sni_ids)!r}) — at most one service may "
+                     f"omit sni values (as the unambiguous default/catch-all route); two or more "
+                     f"is undecidable")
 
         # F. SHARED_UDP_QUIC_SNI-specific dimension-name checks.
         if topology == "SHARED_UDP_QUIC_SNI":
