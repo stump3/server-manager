@@ -72,7 +72,7 @@ _CADDY_QUIC_FULL = _provider(**{
 
 
 def _svc(id, transport="tcp", port_value=443, sharing="allowed", ip_selection="any_public",
-          same_as=None, tls=None, quic=None):
+          same_as=None, tls=None, quic=None, backend_hint=None):
     svc = {
         "id": id, "transport": transport, "exposure": "public",
         "port": {"selection": "specific", "value": port_value, "sharing": sharing},
@@ -82,6 +82,8 @@ def _svc(id, transport="tcp", port_value=443, sharing="allowed", ip_selection="a
         svc["tls"] = tls
     if quic is not None:
         svc["quic"] = quic
+    if backend_hint is not None:
+        svc["backend_hint"] = backend_hint
     return svc
 
 
@@ -101,8 +103,10 @@ def _direct_tcp_plan_ir():
 
 def _shared_tcp_plan_ir():
     doc = _doc(
-        _svc("xray", sharing="required", tls={"mode": "passthrough"}),
-        _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray", tls={"mode": "termination"}),
+        _svc("xray", sharing="required", tls={"mode": "passthrough", "sni_values": ["xray.example.com"]},
+             backend_hint={"loopback_port": 8443}),
+        _svc("web", sharing="required", ip_selection="same_as_service", same_as="xray",
+             tls={"mode": "termination", "sni_values": ["web.example.com"]}, backend_hint={"loopback_port": 7443}),
     )
     result = planner.plan(_inventory(), _registry(nginx=_NGINX_TCP_FULL), doc)
     assert result["outcome"] == "planned", result
@@ -111,9 +115,10 @@ def _shared_tcp_plan_ir():
 
 def _shared_udp_quic_plan_ir():
     doc = _doc(
-        _svc("hy2", transport="udp", sharing="required", quic={"sni_routing": "passthrough", "migration_tolerant": True}),
+        _svc("hy2", transport="udp", sharing="required", quic={"sni_routing": "passthrough", "migration_tolerant": True},
+             backend_hint={"loopback_port": 9443}),
         _svc("other", transport="udp", sharing="required", ip_selection="same_as_service", same_as="hy2",
-             quic={"sni_routing": "passthrough", "migration_tolerant": True}),
+             quic={"sni_routing": "passthrough", "migration_tolerant": True}, backend_hint={"loopback_port": 9444}),
     )
     result = planner.plan(_inventory(), _registry(caddy_l4=_CADDY_QUIC_FULL), doc)
     assert result["outcome"] == "planned", result
@@ -205,9 +210,9 @@ class TestIdentity(unittest.TestCase):
 class TestReconciliationConsistency(unittest.TestCase):
     def test_05_conflicting_create_same_endpoint_different_groups(self):
         svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
-                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported", None)
         svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
-                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("DIRECT_TCP", None, [svc_a]),
                                   plan_ir.build_group("DIRECT_TCP", None, [svc_b])])
         result = plan_validator.validate_plan(plan)
@@ -216,7 +221,7 @@ class TestReconciliationConsistency(unittest.TestCase):
 
     def test_06_invalid_keep_with_mutation(self):
         svc = plan_ir.build_service_entry("a", "colocated", "keep", "parameter",
-                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("DIRECT_TCP", None, [svc])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -224,7 +229,7 @@ class TestReconciliationConsistency(unittest.TestCase):
 
     def test_07_invalid_reuse_with_mutation(self):
         svc = plan_ir.build_service_entry("a", "colocated", "reuse", "topology",
-                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("DIRECT_TCP", None, [svc])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -232,7 +237,7 @@ class TestReconciliationConsistency(unittest.TestCase):
 
     def test_08_invalid_change_with_no_scope(self):
         svc = plan_ir.build_service_entry("a", "colocated", "change", "none",
-                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("DIRECT_TCP", None, [svc])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -271,9 +276,9 @@ class TestEndpointConflicts(unittest.TestCase):
 
     def test_12_duplicate_ip_port_udp(self):
         svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
-                                             plan_ir.build_listener("udp", "203.0.113.10", 443), None, [], "not_supported")
+                                             plan_ir.build_listener("udp", "203.0.113.10", 443), None, [], "not_supported", None)
         svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
-                                             plan_ir.build_listener("udp", "203.0.113.10", 443), None, [], "not_supported")
+                                             plan_ir.build_listener("udp", "203.0.113.10", 443), None, [], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("SEPARATE_IPS", None, [svc_a, svc_b])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -287,9 +292,11 @@ class TestEndpointConflicts(unittest.TestCase):
 class TestSharingAndExclusivity(unittest.TestCase):
     def test_13_invalid_sharing_partner_shared_group_endpoint_mismatch(self):
         svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
-                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                             plan_ir.build_backend("tcp", 8443))
         svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
-                                             plan_ir.build_listener("tcp", "203.0.113.11", 8443), None, [], "not_supported")
+                                             plan_ir.build_listener("tcp", "203.0.113.11", 8443), None, [], "not_supported",
+                                             plan_ir.build_backend("tcp", 7443))
         plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc_a, svc_b])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -304,7 +311,8 @@ class TestSharingAndExclusivity(unittest.TestCase):
         shape passed silently (a genuine, disclosed limitation at the
         time); now it correctly fails."""
         svc = plan_ir.build_service_entry("a", "colocated", "create", "none",
-                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                           plan_ir.build_backend("tcp", 8443))
         plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -315,9 +323,11 @@ class TestSharingAndExclusivity(unittest.TestCase):
         never as a false positive on a genuinely-shared, correctly
         endpoint-matched pair."""
         svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
-                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                             plan_ir.build_backend("tcp", 8443))
         svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
-                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported")
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                             plan_ir.build_backend("tcp", 7443))
         plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc_a, svc_b])])
         result = plan_validator.validate_plan(plan)
         self.assertTrue(result.valid, result.diagnostics)
@@ -375,7 +385,7 @@ class TestTcpUdpQuicInvariants(unittest.TestCase):
         svc = plan_ir.build_service_entry("a", "colocated", "create", "none",
                                            plan_ir.build_listener("tcp", "203.0.113.10", 443),
                                            plan_ir.build_routing("sni", ["example.com"]),
-                                           ["tcp.sni_inspection"], "not_supported")
+                                           ["tcp.sni_inspection"], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("DIRECT_TCP", None, [svc])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -385,7 +395,7 @@ class TestTcpUdpQuicInvariants(unittest.TestCase):
         svc = plan_ir.build_service_entry("a", "colocated", "create", "none",
                                            plan_ir.build_listener("udp", "203.0.113.10", 443),
                                            plan_ir.build_routing("sni", ["example.com"]),
-                                           ["tcp.sni_inspection"], "not_supported")
+                                           ["tcp.sni_inspection"], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("SHARED_UDP_QUIC_SNI", "caddy_l4", [svc])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -393,7 +403,7 @@ class TestTcpUdpQuicInvariants(unittest.TestCase):
 
     def test_19_proxy_protocol_enum_validity(self):
         svc = plan_ir.build_service_entry("a", "colocated", "create", "none",
-                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "maybe")
+                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "maybe", None)
         plan = plan_ir.assemble([plan_ir.build_group("DIRECT_TCP", None, [svc])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -402,10 +412,10 @@ class TestTcpUdpQuicInvariants(unittest.TestCase):
     def test_20_quic_termination_never_substitutes_for_routing(self):
         svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
                                              plan_ir.build_listener("udp", "203.0.113.10", 443), None,
-                                             ["udp.listen", "udp.quic_sni_termination", "udp.multi_backend_same_port"], "not_supported")
+                                             ["udp.listen", "udp.quic_sni_termination", "udp.multi_backend_same_port"], "not_supported", None)
         svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
                                              plan_ir.build_listener("udp", "203.0.113.10", 443), None,
-                                             ["udp.listen", "udp.quic_sni_termination", "udp.multi_backend_same_port"], "not_supported")
+                                             ["udp.listen", "udp.quic_sni_termination", "udp.multi_backend_same_port"], "not_supported", None)
         plan = plan_ir.assemble([plan_ir.build_group("SHARED_UDP_QUIC_SNI", "haproxy", [svc_a, svc_b])])
         result = plan_validator.validate_plan(plan)
         self.assertFalse(result.valid)
@@ -414,10 +424,12 @@ class TestTcpUdpQuicInvariants(unittest.TestCase):
     def test_21_migration_safety_violation_produces_warning_not_silent_pass(self):
         svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
                                              plan_ir.build_listener("udp", "203.0.113.10", 443), None,
-                                             ["udp.listen", "udp.quic_sni_routing", "udp.multi_backend_same_port"], "not_supported")
+                                             ["udp.listen", "udp.quic_sni_routing", "udp.multi_backend_same_port"], "not_supported",
+                                             plan_ir.build_backend("udp", 9443))
         svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
                                              plan_ir.build_listener("udp", "203.0.113.10", 443), None,
-                                             ["udp.listen", "udp.quic_sni_routing", "udp.multi_backend_same_port"], "not_supported")
+                                             ["udp.listen", "udp.quic_sni_routing", "udp.multi_backend_same_port"], "not_supported",
+                                             plan_ir.build_backend("udp", 9444))
         plan = plan_ir.assemble([plan_ir.build_group("SHARED_UDP_QUIC_SNI", "caddy_l4", [svc_a, svc_b])],
                                  warnings=[])
         result = plan_validator.validate_plan(plan)
@@ -543,13 +555,13 @@ class TestMalformedAndMixed(unittest.TestCase):
 
     def test_32_mixed_keep_reuse_change_create(self):
         keep_svc = plan_ir.build_service_entry("keep-me", "colocated", "keep", "none",
-                                                plan_ir.build_listener("tcp", "203.0.113.10", 111), None, [], "not_supported")
+                                                plan_ir.build_listener("tcp", "203.0.113.10", 111), None, [], "not_supported", None)
         reuse_svc = plan_ir.build_service_entry("reuse-me", "colocated", "reuse", "none",
-                                                 plan_ir.build_listener("tcp", "203.0.113.10", 222), None, [], "not_supported")
+                                                 plan_ir.build_listener("tcp", "203.0.113.10", 222), None, [], "not_supported", None)
         change_svc = plan_ir.build_service_entry("change-me", "colocated", "change", "parameter",
-                                                  plan_ir.build_listener("tcp", "203.0.113.10", 333), None, [], "not_supported")
+                                                  plan_ir.build_listener("tcp", "203.0.113.10", 333), None, [], "not_supported", None)
         create_svc = plan_ir.build_service_entry("create-me", "colocated", "create", "none",
-                                                  plan_ir.build_listener("tcp", "203.0.113.10", 444), None, [], "not_supported")
+                                                  plan_ir.build_listener("tcp", "203.0.113.10", 444), None, [], "not_supported", None)
         plan = plan_ir.assemble([
             plan_ir.build_group("DIRECT_TCP", None, [keep_svc]),
             plan_ir.build_group("DIRECT_TCP", None, [reuse_svc]),
@@ -626,6 +638,72 @@ class TestPlanValidatorArchitecture(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom):
                 top = (node.module or "").split(".")[0]
                 self.assertIn(top, allowed_stdlib | {"plan_ir"}, f"unexpected import from: {node.module}")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Backend endpoint semantics (research/network/shared_udp_topology_planner.md
+# §13/§21) — mechanism <-> backend presence invariant, backend shape,
+# and the SHARED_TCP_SNI empty-SNI-multiplicity rule.
+# ─────────────────────────────────────────────────────────────────────
+
+class TestBackendEndpointInvariant(unittest.TestCase):
+    def test_mechanism_with_missing_backend_is_invalid(self):
+        svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                             None)
+        svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                             plan_ir.build_backend("tcp", 7443))
+        plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc_a, svc_b])])
+        result = plan_validator.validate_plan(plan)
+        self.assertFalse(result.valid)
+        self.assertIn("mechanism_without_backend", [d.code for d in result.diagnostics])
+
+    def test_mechanism_with_valid_backend_is_valid(self):
+        svc_a = plan_ir.build_service_entry("a", "colocated", "create", "none",
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                             plan_ir.build_backend("tcp", 8443))
+        svc_b = plan_ir.build_service_entry("b", "colocated", "create", "none",
+                                             plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                             plan_ir.build_backend("tcp", 7443))
+        plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc_a, svc_b])])
+        result = plan_validator.validate_plan(plan)
+        self.assertTrue(result.valid, result.diagnostics)
+
+    def test_no_mechanism_with_backend_present_is_invalid(self):
+        svc = plan_ir.build_service_entry("a", "colocated", "create", "none",
+                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                           plan_ir.build_backend("tcp", 8443))
+        plan = plan_ir.assemble([plan_ir.build_group("DIRECT_TCP", None, [svc])])
+        result = plan_validator.validate_plan(plan)
+        self.assertFalse(result.valid)
+        self.assertIn("backend_without_mechanism", [d.code for d in result.diagnostics])
+
+    def test_invalid_backend_shape_is_invalid(self):
+        svc = plan_ir.build_service_entry("a", "colocated", "create", "none",
+                                           plan_ir.build_listener("tcp", "203.0.113.10", 443), None, [], "not_supported",
+                                           {"kind": "not_a_real_kind", "address": "not-an-ip", "port": 999999})
+        plan = plan_ir.assemble([plan_ir.build_group("SHARED_TCP_SNI", "nginx", [svc])])
+        result = plan_validator.validate_plan(plan)
+        self.assertFalse(result.valid)
+        codes = {d.code for d in result.diagnostics}
+        self.assertIn("invalid_backend_kind", codes)
+        self.assertIn("invalid_backend_address", codes)
+        self.assertIn("invalid_backend_port", codes)
+
+    def test_multiple_empty_sni_matches_in_shared_tcp_sni_is_invalid(self):
+        plan = _shared_tcp_plan_ir()
+        for svc in plan["groups"][0]["services"]:
+            svc["routing"]["match"]["sni"] = []
+        result = plan_validator.validate_plan(plan)
+        self.assertFalse(result.valid)
+        self.assertIn("ambiguous_default_sni_backend", [d.code for d in result.diagnostics])
+
+    def test_one_empty_sni_match_remains_allowed(self):
+        plan = _shared_tcp_plan_ir()
+        plan["groups"][0]["services"][0]["routing"]["match"]["sni"] = []
+        result = plan_validator.validate_plan(plan)
+        self.assertTrue(result.valid, result.diagnostics)
 
 
 if __name__ == "__main__":
