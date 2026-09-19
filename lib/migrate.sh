@@ -164,6 +164,14 @@ migrate_transfer_panel() {
             && ok "Сертификаты Hysteria2 переданы" || true
 
         # Восстановление
+        # RPANEL is an UNQUOTED heredoc: the local shell expands every
+        # unescaped $name/$((...)) while building the text, before
+        # `RUN bash -s` runs. $dumpb below is intentionally expanded
+        # locally (baked into the remote script as a literal filename).
+        # _pg_wait is a REMOTE-only loop counter, so its reads are
+        # escaped (\$) — unescaped, `set -u` (server-manager.sh:13)
+        # aborts the local process with "_pg_wait: unbound variable"
+        # before RUN is invoked.
         local dumpb; dumpb=$(basename "$dump")
         RUN bash -s << RPANEL
 set -e; cd /opt/remnawave
@@ -172,8 +180,8 @@ docker compose up -d remnawave-db remnawave-redis >/dev/null 2>&1
 # Ждём готовности PostgreSQL через pg_isready вместо фиксированного sleep
 _pg_wait=0
 until docker compose exec -T remnawave-db pg_isready -U postgres -q 2>/dev/null; do
-    sleep 1; _pg_wait=$((_pg_wait+1))
-    [ "$_pg_wait" -ge 60 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
+    sleep 1; _pg_wait=\$((_pg_wait+1))
+    [ "\$_pg_wait" -ge 60 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
 done
 zcat /opt/remnawave/$dumpb | docker compose exec -T remnawave-db psql -U postgres postgres >/dev/null 2>&1 || true
 docker compose up -d >/dev/null 2>&1
