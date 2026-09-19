@@ -164,33 +164,26 @@ migrate_transfer_panel() {
             && ok "Сертификаты Hysteria2 переданы" || true
 
         # Восстановление
-        #
-        # CONFIRMED DEFECT (migration destination-DB guard audit,
-        # follow-up pass): this heredoc's delimiter (RPANEL) is
-        # unquoted, so bash expands every unescaped `$name`/`$((...))`
-        # in its body in THIS (local) shell before ever handing the
-        # text to `RUN bash -s` -- that is deliberate for `$dumpb`
-        # below (it must become a literal filename baked into the
+        # CONFIRMED DEFECT (destination-guard follow-up pass, verified
+        # directly against THIS file — not against the module-shadowed
+        # lib/panel/migrate.sh copy): this heredoc's delimiter (RPANEL)
+        # is unquoted, so the LOCAL shell expands every unescaped
+        # `$name`/`$((...))` in its body while building the heredoc
+        # text, before `RUN bash -s` ever runs — deliberate for
+        # `$dumpb` below (must become a literal filename baked into the
         # remote script), but `_pg_wait` is a loop counter meant to
         # live only in the REMOTE bash reading this heredoc as its own
-        # script. Confirmed by direct reproduction under this project's
-        # own `set -euo pipefail` (server-manager.sh:13): the local
-        # shell hits `_pg_wait` unset (it is never assigned anywhere
-        # outside this heredoc) while constructing the heredoc text --
-        # i.e. before `RUN` is even invoked -- and `set -u` aborts the
-        # whole process right there. Reproduced for every path that
-        # reaches this point (guard absent, and guard-present-plus-user
-        # confirmed YES); the guard's own decline path
-        # (migrate_dest_existing_state_detected + "YES" prompt above)
-        # returns long before this line and is unaffected. Net effect
-        # before this fix: `docker volume rm remnawave-db-data` on the
-        # line below never actually ran in any real invocation -- not
-        # because the guard stopped it, but because the whole process
-        # crashed first, on every attempted migration that should have
-        # succeeded. Fix: escape the two `_pg_wait` reads so they pass
+        # script. Reproduced directly against this exact block under
+        # this project's own `set -euo pipefail` (server-manager.sh:13):
+        # the local shell hits `_pg_wait` unset (never assigned outside
+        # this heredoc) while constructing the heredoc text, and `set -u`
+        # aborts the whole process right there — before RUN is even
+        # invoked, so `docker volume rm remnawave-db-data` and the
+        # restore below it never ran in any real invocation that reached
+        # this point. Fix: escape the two `_pg_wait` reads so they pass
         # through as literal text for the remote shell to expand on its
-        # own, the same way `$dumpb` was already correctly left
-        # unescaped for local expansion.
+        # own, the same way `$dumpb` is already correctly left unescaped
+        # for local expansion.
         local dumpb; dumpb=$(basename "$dump")
         RUN bash -s << RPANEL
 set -e; cd /opt/remnawave
