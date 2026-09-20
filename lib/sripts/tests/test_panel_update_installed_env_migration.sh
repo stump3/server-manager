@@ -84,8 +84,8 @@ assert "migrate_transfer_panel (unrelated host-migration fn) still defined too" 
 
 assert "defined exactly once in lib/panel/management.sh" \
     "$(grep -c '^panel_migrate_env_for_remnawave_v2()' lib/panel/management.sh)" "1"
-assert "NOT reintroduced into lib/panel/migrate.sh (would recreate the naming collision)" \
-    "$(grep -c 'panel_migrate_env_for_remnawave_v2' lib/panel/migrate.sh)" "0"
+assert "redundant lib/panel/migrate.sh is absent (would recreate the naming collision if reintroduced)" \
+    "$(test ! -e lib/panel/migrate.sh && echo 0 || echo 1)" "0"
 assert "restored before its sole caller, panel_update_installed" \
     "$([ "$(grep -n '^panel_migrate_env_for_remnawave_v2()' lib/panel/management.sh | cut -d: -f1)" -lt \
         "$(grep -n '^panel_update_installed()' lib/panel/management.sh | cut -d: -f1)" ] && echo yes || echo no)" "yes"
