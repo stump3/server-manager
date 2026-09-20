@@ -140,7 +140,7 @@ generate_with_file() {
         # and caddy/config.sh, which come from the override path instead
         # -- same load order, same set of modules, one substituted file.
         PANEL_LIB_DIR="lib/panel"
-        for _m in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/variant_f nginx/variant_j xray/templates/render node/compose node/api node/install management warp subpage template migrate menu; do
+        for _m in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/variant_f nginx/variant_j xray/templates/render node/compose node/api node/install management warp subpage template menu; do
             source "$PANEL_LIB_DIR/$_m.sh"
         done
         source "'"$override"'"
@@ -218,7 +218,7 @@ if [ "$MUTATION_HIT" = "1" ]; then
         source lib/ui/output.sh
         source lib/common.sh
         PANEL_LIB_DIR="lib/panel"
-        for _m in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+        for _m in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template menu; do
             source "$PANEL_LIB_DIR/$_m.sh"
         done
         mkdir -p /opt/remnawave
@@ -255,7 +255,7 @@ if [ "$DISABLE_HIT" = "0" ]; then
         source lib/ui/output.sh
         source lib/common.sh
         PANEL_LIB_DIR="lib/panel"
-        for _m in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+        for _m in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template menu; do
             source "$PANEL_LIB_DIR/$_m.sh"
         done
         mkdir -p /opt/remnawave
