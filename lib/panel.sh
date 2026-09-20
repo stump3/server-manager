@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #
 # Этот файл — loader. Реализация панели разбита на подмодули в
-# lib/panel/{core,cert,cli,install,compose,compose/common,compose/colocated,compose/remote,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,xray/templates/render,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
+# lib/panel/{core,cert,cli,install,compose,compose/common,compose/colocated,compose/remote,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,xray/templates/render,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,menu}.sh
 #
 # Обычный путь загрузки: _sm_source_file / _load_module panel из
 # server-manager.sh (SCRIPT_DIR уже выставлен, source идёт по
@@ -47,7 +47,7 @@ _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
 # these at runtime, after every module is already sourced, so load order
 # relative to install doesn't actually matter — placed here for
 # readability, next to what it was extracted from).
-for _panel_module in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+for _panel_module in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template menu; do
     # shellcheck source=/dev/null
     source "${_PANEL_MODULE_DIR}/${_panel_module}.sh"
 done
