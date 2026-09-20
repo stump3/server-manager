@@ -37,15 +37,27 @@
 #    that too.
 #
 # Same conventions as this session's other new tests: bash -n, source
-# inspection, and the real UFW-cleanup block from hysteria_uninstall()
-# extracted verbatim via awk (same technique as
-# test_adapter_colocated_node_host_lookup.sh /
+# inspection, and the real UFW-cleanup logic extracted verbatim via awk
+# (same technique as test_adapter_colocated_node_host_lookup.sh /
 # test_adapter_xhttp_host_lookup_shape.sh) and exercised in isolation
 # against a mocked `ufw` -- hysteria_uninstall() itself starts with an
 # interactive `read ... < /dev/tty` confirmation gate that this sandbox
 # has no usable controlling terminal for (confirmed before writing this
-# test), so the real, unmodified block is tested directly rather than
+# test), so the real, unmodified logic is tested directly rather than
 # routed through that prompt.
+#
+# UPDATE (post-refactor): the cleanup logic covered by section 3 below
+# was subsequently factored out of hysteria_uninstall()'s own body into
+# a named helper, hy_ufw_cleanup_service_port() (lib/hy2/install.sh,
+# same file) -- same behavior and ordering guarantee, called from
+# hysteria_uninstall() instead of inlined there. Sections 2/3 extract
+# and exercise that helper directly; sections 0/1/4/5 (bash -n,
+# hy_get_port(), the uninstall disclosure text, and the menu call site)
+# are unaffected by that refactor and unchanged. This mocked-ufw
+# functional coverage is complementary to, not a duplicate of,
+# test_hy2_uninstall_ufw_cleanup.sh's real-ufw functional coverage of
+# the same helper: this one still runs in sandboxes with no real `ufw`
+# binary installed (that test SKIPs there), so both are kept.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -92,18 +104,22 @@ assert "no config file at all -> empty, non-fatal" \
 
 echo ""
 echo "== 2. source inspection: UFW cleanup present in hysteria_uninstall(), before the config file is deleted =="
-UFW_LINE=$(grep -n "_hy_listen=\$(grep -m1" lib/hy2/install.sh | head -1 | cut -d: -f1)
+# UFW cleanup was factored out of hysteria_uninstall()'s own body into a
+# named helper, hy_ufw_cleanup_service_port() (same file), called from
+# hysteria_uninstall() before the config file is removed -- same
+# ordering requirement as before, different shape (a call site instead
+# of an inline block). See that function's own header comment for why.
+assert "hy_ufw_cleanup_service_port() defined exactly once" \
+    "$(grep -c '^hy_ufw_cleanup_service_port()' lib/hy2/install.sh)" "1"
+CLEANUP_CALL_LINE=$(grep -n 'hy_ufw_cleanup_service_port$' lib/hy2/install.sh | tail -1 | cut -d: -f1)
 RM_CONFIG_LINE=$(grep -n 'rm -f "\${HYSTERIA_CONFIG:-/etc/hysteria/config.yaml}"' lib/hy2/install.sh | head -1 | cut -d: -f1)
-assert "UFW cleanup reads listen: line before config removal" \
-    "$([ "$UFW_LINE" -lt "$RM_CONFIG_LINE" ] && echo yes || echo no)" "yes"
-assert "UFW cleanup block appears exactly once" \
-    "$(grep -c '_hy_listen=\$(grep -m1' lib/hy2/install.sh)" "1"
+assert "hysteria_uninstall() calls the cleanup helper before config removal" \
+    "$([ "$CLEANUP_CALL_LINE" -lt "$RM_CONFIG_LINE" ] && echo yes || echo no)" "yes"
 
 echo ""
-echo "== 3. UFW cleanup block (real code, extracted verbatim) in isolation, mocked ufw =="
-UNINSTALL_BODY_RAW="$(awk '/^hysteria_uninstall\(\) \{/,/^\}$/' lib/hy2/install.sh)"
-UFW_BLOCK="$(awk '/if command -v ufw &>\/dev\/null; then/{f=1} f{print} f&&/^    fi$/{exit}' <<<"$UNINSTALL_BODY_RAW")"
-assert "UFW cleanup block actually extracted (non-empty)" "$([ -n "$UFW_BLOCK" ] && echo present || echo MISSING)" "present"
+echo "== 3. hy_ufw_cleanup_service_port() (real code, extracted verbatim) in isolation, mocked ufw =="
+UFW_BLOCK="$(awk '/^hy_ufw_cleanup_service_port\(\) \{/,/^}$/' lib/hy2/install.sh)"
+assert "hy_ufw_cleanup_service_port() actually extracted (non-empty)" "$([ -n "$UFW_BLOCK" ] && echo present || echo MISSING)" "present"
 
 run_ufw_cleanup() {
     # $1 = listen: line content (or empty for "no config")
@@ -113,6 +129,7 @@ run_ufw_cleanup() {
         HYSTERIA_CONFIG="$(mktemp)"
         [ -n "$1" ] && printf '%s\n' "$1" > "$HYSTERIA_CONFIG" || rm -f "$HYSTERIA_CONFIG"
         eval "$UFW_BLOCK"
+        hy_ufw_cleanup_service_port
         rm -f "$HYSTERIA_CONFIG"
     )
     cat "$log"; rm -f "$log"
