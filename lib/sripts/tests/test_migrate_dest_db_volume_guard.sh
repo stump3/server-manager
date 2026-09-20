@@ -1,41 +1,51 @@
 #!/bin/bash
 # lib/sripts/tests/test_migrate_dest_db_volume_guard.sh
 #
-# Lifecycle audit (Step A, lib/migrate.sh): migrate_transfer_panel()'s
-# remote restore heredoc runs `docker volume rm remnawave-db-data
-# 2>/dev/null || true` against the DESTINATION server before restoring
-# the migrated dump, with no prior check of what is already there.
+# ORIGINAL FINDING (lifecycle audit, Step A, lib/migrate.sh):
+# migrate_transfer_panel()'s remote restore heredoc ran `docker volume rm
+# remnawave-db-data 2>/dev/null || true` against the DESTINATION server
+# before restoring the migrated dump, with no prior check of what was
+# already there -- silently destroying any pre-existing destination
+# Panel install. This test originally exercised that fix directly
+# against a bare mocked `confirm()` function with a default-no branch.
 #
-# Confirmed directly against a live Docker daemon in this sandbox
-# (not just reasoned about): the literal volume name is not
-# compose-project-prefixed (lib/panel/compose/common.sh declares
-# `name: remnawave-db-data`), and when no container currently
-# references that name on the destination -- the ordinary state after
-# an earlier `docker compose down` (no -v), or any leftover volume
-# from a prior install attempt on that box -- `docker volume rm`
-# succeeds and permanently deletes it, with the failure silently
-# masked by `2>/dev/null || true` either way. This project's own
-# panel_install() already treats the mere existence of this exact
-# volume as proof "Panel already installed" and refuses to proceed
-# without an explicit confirmation
-# (panel_install_existing_state_detected(), lib/panel/install.sh,
-# covered by test_install_existing_state_guard.sh) -- the migration
-# destination had no equivalent gate, and remote_install_deps()'s own
-# confirm() (already run earlier in the same flow) never mentions
-# this action at all.
+# SUPERSEDED (post-hardening): the fix was reworked from that bare
+# confirm() into migrate_dest_existing_state_detected() gating an
+# explicit warn + typed-'YES' `read -rp ... < /dev/tty` confirmation --
+# the same convention panel_reinstall()/panel_remove() already use for
+# equivalent destructive operations (lib/panel/management.sh). confirm()
+# is no longer called anywhere in this path, so every assertion this
+# file used to make against it (pre-check invocation, confirm() call
+# count, accept/decline branching) tests a shape that no longer exists.
 #
-# Fix: migrate_transfer_panel() now checks the destination for an
-# existing remnawave-db-data volume (via RUN, before any dump/transfer
-# work) and requires an explicit confirm() (default: no) before
-# proceeding when one is found. No change to the path where the
-# destination has no such volume.
+# That current contract -- detection semantics, wiring/ordering,
+# wording, the typed-'YES' requirement, and the NOT-detected functional
+# path -- is now covered, more precisely than this file ever did, by:
+#   test_migrate_dest_existing_state_guard.sh (source inspection +
+#     migrate_dest_existing_state_detected() in isolation + the
+#     NOT-detected path extracted and run functionally + its own
+#     negative control)
+#   migrate_panel_flow_harness.sh (full end-to-end migrate_transfer_panel()
+#     run through a real PTY: destination-absent, destination-exists
+#     declined via several wrong answers incl. case-sensitivity, and
+#     destination-exists accepted through to the actual remote restore
+#     script, including that script's own pg_isready retry logic)
+# Rather than delete this file outright, it is trimmed to the two
+# things that investigation showed are NOT covered by either of those:
 #
-# Same mocking convention as test_install_existing_state_guard.sh:
-# the REAL, unmodified migrate_transfer_panel() is sourced and called
-# directly; only RUN/PUT/docker/confirm (no real SSH/network/Docker in
-# this sandbox) are mocked, each recording to a call log so the test
-# can assert not just the return code but which steps were actually
-# reached.
+#   1. migrate_all()'s own call site -- neither sibling test's coverage
+#      happens to touch migrate_all() itself (both drive
+#      migrate_transfer_panel() directly), and test_a2_migrate_delegation.sh
+#      (the file that does cover migrate_all()'s delegation) only checks
+#      its migrate_prepare_target call, not migrate_transfer_panel.
+#   2. the guard's own text output stays on stderr -- ok/info/warn/die/
+#      detail all hard-code `>&2` (lib/ui/output.sh's own documented
+#      Contract 1), so this is a source-level check that the guard block
+#      routes its messages through those helpers rather than a bare
+#      echo/printf that would leak onto stdout, not a runtime capture
+#      (the DETECTED branch ends in the same un-drivable `< /dev/tty`
+#      read as test_migrate_dest_existing_state_guard.sh's own
+#      not-functionally-tested branch, for the same sandbox reason).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -58,101 +68,22 @@ bash -n lib/migrate.sh 2>/tmp/_migrate_synerr && PASS=$((PASS+1)) || { FAIL=$((F
 rm -f /tmp/_migrate_synerr
 
 echo ""
-echo "== 1. source inspection: guard present exactly once, before the dump step, and before the destructive remote restore heredoc =="
-assert "destination-volume pre-check present exactly once" \
-    "$(grep -c 'docker volume inspect remnawave-db-data >/dev/null 2>&1' lib/migrate.sh)" "1"
-GUARD_LINE=$(grep -n 'if RUN "docker volume inspect remnawave-db-data' lib/migrate.sh | head -1 | cut -d: -f1)
-DUMP_LINE=$(grep -n 'pg_dumpall -c -U postgres' lib/migrate.sh | head -1 | cut -d: -f1)
-RESTORE_LINE=$(grep -n 'docker volume rm remnawave-db-data 2>/dev/null || true' lib/migrate.sh | head -1 | cut -d: -f1)
-assert "guard runs before the DB dump is taken" "$([ "$GUARD_LINE" -lt "$DUMP_LINE" ] && echo yes || echo no)" "yes"
-assert "guard runs before the destructive remote restore heredoc" "$([ "$GUARD_LINE" -lt "$RESTORE_LINE" ] && echo yes || echo no)" "yes"
-assert "the destructive remote-restore line itself is untouched (still exists verbatim)" \
-    "$(grep -c 'docker volume rm remnawave-db-data 2>/dev/null || true' lib/migrate.sh)" "1"
-
-echo ""
-echo "== 2. migrate_transfer_panel() in isolation (real function, mocked RUN/PUT/docker/confirm) =="
-mkdir -p /opt/remnawave
-touch /opt/remnawave/docker-compose.yml
-
-run_transfer() {
-    # $1: "exists_decline" | "exists_accept" | "absent"
-    local scenario="$1"
-    local log; log=$(mktemp)
-    (
-        # shellcheck source=/dev/null
-        source lib/ui/output.sh
-        # shellcheck source=/dev/null
-        source lib/migrate.sh
-
-        RUN() {
-            echo "RUN:$1" >> "$log"
-            if [ "$1" = "docker volume inspect remnawave-db-data >/dev/null 2>&1" ]; then
-                case "$scenario" in
-                    exists_decline|exists_accept) return 0 ;;
-                    absent)                       return 1 ;;
-                esac
-            fi
-            return 0
-        }
-        PUT() { echo "PUT:$*" >> "$log"; return 0; }
-        docker() { echo "docker:$*" >> "$log"; return 0; }
-        confirm() {
-            echo "confirm:$1" >> "$log"
-            [ "$scenario" = "exists_accept" ] && return 0 || return 1
-        }
-
-        rip="203.0.113.10"; ruser="root"; rport="22"
-        migrate_transfer_panel
-        echo "RC=$?" >> "$log"
-    ) >/tmp/_migrate_stdout 2>/tmp/_migrate_stderr
-    cat "$log"
-    rm -f "$log"
-}
-
-echo "--- 2a. destination already has the volume, user DECLINES -- must stop before any dump/transfer work ---"
-OUT=$(run_transfer exists_decline)
-assert "exists+decline: pre-check was actually invoked" \
-    "$(grep -c '^RUN:docker volume inspect remnawave-db-data' <<<"$OUT")" "1"
-assert "exists+decline: confirm() was invoked" "$(grep -c '^confirm:' <<<"$OUT")" "1"
-assert "exists+decline: function returns 1 (abort)" "$(grep -c '^RC=1$' <<<"$OUT")" "1"
-assert "exists+decline: DB dump step (docker compose exec) NEVER reached" \
-    "$(grep -c '^docker:compose exec' <<<"$OUT")" "0"
-assert "exists+decline: no file ever PUT to the destination" "$(grep -c '^PUT:' <<<"$OUT")" "0"
-assert "exists+decline: stdout stays clean (all UI on stderr)" "$(cat /tmp/_migrate_stdout)" ""
-assert "exists+decline: specific warning about the existing destination volume shown" \
-    "$(grep -c 'уже есть volume remnawave-db-data' /tmp/_migrate_stderr)" "1"
-assert "exists+decline: cancellation message shown" \
-    "$(grep -c 'Перенос Panel отменён пользователем' /tmp/_migrate_stderr)" "1"
-
-echo ""
-echo "--- 2b. destination already has the volume, user ACCEPTS -- proceeds past the gate into the dump step ---"
-OUT=$(run_transfer exists_accept)
-assert "exists+accept: pre-check was invoked" \
-    "$(grep -c '^RUN:docker volume inspect remnawave-db-data' <<<"$OUT")" "1"
-assert "exists+accept: confirm() was invoked" "$(grep -c '^confirm:' <<<"$OUT")" "1"
-assert "exists+accept: proceeds to the DB dump step (docker compose exec reached)" \
-    "$(grep -c '^docker:compose exec' <<<"$OUT")" "1"
-
-echo ""
-echo "--- 2c. destination has NO existing volume (the ordinary/intended case) -- gate is silent, confirm() never asked, byte-for-byte unchanged path ---"
-OUT=$(run_transfer absent)
-assert "absent: pre-check was invoked" \
-    "$(grep -c '^RUN:docker volume inspect remnawave-db-data' <<<"$OUT")" "1"
-assert "absent: confirm() is NEVER called (no interactive prompt for the common case)" \
-    "$(grep -c '^confirm:' <<<"$OUT")" "0"
-assert "absent: proceeds straight to the DB dump step" \
-    "$(grep -c '^docker:compose exec' <<<"$OUT")" "1"
-assert "absent: no 'existing volume' warning shown" \
-    "$(grep -c 'уже есть volume remnawave-db-data' /tmp/_migrate_stderr)" "0"
-
-rm -f /tmp/_migrate_stdout /tmp/_migrate_stderr
-
-echo ""
-echo "== 3. call-site precondition: migrate_transfer_panel() still has exactly its two known production call sites, unchanged =="
+echo "== 1. call-site precondition: migrate_transfer_panel() still has exactly its two known production call sites, unchanged =="
 assert "panel_migrate() still calls migrate_transfer_panel" \
     "$(grep -c 'migrate_transfer_panel$' lib/migrate.sh)" "1"
 assert "migrate_all() still calls migrate_transfer_panel" \
     "$(grep -c 'migrate_transfer_panel || return 1' lib/migrate.sh)" "1"
+
+echo ""
+echo "== 2. guard block's own text output stays on stderr (no bare echo/printf that would leak onto stdout) =="
+GUARD_BLOCK="$(awk '
+    /^        if migrate_dest_existing_state_detected; then$/ { found=1 }
+    found { print; if (/^        fi$/) exit }
+' lib/migrate.sh)"
+assert "guard block extracted from lib/migrate.sh (non-empty)" \
+    "$([ -n "$GUARD_BLOCK" ] && echo present || echo MISSING)" "present"
+assert "guard block has no bare echo/printf (only warn/info, which are >&2 in lib/ui/output.sh)" \
+    "$(grep -cE '^[[:space:]]*(echo|printf)\b' <<<"$GUARD_BLOCK")" "0"
 
 echo ""
 echo "==================================="
