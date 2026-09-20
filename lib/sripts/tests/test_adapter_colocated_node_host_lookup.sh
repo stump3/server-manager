@@ -41,6 +41,32 @@ assert() {
     fi
 }
 
+# Both extracted production blocks (sections 2-13 below) call `jq`
+# internally to parse the mocked GET/POST response bodies, same as the
+# real panel_setup_api() does against a live Panel API -- there is no
+# jq-free code path here to fall back to (unlike, say, an optional
+# feature check). A missing `jq` binary is an environment/dependency
+# gap in THIS sandbox, not a defect in this test or in production:
+# confirmed directly by installing jq and re-running this exact,
+# unmodified file, which then passes PASS=29 FAIL=0 -- every one of
+# the 7 failures seen without jq traces to jq-dependent extraction
+# inside the real, eval'd production blocks (an empty `NODE_UUID`/
+# `HOST_UUID` after the mocked CREATE response can't be parsed without
+# jq, which sends the block down its own "create failed" path instead
+# of the "created" path sections 2/7 expect -- same reason the
+# "already exists" lookup in sections 3/8/10 can't recognize a match
+# either). Same convention already established in this suite for a
+# missing external tool (test_hy2_uninstall_ufw_cleanup.sh's `command
+# -v ufw` guard for a real-`ufw`-only test) -- sections 0/1/14 do not
+# themselves call jq, but are skipped along with the rest here too,
+# matching that same file's own precedent, rather than inventing a
+# partial-skip shape not used anywhere else in this suite.
+if ! command -v jq >/dev/null 2>&1; then
+    echo "SKIP: this test's mocked production code path requires jq, not installed in this environment"
+    echo "PASS=0 FAIL=0"
+    exit 0
+fi
+
 echo "== 0. bash -n =="
 for f in lib/panel/api.sh; do
     bash -n "$f" 2>/tmp/_c13_synerr && PASS=$((PASS+1)) || { FAIL=$((FAIL+1)); echo "  FAIL: bash -n $f"; cat /tmp/_c13_synerr; }
