@@ -198,62 +198,54 @@ RPANEL
 
 migrate_transfer_mtproxy() {
     # ── MTProxy ────────────────────────────────────────────────────
-    if [ -f "$TELEMT_CONFIG_SYSTEMD" ]; then
-        info "Переносим MTProxy..."
-        local cp dp ub lb
+    # Source mode is determined via telemt_detect_installed_mode()
+    # (lib/telemt/core.sh) — the same file-existence-based detector
+    # Panel's own install/reconfigure decision already relies on
+    # (lib/panel/cli.sh) — never via a $TELEMT_MODE session variable
+    # (nothing sets it before migrate_all() runs) and never a hardcoded
+    # systemd-only assumption. This is what lets a docker-mode source
+    # (the mode every fresh F/J-integrated install actually uses) reach
+    # its own, already-correct migration path below instead of being
+    # silently skipped because only $TELEMT_CONFIG_SYSTEMD was checked.
+    local _telemt_src_mode; _telemt_src_mode=$(telemt_detect_installed_mode)
+    case "$_telemt_src_mode" in
+    systemd)
+        # Preserve-source-config semantics (matches the already-correct
+        # telemt_menu_migrate_docker() pattern in lib/telemt/migrate.sh):
+        # the source telemt.toml is the source of truth. Only the two
+        # migration-specific fields (port, tls_domain) are substituted;
+        # everything else -- ip/proxy_protocol, users, limits/expirations,
+        # censorship, general, and any future field this function has
+        # never heard of -- travels through byte-for-byte, because it is
+        # never reconstructed from a template in the first place.
+        #
+        # Previously this function rebuilt telemt.toml from a hardcoded
+        # heredoc template, which silently dropped ip=127.0.0.1 +
+        # proxy_protocol=true for F/J co-located sources (breaking the
+        # PROXY-protocol contract with the shared nginx :443 stream --
+        # see docs/edge_contracts.md) and any field this function didn't
+        # explicitly re-extract. See this session's architectural
+        # decision audit for the full analysis.
+        local cp dp
         cp=$(grep -E "^port\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oE "[0-9]+" || echo "8443")
         dp=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oP '(?<=")[^"]+' || echo "")
-        [ -z "$dp" ] && dp="1c.ru"  # fallback если regex не совпал
-        ub=$(awk '/^\[access\.users\]/{f=1;next} f&&/^\[/{exit} f&&/=/{print}' "$TELEMT_CONFIG_SYSTEMD")
-        if declare -f telemt_extract_limits_block >/dev/null 2>&1; then
-            lb=$(telemt_extract_limits_block "$TELEMT_CONFIG_SYSTEMD")
-        else
-            lb=$(awk '
-                /^\[(access\.user_max_tcp_conns|access\.user_expirations|access\.user_data_quota|access\.user_max_unique_ips)\]$/ {
-                    in_section=1; print; next
-                }
-                /^\[access\.user_limits\./ {
-                    in_section=1; print; next
-                }
-                /^\[/ { in_section=0 }
-                in_section { print }
-            ' "$TELEMT_CONFIG_SYSTEMD" || true)
+        [ -z "$dp" ] && dp="1c.ru"  # fallback если regex не совпал (используется только для ufw/лога ниже)
+
+        # Malformed-config guard: telemt_detect_listener_ip() (canonical,
+        # already used by telemt_detect_state()) returns empty if the
+        # source config has no [[server.listeners]] section at all. Bail
+        # out explicitly instead of forwarding an incomplete config --
+        # this is the "old hardcoded fallback must not reappear" case:
+        # do NOT fall through to writing any default listener config.
+        if [ -z "$(telemt_detect_listener_ip "$TELEMT_CONFIG_SYSTEMD")" ]; then
+            warn "MTProxy (systemd): конфиг не содержит [[server.listeners]] — похоже на повреждённый файл, пропускаю перенос"
+            return 0
         fi
 
-        echo "$ub" | RUN "mkdir -p /etc/telemt && { cat << 'NCONF'
-[general]
-use_middle_proxy = true
-log_level = \"normal\"
-
-[general.modes]
-classic = false
-secure  = false
-tls     = true
-
-[general.links]
-show = \"*\"
-
-[server]
-port = $cp
-
-[server.api]
-enabled   = true
-listen    = \"127.0.0.1:9091\"
-whitelist = [\"127.0.0.1/32\"]
-
-[[server.listeners]]
-ip = \"0.0.0.0\"
-
-[censorship]
-tls_domain    = \"$dp\"
-mask          = true
-tls_emulation = true
-tls_front_dir = \"/opt/telemt/tlsfront\"
-
-[access.users]
-NCONF
-cat; } > /etc/telemt/telemt.toml"
-        [ -n "$lb" ] && echo "$lb" | RUN "echo '' >> /etc/telemt/telemt.toml && cat >> /etc/telemt/telemt.toml"
+        info "Переносим MTProxy..."
+        local config_to_send
+        config_to_send=$(sed "s/^port = .*/port = $cp/; s/^tls_domain.*=.*/tls_domain    = \"$dp\"/" "$TELEMT_CONFIG_SYSTEMD")
+        echo "$config_to_send" | RUN "mkdir -p /etc/telemt && cat > /etc/telemt/telemt.toml"
 
         RUN bash << RTELEMT
 set -e
@@ -287,9 +279,34 @@ systemctl daemon-reload; systemctl enable telemt; systemctl restart telemt
 command -v ufw &>/dev/null && ufw allow $cp/tcp >/dev/null 2>&1 || true
 RTELEMT
         ok "MTProxy перенесён"
-    else
-        warn "MTProxy (systemd) не найден, пропускаю"
-    fi
+        ;;
+    docker)
+        # Reuses the already-correct, already-existing docker migration
+        # core (lib/telemt/migrate.sh:telemt_migrate_docker_payload(),
+        # extracted from telemt_menu_migrate_docker() specifically so it
+        # could be called here without a duplicate implementation). RUN/
+        # PUT are already initialized once by migrate_prepare_target() at
+        # the top of migrate_all() — no repeated ask_ssh_target/
+        # init_ssh_helpers here.
+        if [ ! -f "$TELEMT_COMPOSE_FILE" ]; then
+            warn "MTProxy (docker): docker-compose.yml не найден ($TELEMT_COMPOSE_FILE), пропускаю перенос"
+        else
+            info "Переносим MTProxy (Docker)..."
+            TELEMT_CONFIG_FILE="$TELEMT_CONFIG_DOCKER"
+            local _dp _dd
+            _dp=$(grep -E "^port\s*=" "$TELEMT_CONFIG_DOCKER" | head -1 | grep -oE "[0-9]+" || echo "8443")
+            _dd=$(telemt_get_tls_domain "$TELEMT_CONFIG_DOCKER")
+            if telemt_migrate_docker_payload "$_dp" "$_dd"; then
+                ok "MTProxy (docker) перенесён"
+            else
+                warn "MTProxy (docker): перенос не завершился (см. вывод выше)"
+            fi
+        fi
+        ;;
+    *)
+        warn "MTProxy не найден, пропускаю"
+        ;;
+    esac
     return 0
 }
 
