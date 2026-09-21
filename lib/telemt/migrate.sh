@@ -60,22 +60,56 @@
 # return into `die` itself, same as before; migrate_transfer_mtproxy()
 # translates it into `warn` and continues to Hysteria2, same as its
 # existing docker-branch convention.
-telemt_migrate_systemd_payload() {
-    local port="$1" domain="$2"
+# telemt_migrate_render_config — the ONE place migration-specific
+# config substitution happens (Contract: preserve-source-config, see
+# file header). Both payloads below were independently calling their
+# own inline sed with the same intent, and had already drifted:
+# telemt_migrate_docker_payload()'s tls_domain pattern was missing the
+# leading ^ anchor entirely (matched "tls_domain" anywhere in a line,
+# not just at its start), and BOTH payloads' patterns matched
+# "tls_domain" as a bare prefix with no boundary check afterward, so a
+# same-line key that merely starts with that word --
+# tls_domain_extra -- had its value silently overwritten too. Fixed by
+# requiring "tls_domain"/"port" be followed by only optional
+# whitespace then "=" (a real suffix like "_extra"/"_backup" breaks
+# that immediately, so it no longer matches); the ^ anchor still
+# separately protects a same-line key that has "tls_domain" as a
+# non-prefix substring, or one where "tls_domain" itself is a suffix
+# of a longer prefix like "my_tls_domain". Same [[:space:]]* also now
+# accepts port=443 / port    = 443, not just the exact single-space
+# "port = " shape lib/telemt/install.sh's own generator happens to
+# always produce -- harmless before since that actually is the only
+# generator, but no reason to stay this brittle now that it is
+# centralized in one place instead of copy-pasted three times.
+telemt_migrate_render_config() {
+    local src="$1" port="$2" domain="$3"
+    [ -f "$src" ] || return 1
+    [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 1
+    [ -n "$domain" ] || return 1
     # Malformed-config guard: telemt_detect_listener_ip() (canonical,
     # already used by telemt_detect_state()) returns empty if the
-    # source config has no [[server.listeners]] section at all. Bail
-    # out explicitly instead of forwarding an incomplete config -- the
-    # "old hardcoded fallback must not reappear" case: do NOT fall
-    # through to writing any default listener config.
-    if [ -z "$(telemt_detect_listener_ip "$TELEMT_CONFIG_FILE")" ]; then
-        warn "MTProxy (systemd): конфиг не содержит [[server.listeners]] — похоже на повреждённый файл, пропускаю перенос"
-        return 1
-    fi
+    # source config has no [[server.listeners]] section at all -- do
+    # NOT forward an incomplete config; the caller decides how to
+    # report this (never a hardcoded default listener here).
+    [ -n "$(telemt_detect_listener_ip "$src")" ] || return 1
+    sed -E "s/^port[[:space:]]*=.*/port = $port/; s/^tls_domain[[:space:]]*=.*/tls_domain    = \"$domain\"/" "$src"
+}
 
+telemt_migrate_systemd_payload() {
+    local port="$1" domain="$2"
+    # `|| { ...; return 1; }` REQUIRED, not just style: this whole
+    # codebase runs under `set -euo pipefail` (lib/common/core.sh),
+    # under which a bare `config_to_send=$(telemt_migrate_render_config
+    # ...)` would abort the entire process the instant the renderer
+    # returns non-zero -- before this function's own graceful `warn`+
+    # `return 1` ever ran. Same class of hazard already fixed elsewhere
+    # in this codebase (lib/panel/api.sh's NODE_R/HOST_R guards).
     info "Копирую конфиг..."
     local config_to_send
-    config_to_send=$(sed "s/^port = .*/port = $port/; s/^tls_domain.*=.*/tls_domain    = \"$domain\"/" "$TELEMT_CONFIG_FILE")
+    config_to_send=$(telemt_migrate_render_config "$TELEMT_CONFIG_FILE" "$port" "$domain") || {
+        warn "MTProxy (systemd): конфиг не содержит [[server.listeners]], либо порт/домен некорректны — пропускаю перенос"
+        return 1
+    }
     echo "$config_to_send" | RUN "mkdir -p /etc/telemt && cat > /etc/telemt/telemt.toml" \
         || { warn "Не удалось скопировать конфиг на новый сервер"; return 1; }
 
@@ -119,13 +153,11 @@ RTELEMT
 
 telemt_migrate_docker_payload() {
     local port="$1" domain="$2"
-    if [ -z "$(telemt_detect_listener_ip "$TELEMT_CONFIG_FILE")" ]; then
-        warn "MTProxy (docker): конфиг не содержит [[server.listeners]] — похоже на повреждённый файл, пропускаю перенос"
-        return 1
-    fi
-
     local config_to_send
-    config_to_send=$(sed "s/^port = .*/port = $port/; s/tls_domain.*=.*/tls_domain    = \"$domain\"/" "$TELEMT_CONFIG_FILE")
+    config_to_send=$(telemt_migrate_render_config "$TELEMT_CONFIG_FILE" "$port" "$domain") || {
+        warn "MTProxy (docker): конфиг не содержит [[server.listeners]], либо порт/домен некорректны — пропускаю перенос"
+        return 1
+    }
 
     info "Проверяю Docker на новом сервере..."
     # intentional: official Docker installer
@@ -151,6 +183,57 @@ telemt_migrate_docker_payload() {
 
     RUN "command -v ufw &>/dev/null && ufw allow ${port}/tcp &>/dev/null || true"
     return 0
+}
+
+# migrate_telemt_interactive — dispatches migrate_menu()'s "перенести
+# MTProxy" item to the correct interactive wizard.
+#
+# CONFIRMED BUG this replaces: migrate_menu()'s item 2 previously did
+# `[ -z "$TELEMT_MODE" ] && TELEMT_MODE="systemd" (+ its config/workdir
+# globals); telemt_menu_migrate` -- i.e. it defaulted to systemd
+# whenever $TELEMT_MODE was unset, which is the ORDINARY case: nothing
+# sets that session variable before this menu item runs (it is only
+# ever set by other, unrelated flows -- panel install/reconfigure --
+# earlier in the same CLI session, or not at all in a fresh one). A
+# Docker-mode install therefore got sent to the systemd-only wizard,
+# which would `die "Миграция доступна только в systemd-режиме."` --
+# except it never even reached that check, because TELEMT_MODE had
+# just been force-set to "systemd" one line above, so the real failure
+# was silent: it proceeded through the systemd payload against
+# $TELEMT_CONFIG_FILE left over from whatever it was before (usually
+# unset/wrong), not the actual Docker installation.
+# telemt_menu_migrate_docker() had no interactive call site at all
+# until this function.
+#
+# Uses the same config-file-based telemt_detect_installed_mode()
+# (lib/telemt/core.sh) migrate_transfer_mtproxy() already uses for its
+# own automatic dispatch, not a systemctl/docker-ps process check --
+# same reasoning as that function: an installed-but-stopped TeleMT
+# still has a config file that needs migrating, and systemd takes
+# precedence if both config files somehow exist. This intentionally
+# overrides any stale $TELEMT_MODE from an earlier, unrelated flow in
+# the same CLI session, for the same reason the default-to-systemd
+# line it replaces was wrong to trust that variable in the first place.
+migrate_telemt_interactive() {
+    local _mode; _mode=$(telemt_detect_installed_mode)
+    case "$_mode" in
+    docker)
+        TELEMT_MODE="docker"
+        TELEMT_CONFIG_FILE="$TELEMT_CONFIG_DOCKER"
+        TELEMT_WORK_DIR="$TELEMT_WORK_DIR_DOCKER"
+        telemt_menu_migrate_docker
+        ;;
+    systemd)
+        TELEMT_MODE="systemd"
+        TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
+        TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD"
+        telemt_menu_migrate
+        ;;
+    *)
+        warn "MTProxy (telemt) не установлен на этом сервере — нечего переносить."
+        return 1
+        ;;
+    esac
 }
 
 telemt_menu_migrate() {
