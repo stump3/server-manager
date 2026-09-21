@@ -238,10 +238,12 @@ EOF
 # No [[server.listeners]] section at all -- structurally malformed for
 # migration purposes (telemt_detect_listener_ip returns empty for it).
 
-migrate_transfer_mtproxy >"$WORK/out3.log" 2>&1
-MIG_RC=$?
+MIG_RC=0
+migrate_transfer_mtproxy >"$WORK/out3.log" 2>&1 || MIG_RC=$?
 check "malformed source: does NOT silently write ip=0.0.0.0 default" \
     "$([ -f "$DEST_CFG" ] && grep -c '^ip = "0.0.0.0"' "$DEST_CFG" || echo 0)" "0"
+check "malformed source: migrate_transfer_mtproxy propagates failure (non-zero), not silently 0" \
+    "$MIG_RC" "1"
 
 # ══════════════════════════════════════════════════════════════════
 echo ""
@@ -259,10 +261,10 @@ check "no hardcoded ip=0.0.0.0 reconstruction left" \
     "$(echo "$FN_BODY" | grep -c 'ip = "0.0.0.0"')" "0"
 check "no hardcoded tls_front_dir template left" \
     "$(echo "$FN_BODY" | grep -c 'tls_front_dir.*=.*TELEMT_TLSFRONT_DIR')" "0"
-check "uses sed preserve-substitution pattern (port)" \
-    "$(echo "$FN_BODY" | grep -c 'sed .*s/\^port = ')" "1"
-check "uses sed preserve-substitution pattern (tls_domain)" \
-    "$(echo "$FN_BODY" | grep -c 's/\^tls_domain')" "1"
+check "delegates config substitution to telemt_migrate_systemd_payload (no inline duplicate)" \
+    "$(echo "$FN_BODY" | grep -c 'telemt_migrate_systemd_payload')" "1"
+check "does not inline its own sed substitution (would drift from the shared renderer)" \
+    "$(echo "$FN_BODY" | grep -c 'sed ')" "0"
 check "no longer calls telemt_extract_limits_block (whole file already carries it)" \
     "$(echo "$FN_BODY" | grep -c 'telemt_extract_limits_block')" "0"
 check "interactive port/domain prompts unchanged (still 2 read -rp calls)" \
@@ -328,6 +330,104 @@ check "docker port substituted correctly" "$(grep -E '^port' "$TELEMT_CONFIG_FIL
 check "docker users preserved" "$(grep -c '^carol' "$TELEMT_CONFIG_FILE")" "1"
 check "docker compose pull called" "$(grep -c 'MOCK docker\] compose pull' "$CALLS_LOG")" "1"
 check "docker compose up called" "$(grep -c 'MOCK docker\] compose up' "$CALLS_LOG")" "1"
+
+# ══════════════════════════════════════════════════════════════════
+echo ""
+echo "=== 6. telemt_migrate_render_config() in isolation: exact-key boundary + port-format tolerance ==="
+# Regression coverage for a real bug found this pass: both payloads'
+# tls_domain substitution matched "tls_domain" as a bare prefix with
+# no boundary check, so a same-line key that merely STARTS with that
+# word (tls_domain_extra) had its value silently overwritten; the
+# docker payload's copy was worse still, missing the ^ anchor
+# entirely, so it also clobbered a value on any line containing
+# "tls_domain" as a substring anywhere (my_tls_domain).
+RENDER_SRC="$WORK/render_src.toml"
+cat > "$RENDER_SRC" << 'EOF'
+[server]
+port=443
+port_backup = 9999
+
+[[server.listeners]]
+ip = "127.0.0.1"
+proxy_protocol = true
+
+[censorship]
+my_tls_domain = "should-not-change.example"
+tls_domain    = "old.example.com"
+tls_domain_extra = "also-should-not-change.example"
+EOF
+RENDERED=$(telemt_migrate_render_config "$RENDER_SRC" "9443" "new.example.com")
+check "render: exact port substituted (no-space source variant port=443)" \
+    "$(echo "$RENDERED" | grep -E '^port ' | grep -oE '[0-9]+')" "9443"
+check "render: port_backup untouched (key AND value)" \
+    "$(echo "$RENDERED" | grep -c '^port_backup = 9999$')" "1"
+check "render: real tls_domain substituted" \
+    "$(echo "$RENDERED" | grep -c '^tls_domain    = "new.example.com"$')" "1"
+check "render: my_tls_domain untouched (THE bug -- docker payload had no ^ anchor at all)" \
+    "$(echo "$RENDERED" | grep -c '^my_tls_domain = "should-not-change.example"$')" "1"
+check "render: tls_domain_extra untouched (THE bug -- bare prefix match, present in BOTH payloads)" \
+    "$(echo "$RENDERED" | grep -c '^tls_domain_extra = "also-should-not-change.example"$')" "1"
+
+RENDERED2=$(telemt_migrate_render_config "$RENDER_SRC" "80" "x")
+check "render: port with extra internal whitespace also substituted (port    = 80)" \
+    "$(echo "$RENDERED2" | sed -n '2p' | tr -s ' ')" "port = 80"
+
+check "render: rejects non-numeric port (validation)" \
+    "$(telemt_migrate_render_config "$RENDER_SRC" "not-a-port" "x" >/dev/null 2>&1; echo $?)" "1"
+check "render: rejects empty domain (validation)" \
+    "$(telemt_migrate_render_config "$RENDER_SRC" "443" "" >/dev/null 2>&1; echo $?)" "1"
+check "render: rejects missing source file" \
+    "$(telemt_migrate_render_config "$WORK/does_not_exist.toml" "443" "x" >/dev/null 2>&1; echo $?)" "1"
+
+echo ""
+echo "=== 7. telemt_migrate_docker_payload() specifically no longer has the unanchored duplicate ==="
+DOCKER_FN_BODY="$(declare -f telemt_migrate_docker_payload)"
+check "docker payload delegates to the shared renderer" \
+    "$(echo "$DOCKER_FN_BODY" | grep -c 'telemt_migrate_render_config')" "1"
+check "docker payload no longer inlines its own sed" \
+    "$(echo "$DOCKER_FN_BODY" | grep -c 'sed ')" "0"
+
+# ══════════════════════════════════════════════════════════════════
+echo ""
+echo "=== 8. migrate_telemt_interactive(): routes to the wizard matching the ACTUAL installed mode ==="
+# The bug this replaces: migrate_menu() item 2 defaulted TELEMT_MODE to
+# "systemd" whenever it was unset (the ordinary case) and called only
+# telemt_menu_migrate -- a Docker install got the systemd wizard. Stub
+# out both wizards (their own interactive /dev/tty prompts are each
+# already covered structurally in section 4 / by symmetry for docker)
+# to isolate dispatch itself: which wizard gets called, based on which
+# mode is ACTUALLY installed, overriding any stale $TELEMT_MODE.
+telemt_menu_migrate() { echo "DISPATCHED:systemd" >> "$WORK/dispatch.log"; }
+telemt_menu_migrate_docker() { echo "DISPATCHED:docker" >> "$WORK/dispatch.log"; }
+
+DISPATCH_SRC="$WORK/dispatch_src"; mkdir -p "$DISPATCH_SRC"
+TELEMT_WORK_DIR_SYSTEMD="$WORK/dispatch_workdir_systemd"
+TELEMT_WORK_DIR_DOCKER="$WORK/dispatch_workdir_docker"
+
+: > "$WORK/dispatch.log"
+TELEMT_CONFIG_SYSTEMD="$DISPATCH_SRC/nonexistent_systemd.toml"
+TELEMT_CONFIG_DOCKER="$DISPATCH_SRC/docker.toml"; touch "$TELEMT_CONFIG_DOCKER"
+TELEMT_MODE="systemd"  # stale from an earlier, unrelated menu action
+migrate_telemt_interactive
+check "docker installed + stale TELEMT_MODE=systemd -> Docker wizard (THE bug)" \
+    "$(cat "$WORK/dispatch.log")" "DISPATCHED:docker"
+check "docker installed: TELEMT_MODE corrected to docker" "$TELEMT_MODE" "docker"
+
+: > "$WORK/dispatch.log"
+rm -f "$TELEMT_CONFIG_DOCKER"
+TELEMT_CONFIG_SYSTEMD="$DISPATCH_SRC/systemd.toml"; touch "$TELEMT_CONFIG_SYSTEMD"
+TELEMT_MODE="docker"  # stale from an earlier, unrelated menu action
+migrate_telemt_interactive
+check "systemd installed + stale TELEMT_MODE=docker -> systemd wizard" \
+    "$(cat "$WORK/dispatch.log")" "DISPATCHED:systemd"
+check "systemd installed: TELEMT_MODE corrected to systemd" "$TELEMT_MODE" "systemd"
+
+: > "$WORK/dispatch.log"
+rm -f "$TELEMT_CONFIG_SYSTEMD"
+DISP_RC=0
+migrate_telemt_interactive || DISP_RC=$?
+check "neither installed: no wizard called" "$(cat "$WORK/dispatch.log")" ""
+check "neither installed: returns non-zero" "$DISP_RC" "1"
 
 echo ""
 echo "=== SUMMARY: $PASS passed, $FAIL failed ==="
