@@ -208,77 +208,33 @@ migrate_transfer_mtproxy() {
     # its own, already-correct migration path below instead of being
     # silently skipped because only $TELEMT_CONFIG_SYSTEMD was checked.
     local _telemt_src_mode; _telemt_src_mode=$(telemt_detect_installed_mode)
+    local _telemt_rc=0
     case "$_telemt_src_mode" in
     systemd)
-        # Preserve-source-config semantics (matches the already-correct
-        # telemt_menu_migrate_docker() pattern in lib/telemt/migrate.sh):
-        # the source telemt.toml is the source of truth. Only the two
-        # migration-specific fields (port, tls_domain) are substituted;
-        # everything else -- ip/proxy_protocol, users, limits/expirations,
-        # censorship, general, and any future field this function has
-        # never heard of -- travels through byte-for-byte, because it is
-        # never reconstructed from a template in the first place.
-        #
-        # Previously this function rebuilt telemt.toml from a hardcoded
-        # heredoc template, which silently dropped ip=127.0.0.1 +
-        # proxy_protocol=true for F/J co-located sources (breaking the
-        # PROXY-protocol contract with the shared nginx :443 stream --
-        # see docs/edge_contracts.md) and any field this function didn't
-        # explicitly re-extract. See this session's architectural
-        # decision audit for the full analysis.
-        local cp dp
-        cp=$(grep -E "^port\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oE "[0-9]+" || echo "8443")
-        dp=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oP '(?<=")[^"]+' || echo "")
-        [ -z "$dp" ] && dp="1c.ru"  # fallback если regex не совпал (используется только для ufw/лога ниже)
-
-        # Malformed-config guard: telemt_detect_listener_ip() (canonical,
-        # already used by telemt_detect_state()) returns empty if the
-        # source config has no [[server.listeners]] section at all. Bail
-        # out explicitly instead of forwarding an incomplete config --
-        # this is the "old hardcoded fallback must not reappear" case:
-        # do NOT fall through to writing any default listener config.
-        if [ -z "$(telemt_detect_listener_ip "$TELEMT_CONFIG_SYSTEMD")" ]; then
-            warn "MTProxy (systemd): конфиг не содержит [[server.listeners]] — похоже на повреждённый файл, пропускаю перенос"
-            return 0
-        fi
-
+        # Delegates to the single production payload
+        # (lib/telemt/migrate.sh:telemt_migrate_systemd_payload()) --
+        # this branch used to carry its own complete duplicate
+        # (config substitution + install heredoc), independently from
+        # the docker branch below, which already delegated. That
+        # duplicate is why its sed pattern had drifted out of sync
+        # with the shared renderer's tls_domain_extra/my_tls_domain
+        # fix (see lib/telemt/migrate.sh's own header/render_config
+        # comments for the full history). RUN/PUT and TELEMT_CONFIG_FILE
+        # are already initialized for this session by
+        # migrate_prepare_target() before migrate_all() ever reaches
+        # this function, same convention telemt_migrate_docker_payload()
+        # below already relied on.
         info "Переносим MTProxy..."
-        local config_to_send
-        config_to_send=$(sed "s/^port = .*/port = $cp/; s/^tls_domain.*=.*/tls_domain    = \"$dp\"/" "$TELEMT_CONFIG_SYSTEMD")
-        echo "$config_to_send" | RUN "mkdir -p /etc/telemt && cat > /etc/telemt/telemt.toml"
-
-        RUN bash << RTELEMT
-set -e
-ARCH=\$(uname -m); LIBC=\$(ldd --version 2>&1|grep -iq musl&&echo musl||echo gnu)
-URL="https://github.com/telemt/telemt/releases/latest/download/telemt-\${ARCH}-linux-\${LIBC}.tar.gz"
-TMP=\$(mktemp -d); curl -fsSL "\$URL"|tar -xz -C "\$TMP"; install -m 0755 "\$TMP/telemt" /usr/local/bin/telemt; rm -rf "\$TMP"
-id telemt &>/dev/null || useradd -d /opt/telemt -m -r -U telemt
-mkdir -p /opt/telemt/tlsfront; chown -R telemt:telemt /etc/telemt /opt/telemt
-cat > /etc/systemd/system/telemt.service << 'SVC'
-[Unit]
-Description=Telemt MTProto Proxy
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-User=telemt
-Group=telemt
-WorkingDirectory=/opt/telemt
-ExecStart=/usr/local/bin/telemt /etc/telemt/telemt.toml
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=65536
-AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
-NoNewPrivileges=true
-ExecReload=/bin/kill -HUP \$MAINPID
-[Install]
-WantedBy=multi-user.target
-SVC
-systemctl daemon-reload; systemctl enable telemt; systemctl restart telemt
-command -v ufw &>/dev/null && ufw allow $cp/tcp >/dev/null 2>&1 || true
-RTELEMT
-        ok "MTProxy перенесён"
+        local cp dp
+        cp=$(grep -E "^port[[:space:]]*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oE "[0-9]+" || echo "8443")
+        dp=$(telemt_get_tls_domain "$TELEMT_CONFIG_SYSTEMD")
+        [ -z "$dp" ] && dp="1c.ru"  # fallback если regex не совпал (используется только для ufw/лога ниже)
+        TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
+        if telemt_migrate_systemd_payload "$cp" "$dp"; then
+            ok "MTProxy перенесён"
+        else
+            _telemt_rc=1
+        fi
         ;;
     docker)
         # Reuses the already-correct, already-existing docker migration
@@ -290,6 +246,7 @@ RTELEMT
         # init_ssh_helpers here.
         if [ ! -f "$TELEMT_COMPOSE_FILE" ]; then
             warn "MTProxy (docker): docker-compose.yml не найден ($TELEMT_COMPOSE_FILE), пропускаю перенос"
+            _telemt_rc=1
         else
             info "Переносим MTProxy (Docker)..."
             TELEMT_CONFIG_FILE="$TELEMT_CONFIG_DOCKER"
@@ -300,6 +257,7 @@ RTELEMT
                 ok "MTProxy (docker) перенесён"
             else
                 warn "MTProxy (docker): перенос не завершился (см. вывод выше)"
+                _telemt_rc=1
             fi
         fi
         ;;
@@ -307,7 +265,7 @@ RTELEMT
         warn "MTProxy не найден, пропускаю"
         ;;
     esac
-    return 0
+    return "$_telemt_rc"
 }
 
 migrate_transfer_hysteria() {
@@ -380,7 +338,7 @@ migrate_all() {
 
     migrate_transfer_panel || return 1
 
-    migrate_transfer_mtproxy
+    migrate_transfer_mtproxy || warn "MTProxy не перенесён — продолжаю с Hysteria2"
 
     migrate_transfer_hysteria
 
@@ -406,12 +364,7 @@ migrate_menu() {
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
             1) panel_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
-            2) { [ -z "$TELEMT_MODE" ] && {
-                       TELEMT_MODE="systemd"
-                       TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
-                       TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD"
-                   }
-                   telemt_menu_migrate; } || true
+            2) migrate_telemt_interactive || true
                read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             3) hysteria_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             4) { check_root; migrate_all; } || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
