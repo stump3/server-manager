@@ -257,9 +257,19 @@ echo ""
 echo "== 3. mutation test: proves this suite WOULD catch the original (pre-fix) bug =="
 # Reconstruct the exact pre-fix shape: same body, but as bare top-level
 # code (no enclosing function) with the original bare "local" line.
+#
+# Must use `set -euo pipefail`, matching integrations/hy-sub-install.sh's
+# actual top-of-file settings (line 9), not just `-uo pipefail`. Without
+# `-e`, "local: can only be used in a function" prints to stderr but does
+# NOT stop the script -- execution falls through the rest of the (now-
+# global-leaking) block and the mutated script exits 0, so the mutation
+# assertion below would wrongly conclude the pre-fix shape "worked" and
+# fail to catch the real bug. With `-e` (matching production), the failed
+# `local` builtin aborts the script immediately, exactly like the real
+# install did when the ERR trap fired.
 {
     echo '#!/bin/bash'
-    echo 'set -uo pipefail'
+    echo 'set -euo pipefail'
     echo 'BOLD=""; GRAY=""; GREEN=""; YELLOW=""; NC=""'
     echo 'ok()   { echo "OK:$*"; }'
     echo 'info() { echo "INFO:$*"; }'
