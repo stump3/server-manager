@@ -41,7 +41,48 @@ telemt_fetch_links() {
             echo ""
             local traffic_db
             traffic_db=$(telemt_traffic_db_path)
-            TELEMT_TRAFFIC_DB="$traffic_db" echo "$resp" | python3 -c "
+            # FIXED (F6): `VAR=val cmd1 | cmd2` only sets VAR for cmd1 --
+            # bash does not propagate a per-command env-var prefix across
+            # a pipe to the next command. Confirmed directly (isolated
+            # repro this session): the python3 process here always saw
+            # TELEMT_TRAFFIC_DB as unset/empty, so `if db_path:` at both
+            # the read and write ends of this script was always false --
+            # this call never actually loaded prior accumulated state
+            # NOR persisted the new state to disk. The accumulation
+            # feature (total_accumulated/monthly/daily/ip_history) was a
+            # silent no-op on every single call, even though the
+            # per-invocation display above it still worked (computed from
+            # an always-empty starting state, so "Всего" always equalled
+            # just the current API reading, never a true running total).
+            # Fixed by dropping the pipe: `<<<` delivers the same stdin
+            # content without an intermediate command, so the single
+            # env-var prefix correctly reaches python3 directly.
+            #
+            # F6 also flagged this as one of (up to) two writers of the
+            # same JSON file (the other being telemt_menu_stats_settings
+            # in menu.sh, which already used the correct no-pipe form and
+            # so was the only one that ever actually worked before this
+            # fix) with no locking between them. No background worker or
+            # daemon touches this file -- confirmed telemt.toml/install.sh
+            # never reference it, and only these two interactively-invoked
+            # functions do -- so within a single server-manager.sh session
+            # (itself single-threaded/sequential) two writes here can
+            # never truly overlap. The one real, if narrow, avenue is two
+            # separate server-manager.sh processes/sessions against the
+            # same host at the same moment. That avenue was not
+            # practically exploitable before this fix (this call site
+            # never wrote at all), so fixing the bug above is what makes
+            # the flock below newly necessary, not optional hardening for
+            # its own sake. mkdir -p guards the lock-file open itself:
+            # nothing else in this tool creates $(dirname "$traffic_db")
+            # ahead of time (confirmed: no such mkdir anywhere in
+            # install.sh) -- it was previously created, if at all, by
+            # python's own os.makedirs on first successful write, which
+            # never actually ran either.
+            mkdir -p "$(dirname "$traffic_db")" 2>/dev/null
+            (
+                flock -w 5 9 || exit 1
+                TELEMT_TRAFFIC_DB="$traffic_db" python3 -c "
 import sys, json
 import os
 from datetime import datetime, timezone, timedelta
@@ -192,7 +233,8 @@ if db_path:
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-" 2>/dev/null || echo "$resp"
+" 2>/dev/null
+            ) 9>"${traffic_db}.lock" <<< "$resp" || echo "$resp"
             [ -n "$traffic_db" ] && info "Накопленная статистика: $traffic_db"
             return 0
         fi

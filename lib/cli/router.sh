@@ -11,5 +11,12 @@
 # domain-модулей.
 
 cli_run() {
-    main_menu
+    case "${1:-}" in
+        migrate)
+            panel_migrate
+            ;;
+        *)
+            main_menu
+            ;;
+    esac
 }

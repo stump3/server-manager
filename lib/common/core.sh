@@ -31,18 +31,18 @@ TELEMT_CHOSEN_VERSION="latest"
 
 # Заголовок раздела (подменю)
 header() {
-    clear
-    echo ""
-    echo -e "${BOLD}${WHITE}  $*${NC}"
-    echo -e "${GRAY}  ────────────────────────────────────────${NC}"
-    echo ""
+    clear >&2
+    echo "" >&2
+    echo -e "${BOLD}${WHITE}  $*${NC}" >&2
+    echo -e "${GRAY}  ────────────────────────────────────────${NC}" >&2
+    echo "" >&2
 }
 
 # Секция внутри экрана (без clear)
 section() {
-    echo ""
-    echo -e "${BOLD}${WHITE}  $*${NC}"
-    echo -e "${GRAY}  ──────────────────────────────${NC}"
+    echo "" >&2
+    echo -e "${BOLD}${WHITE}  $*${NC}" >&2
+    echo -e "${GRAY}  ──────────────────────────────${NC}" >&2
 }
 
 confirm() {
@@ -82,7 +82,7 @@ ask() {
     # Переменная доступна в вызывающем контексте через printf -v.
 }
 
-check_root()    { [ "$EUID" -ne 0 ] && err "Запустите от root: sudo bash $0" || true; }
+check_root()    { [ "$EUID" -ne 0 ] && die "Запустите от root: sudo bash $0" || true; }
 need_root()     { [ "$(id -u)" -eq 0 ] || die "Эта операция требует прав root."; }
 
 spinner() {

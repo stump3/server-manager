@@ -31,7 +31,7 @@ panel_subpage_install_orion() {
     info "Скачиваем Orion..."
     rm -f "$index"
     if ! curl -fsSL "$primary" -o "$index" 2>/dev/null; then
-        curl -fsSL "$fallback" -o "$index" || { err "Ошибка загрузки"; return 1; }
+        curl -fsSL "$fallback" -o "$index" || { die "Ошибка загрузки"; }
     fi
     # Монтируем в docker-compose
     if command -v yq &>/dev/null; then

@@ -131,6 +131,141 @@ telemt_get_tls_domain() {
         || true
 }
 
+# ── Определение состояния УЖЕ существующей установки TeleMT ──────
+# Используется Panel'ю (lib/panel/cli.sh) ПЕРЕД тем, как предлагать
+# integrated-сценарий для MODE=F/J — чтобы никогда молча не менять
+# существующую standalone-установку и не путать "TeleMT отсутствует"
+# с "TeleMT уже integrated". Определяется по наличию файла конфига
+# (а не по running-состоянию systemd/docker), чтобы находить
+# установленный-но-остановленный TeleMT тоже — иначе Panel могла бы
+# решить, что TeleMT отсутствует, и сгенерировать SNI-branch поверх
+# выключенного сервиса без предупреждения оператору.
+telemt_detect_installed_mode() {
+    if [ -f "$TELEMT_CONFIG_SYSTEMD" ]; then
+        echo "systemd"
+    elif [ -f "$TELEMT_CONFIG_DOCKER" ]; then
+        echo "docker"
+    fi
+}
+
+telemt_detect_config_path() {
+    local m; m=$(telemt_detect_installed_mode)
+    case "$m" in
+        systemd) echo "$TELEMT_CONFIG_SYSTEMD" ;;
+        docker)  echo "$TELEMT_CONFIG_DOCKER" ;;
+    esac
+}
+
+# ip = "..." из первой секции [[server.listeners]] конфига.
+telemt_detect_listener_ip() {
+    local cfg="$1"
+    [ -f "$cfg" ] || return 1
+    awk '
+        /^\[\[server\.listeners\]\]/ { insec=1; next }
+        insec && /^\[/               { insec=0 }
+        insec && /^[[:space:]]*ip[[:space:]]*=/ {
+            sub(/^[^"]*"/,""); sub(/".*/,""); print; exit
+        }
+    ' "$cfg" 2>/dev/null
+}
+
+# true|false — proxy_protocol в той же секции [[server.listeners]] (см.
+# telemt_write_config(): всегда пишется ПАРОЙ с ip="127.0.0.1", никогда
+# по отдельности — используется как второе, более строгое условие в
+# telemt_detect_state(), см. её комментарий.
+telemt_detect_listener_proxy_protocol() {
+    local cfg="$1"
+    [ -f "$cfg" ] || return 1
+    awk '
+        /^\[\[server\.listeners\]\]/ { insec=1; next }
+        insec && /^\[/               { insec=0 }
+        insec && /^[[:space:]]*proxy_protocol[[:space:]]*=[[:space:]]*true/ {
+            print "true"; exit
+        }
+    ' "$cfg" 2>/dev/null
+}
+
+# absent | standalone | integrated. "integrated" требует ОБА признака —
+# слушатель на 127.0.0.1 И proxy_protocol=true в этой же секции —
+# именно так telemt_write_config() всегда пишет co-located конфиг (см.
+# TELEMT_COLOCATE=1 в этой же функции, install.sh): эти два поля
+# устанавливаются вместе, никогда по отдельности. Проверка только по ip
+# была бы недостаточной: если оператор вручную завёл TeleMT на
+# 127.0.0.1 без proxy_protocol (например, за собственным stunnel/haproxy
+# независимо от Panel), классификация "integrated" заставила бы Panel
+# считать его совместимым с co-located Nginx-роутингом и подключить
+# PROXY protocol от Nginx к слушателю, который его не ожидает — заново
+# сломав ровно то, от чего должен защищать standalone-safety (см. п.9
+# аудита: "может ли существующий standalone случайно быть воспринят как
+# integrated"). Любая иная комбинация (включая 127.0.0.1 без
+# proxy_protocol) классифицируется как standalone — безопасный дефолт:
+# Panel её не трогает и не подключает к ней proxy_protocol-трафик.
+telemt_detect_state() {
+    local cfg; cfg=$(telemt_detect_config_path)
+    if [ -z "$cfg" ]; then
+        echo "absent"; return 0
+    fi
+    local ip pp
+    ip=$(telemt_detect_listener_ip "$cfg")
+    pp=$(telemt_detect_listener_proxy_protocol "$cfg")
+    if [ "$ip" = "127.0.0.1" ] && [ "$pp" = "true" ]; then
+        echo "integrated"
+    else
+        echo "standalone"
+    fi
+}
+
+telemt_detect_port() {
+    local cfg; cfg=$(telemt_detect_config_path)
+    [ -z "$cfg" ] && return 1
+    grep -E '^port[[:space:]]*=' "$cfg" 2>/dev/null | grep -oE '[0-9]+' | head -1
+}
+
+telemt_detect_use_me() {
+    local cfg="$1"
+    grep -E '^use_middle_proxy' "$cfg" 2>/dev/null | grep -o 'true\|false' | head -1
+}
+
+# Все три читают единственный (если есть) блок [[upstreams]], который
+# telemt_write_config() всегда пишет последним в файле — см. эту же
+# функцию в install.sh.
+telemt_detect_socks5_addr() {
+    local cfg="$1"
+    awk '/^\[\[upstreams\]\]/{f=1} f' "$cfg" 2>/dev/null \
+        | grep -E '^address[[:space:]]*=' | head -1 \
+        | sed -E 's/^address[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/'
+}
+telemt_detect_socks5_user() {
+    local cfg="$1"
+    awk '/^\[\[upstreams\]\]/{f=1} f' "$cfg" 2>/dev/null \
+        | grep -E '^username[[:space:]]*=' | head -1 \
+        | sed -E 's/^username[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/'
+}
+telemt_detect_socks5_pass() {
+    local cfg="$1"
+    awk '/^\[\[upstreams\]\]/{f=1} f' "$cfg" 2>/dev/null \
+        | grep -E '^password[[:space:]]*=' | head -1 \
+        | sed -E 's/^password[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/'
+}
+
+# Список "имя секрет" из существующего [access.users] — используется
+# при reconfigure integrated-установки, чтобы не потерять текущих
+# пользователей (Panel меняет только domain/port, не users/upstream).
+telemt_detect_user_pairs() {
+    local cfg="$1"
+    [ -f "$cfg" ] || return 1
+    awk '
+        /^\[access\.users\]/ { insec=1; next }
+        /^\[/                 { insec=0 }
+        insec && /^[^[:space:]#][^=]*=/ {
+            line=$0
+            name=line; sub(/[[:space:]]*=.*/,"",name)
+            val=line;  sub(/^[^=]*=[[:space:]]*"/,"",val); sub(/".*/,"",val)
+            print name" "val
+        }
+    ' "$cfg" 2>/dev/null
+}
+
 # ── Получить количество пользователей ────────────────────────────
 telemt_user_count() {
     local resp; resp=$(telemt_api GET "/v1/users" 2>/dev/null || true)

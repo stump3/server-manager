@@ -96,8 +96,7 @@ _hy_integration_install() {
         install_script=$(mktemp /tmp/hy-sub-install.XXXXXX.sh)
         if ! curl -fsSL "https://raw.githubusercontent.com/stump3/server-manager/main/integrations/hy-sub-install.sh" \
                 -o "$install_script" 2>/dev/null; then
-            err "Не удалось скачать hy-sub-install.sh"
-            return 1
+            die "Не удалось скачать hy-sub-install.sh"
         fi
         chmod +x "$install_script"
         cleanup_tmp=true
@@ -227,15 +226,15 @@ _hy_sub_injector_build() {
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path 2>/dev/null
         source "$HOME/.cargo/env" 2>/dev/null || true
     fi
-    command -v cargo &>/dev/null || { err "Не удалось установить Rust/cargo"; return 1; }
+    command -v cargo &>/dev/null || { die "Не удалось установить Rust/cargo"; }
 
     # Скачиваем исходники
     local src_dir; src_dir=$(mktemp -d /tmp/sub-injector-src.XXXXXX)
     info "Скачиваю исходники sub-injector..."
     local raw="https://raw.githubusercontent.com/stump3/server-manager/main/sub-injector"
     mkdir -p "${src_dir}/src"
-    curl -fsSL --max-time 30 "${raw}/Cargo.toml" -o "${src_dir}/Cargo.toml" 2>/dev/null ||         { err "Не удалось скачать Cargo.toml"; rm -rf "$src_dir"; return 1; }
-    curl -fsSL --max-time 30 "${raw}/src/main.rs" -o "${src_dir}/src/main.rs" 2>/dev/null ||         { err "Не удалось скачать main.rs"; rm -rf "$src_dir"; return 1; }
+    curl -fsSL --max-time 30 "${raw}/Cargo.toml" -o "${src_dir}/Cargo.toml" 2>/dev/null ||         { die "Не удалось скачать Cargo.toml"; rm -rf "$src_dir"; }
+    curl -fsSL --max-time 30 "${raw}/src/main.rs" -o "${src_dir}/src/main.rs" 2>/dev/null ||         { die "Не удалось скачать main.rs"; rm -rf "$src_dir"; }
 
     info "Сборка (может занять 2-5 минут)..."
     local old_pwd; old_pwd="$(pwd)"
@@ -247,8 +246,7 @@ _hy_sub_injector_build() {
         ok "sub-injector собран и установлен"
     else
         rm -rf "$src_dir"
-        err "Сборка sub-injector завершилась с ошибкой"
-        return 1
+        die "Сборка sub-injector завершилась с ошибкой"
     fi
 }
 

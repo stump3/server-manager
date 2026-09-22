@@ -25,11 +25,159 @@ panel_install_remote_node() {
     header "Remote Node — установка"
     echo ""
     warn "Panel должна быть уже установлена — потребуются её admin-credentials."
-    warn "Повторный запуск создаст новую ноду/хост в Panel (операция не идемпотентна)."
+    # FIXED (F2, post-C13 audit): the previous wording here ("Повторный
+    # запуск создаст новую ноду/хост в Panel — операция не идемпотентна")
+    # became stale once Contract 13 was extended to this flow's own
+    # panel_node_register() (lib/panel/node/api.sh) — that function now
+    # does lookup-before-create for config-profile/Node/Host alike
+    # (reuses an existing "RemoteNode-${SELFSTEAL_DOMAIN}" Node/profile
+    # and an existing Host matched on configProfileInboundUuid, exactly
+    # as documented in that file's own Contract 13 comments), so a
+    # re-run does NOT unconditionally create a duplicate Node/Host in
+    # Panel any more. What genuinely remains non-idempotent, unchanged
+    # by C13 and NOT addressed here (F1 stays its own, separate,
+    # untouched scope): the SSH-side redeploy below unconditionally
+    # PUTs into /opt/remnanode and restarts containers on every
+    # invocation, regardless of whether Panel already knows this node.
+    warn "Повторный запуск переиспользует существующие конфиг-профиль/ноду/хост в Panel, если они уже есть, но заново скопирует файлы в /opt/remnanode и перезапустит контейнеры на удалённом хосте — эта часть операции не идемпотентна."
     echo ""
 
     local _selfsteal_staging=""
-    trap 'rm -rf /opt/remnanode "$_selfsteal_staging" 2>/dev/null' RETURN
+    local _node_cleanup_done=""
+    # F1 ownership fix: set to a non-empty value ONLY once this specific
+    # invocation has actually written into the remote /opt/remnanode
+    # (right after the PUT below succeeds) -- NOT merely once _SSH_IP/
+    # _SSH_USER are known. Knowing the SSH target is necessary but not
+    # sufficient for "we may destructively roll back /opt/remnanode on
+    # that target": between ask_ssh_target and that PUT, remote
+    # /opt/remnanode may already exist from an earlier, unrelated
+    # deployment (this function's own docstring above says re-running it
+    # is not idempotent -- so a prior run against the same target is a
+    # realistic, not hypothetical, way for that to be true), and a SIGINT
+    # in that window must not tear it down. Stays true for the rest of
+    # this invocation once set -- ownership, once genuinely acquired,
+    # does not need to be "un-acquired" for later steps (registration,
+    # health-check) to still permit rollback on failure.
+    local _node_remote_owned=""
+
+    # F1 (SSH reliability): single cleanup function, all traps delegate to
+    # it instead of duplicating the `rm -rf` logic. Idempotent — safe to
+    # call more than once (RETURN *and* an INT/TERM path can both reach
+    # it) and safe if nothing was created yet (both paths are plain `rm
+    # -rf`, which no-ops on a non-existent target). Removes only the two
+    # local paths this flow itself creates.
+    _node_install_cleanup() {
+        # NOTE: guarded with `if`, not `[ ... ] && return 0` -- this whole
+        # tool runs under `set -euo pipefail` (server-manager.sh:13). A
+        # bare `cond && action` used as a full statement evaluates to the
+        # condition's own truth value when the condition is false, and
+        # under `set -e` a false statement at this level aborts the
+        # *entire function* right there -- which, for a RETURN trap that
+        # runs on every ordinary exit path, would have made this trap
+        # non-functional on its very first (expected, false-condition)
+        # call. Confirmed by testing under `set -euo pipefail` this
+        # session; `if`/`fi` is not stylistic here, it is required.
+        if [ -n "${_node_cleanup_done:-}" ]; then
+            return 0
+        fi
+        _node_cleanup_done=1
+        rm -rf /opt/remnanode "$_selfsteal_staging" 2>/dev/null
+    }
+
+    # F1: a RETURN trap does NOT fire when the function is killed by an
+    # uncaught signal — confirmed empirically (RETURN only runs when a
+    # shell function actually finishes executing; a process terminated by
+    # a signal never reaches that bookkeeping). INT/TERM therefore need
+    # their own explicit handler; they must not rely on RETURN.
+    _node_install_signal_cleanup() {
+        local _sig="$1"
+
+        # Best-effort: kill the in-flight RUN/PUT subtree, if any. Right
+        # after `timeout ... &`, RUN/PUT's own $! *is* the PGID of a fresh
+        # process group timeout creates for itself (GNU timeout's default,
+        # non-foreground mode: it calls setpgid(0,0) on itself — confirmed
+        # empirically this session). That group, however, does NOT contain
+        # the whole tree: sshpass calls setsid() before exec'ing the real
+        # ssh/scp binary (confirmed by reading sshpass's own source —
+        # needed so the ssh/scp process can own the pty sshpass allocates
+        # for password injection), which moves ssh/scp into a brand-new
+        # session and process group of their own. `-"$_LAST_SSH_PID"`
+        # therefore reaches only `timeout` and `sshpass`, not ssh/scp
+        # directly. It still works today because killing sshpass with
+        # SIGTERM (not SIGKILL — confirmed this session that SIGKILL
+        # leaves ssh/scp orphaned instead) tears down the pty sshpass
+        # holds open, and ssh/scp dies as a side effect of that. sshpass
+        # has no signal handler of its own for this (confirmed from
+        # source: only SIGCHLD/SIGWINCH); this is pty/session teardown
+        # behavior incidental to sshpass's architecture, not a documented
+        # sshpass contract. It is exercised correctly by every real path
+        # in this tool — this explicit `kill -TERM` and GNU timeout's own
+        # default deadline handling both use SIGTERM, never SIGKILL — but
+        # is not guaranteed by anything upstream, so do not assume it
+        # generalizes to a different auth-injection tool or a SIGKILL path
+        # without re-verifying.
+        # `if`, not `[ ... ] && kill ...`, for the same set -e reason as
+        # _node_install_cleanup() above -- an empty/unset $_LAST_SSH_PID
+        # (no RUN/PUT in flight right now) is the common case, not an
+        # edge case, and must not abort this handler under `set -e`.
+        if [ -n "${_LAST_SSH_PID:-}" ]; then
+            kill -TERM -- "-$_LAST_SSH_PID" 2>/dev/null || true
+        fi
+
+        # Best-effort remote cleanup, narrowly scoped to exactly what this
+        # flow itself created (nothing else can be sharing
+        # /opt/remnanode's compose project — it was `rm -rf`'d and
+        # regenerated by this same invocation a few lines above). Issued
+        # over a *fresh* SSH connection: killing the local ssh client
+        # above stops *us* from waiting on it, it does not by itself
+        # guarantee the remote command stopped, so this is a genuine
+        # follow-up attempt, not a formality.
+        #
+        # Gated on _node_remote_owned, NOT on _SSH_IP/_SSH_USER alone.
+        # _SSH_IP/_SSH_USER only prove the SSH target is known; they say
+        # nothing about whether THIS invocation ever wrote anything to
+        # that target. _node_remote_owned is set only after this
+        # invocation's own PUT into remote /opt/remnanode has actually
+        # succeeded — before that point, remote /opt/remnanode (if it
+        # exists at all) may be an unrelated, pre-existing deployment
+        # this invocation must not touch.
+        if [ -n "${_node_remote_owned:-}" ]; then
+            RUN "cd /opt/remnanode 2>/dev/null && docker compose down 2>/dev/null; rm -rf /opt/remnanode" \
+                >/dev/null 2>&1 || true
+        fi
+
+        _node_install_cleanup
+        warn "Прервано (${_sig}) — локальные и (по возможности) удалённые артефакты удалены."
+
+        # Do not report success (exit 0) merely because cleanup succeeded,
+        # and do not invent a project-specific exit convention: reset the
+        # trap to default and re-raise the same signal to ourselves. This
+        # matches the *existing*, already-standard behavior of every other
+        # unguarded operation in this tool (nothing else installs an INT
+        # trap either, so Ctrl-C already just ends the process) — this
+        # stage adds reliable cleanup in front of that, it does not
+        # introduce a new "return to the menu" behavior nobody asked for.
+        trap - INT TERM
+        # $BASHPID, not $$: inside a subshell, $$ resolves to the PID of
+        # the *top-level* shell that ultimately spawned it, not the
+        # actual running process -- confirmed empirically this session
+        # (`( echo $$; ) &` prints the *parent's* PID, `$BASHPID`/`$!`
+        # give the real one). In this tool's normal, direct invocation
+        # (server-manager.sh run as the single top-level process,
+        # nothing here ever backgrounds or subshells this function) $$
+        # and $BASHPID happen to coincide, so this was not visibly wrong
+        # in the ordinary case -- but re-raising to $$ instead of the
+        # actual current process is the wrong primitive on its own
+        # merits, would misfire the moment this code is ever reached
+        # from inside any subshell, and is exactly the class of "looks
+        # right, is not explainable in terms of actual process behavior"
+        # mistake this stage exists to avoid making elsewhere.
+        kill -s "$_sig" "$BASHPID"
+    }
+
+    trap '_node_install_cleanup' RETURN
+    trap '_node_install_signal_cleanup INT'  INT
+    trap '_node_install_signal_cleanup TERM' TERM
 
     section "Вход в Panel API"
     local SUPERADMIN_USER SUPERADMIN_PASS
@@ -89,8 +237,18 @@ panel_install_remote_node() {
 
     # ── Перенос файлов на ноду ──────────────────────────────────────
     info "Копирование файлов на ${_SSH_IP}..."
-    PUT /opt/remnanode/docker-compose.yml /opt/remnanode/Caddyfile \
-        "${_SSH_USER}@${_SSH_IP}:/opt/remnanode/" || { warn "Не удалось скопировать compose/Caddyfile"; return 1; }
+    # `if`, not `PUT ... || { ...; }` alone, specifically so the success
+    # branch can set _node_remote_owned=1 -- this PUT is the exact,
+    # earliest point at which this invocation has actually written
+    # anything into remote /opt/remnanode, i.e. the earliest point
+    # destructive rollback there becomes this invocation's to perform.
+    if PUT /opt/remnanode/docker-compose.yml /opt/remnanode/Caddyfile \
+        "${_SSH_USER}@${_SSH_IP}:/opt/remnanode/"; then
+        _node_remote_owned=1
+    else
+        warn "Не удалось скопировать compose/Caddyfile"
+        return 1
+    fi
     RUN "mkdir -p /var/www/html" || true
     PUT "${_selfsteal_staging}/." \
         "${_SSH_USER}@${_SSH_IP}:/var/www/html/" || { warn "Не удалось скопировать selfsteal-контент"; return 1; }

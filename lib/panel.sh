@@ -3,20 +3,51 @@
 # ═══════════════════════════════════════════════════════════════════
 #
 # Этот файл — loader. Реализация панели разбита на подмодули в
-# lib/panel/{core,cert,install,compose,mgmt_script,api,selfsteal,nginx/config,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,migrate,menu}.sh
+# lib/panel/{core,cert,cli,install,compose,compose/common,compose/colocated,compose/remote,mgmt_script,api,selfsteal,nginx/config,nginx/variant_f,nginx/variant_j,xray/templates/render,caddy/config,node/compose,node/api,node/install,management,warp,subpage,template,menu}.sh
 #
-# Поддерживаются оба способа загрузки:
-#   1. _sm_source_file / _load_module panel  (обычный путь из server-manager.sh,
-#      SCRIPT_DIR уже выставлен, source идёт по абсолютному пути)
-#   2. прямой `source lib/panel.sh` из lib/migrate.sh (относительный путь,
-#      SCRIPT_DIR может быть не выставлен) — см. panel_migrate() в migrate.sh
+# Обычный путь загрузки: _sm_source_file / _load_module panel из
+# server-manager.sh (SCRIPT_DIR уже выставлен, source идёт по
+# абсолютному пути). Путь к подмодулям вычисляется от BASH_SOURCE[0]
+# этого файла, а не от SCRIPT_DIR.
 #
-# В обоих случаях путь к подмодулям вычисляется от BASH_SOURCE[0] этого
-# файла, а не от SCRIPT_DIR, чтобы loader работал одинаково в обоих случаях.
+# (До A-2 здесь также поддерживался прямой `source lib/panel.sh` из
+# lib/migrate.sh: panel_migrate() пыталась подгрузить panel.sh сама,
+# в расчёте на do_migrate() как обычную sourced-функцию. Этот путь
+# убран вместе с той логикой в panel_migrate() — do_migrate()
+# существует только как текст heredoc в генерируемом
+# /usr/local/bin/remnawave_panel (lib/panel/mgmt_script.sh), а не как
+# функция, которую могло бы найти это подключение.)
 
 _PANEL_MODULE_DIR="$(dirname "${BASH_SOURCE[0]}")/panel"
 
-for _panel_module in core cert install compose mgmt_script api selfsteal nginx/config caddy/config node/compose node/api node/install management warp subpage template migrate menu; do
+# nginx/variant_f и nginx/variant_j добавлены 2026-08-31: до этого
+# panel_generate_nginx_config_f() дублировалась (byte-for-byte идентичной
+# копией) в nginx/config.sh, а lib/panel/nginx/variant_f.sh не был здесь
+# подключён вообще — то есть определение из variant_f.sh было мёртвым
+# кодом, а реально вызывалась копия из config.sh (см. отчёт о carve-out
+# F/J). Порядок относительно nginx/config не важен — bash просто
+# определяет функции при source, а panel_generate_webserver_config()
+# (в config.sh) вызывает panel_generate_nginx_config_f/_j только во
+# время установки, когда все модули уже загружены — но variant_f/variant_j
+# перечислены сразу после nginx/config для наглядности (все три файла
+# про nginx-топологию идут подряд).
+#
+# xray/templates/render добавлен 2026-08-31: panel_xray_render_inbounds()
+# (lib/panel/xray/templates/render.sh) была написана и вручную протестирована
+# раньше, но НЕ была подключена ни в этот loader, ни в один другой файл —
+# grep по всему дереву (кроме самого render.sh) не находил ни одного вызова
+# и ни одного `source`. То есть функция физически не существовала в рантайме
+# ни при одной установке до этого коммита; api.sh продолжал использовать
+# свои старые inline `jq -n` блоки. См. api.sh: panel_setup_api() теперь
+# вызывает panel_xray_render_inbounds() напрямую вместо дублирования JSON.
+# cli добавлен 2026-08-31: panel_install()'s interactive parameter
+# collection (MODE/domains/WEB_SERVER/cert/TeleMT prompts) was extracted
+# out of lib/panel/install.sh into panel_cli_select_mode() and friends
+# here. Loaded right before install (install.sh's panel_install() calls
+# these at runtime, after every module is already sourced, so load order
+# relative to install doesn't actually matter — placed here for
+# readability, next to what it was extracted from).
+for _panel_module in core cert cli install compose/common compose/colocated compose/remote compose mgmt_script api selfsteal nginx/config nginx/variant_f nginx/variant_j xray/templates/render caddy/config node/compose node/api node/install management warp subpage template menu; do
     # shellcheck source=/dev/null
     source "${_PANEL_MODULE_DIR}/${_panel_module}.sh"
 done

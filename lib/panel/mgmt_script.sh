@@ -6,8 +6,22 @@
 panel_install_mgmt_script() {
     local panel_domain="$1" cookie_key="$2" cookie_val="$3" mode="$4"
     local mgmt="/usr/local/bin/remnawave_panel"
-    cat > "$mgmt" << 'MGMTEOF'
+    # FIXED 2026-08-31: `mode` was captured from the caller but never
+    # actually used anywhere below — the main body is a QUOTED heredoc
+    # (<< 'MGMTEOF'), so $mode never got substituted into the deployed
+    # script; it was silently dead. That mattered because do_open_port/
+    # do_close_port (further down) assume the classic MODE=1/2 nginx
+    # layout (single conf.d server{} per domain, sed-patchable) and have
+    # no idea Variant F/J's nginx.conf is structurally different (a full
+    # top-level config with stream{} + http{}, panel's server{} listening
+    # on loopback only) — see the guard added there. This tiny unquoted
+    # header is the one place MODE actually needs to reach the deployed,
+    # standalone script.
+    cat > "$mgmt" << MGMTEOF_HEADER
 #!/bin/bash
+MODE="${mode}"
+MGMTEOF_HEADER
+    cat >> "$mgmt" << 'MGMTEOF'
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; WHITE='\033[1;37m'; PURPLE='\033[0;35m'; NC='\033[0m'
 DIR="/opt/remnawave"
@@ -24,9 +38,12 @@ _spinner() {
 }
 _detect_ws() { grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml 2>/dev/null && echo "caddy" || echo "nginx"; }
 # Keep in sync with panel_migrate_env_for_remnawave_v2 in
-# lib/panel/migrate.sh (same migration logic, same atomic-write
+# lib/panel/management.sh (same migration logic, same atomic-write
 # pattern) — this script is deployed standalone and can't source that
 # file at runtime, so the two copies have to be kept identical by hand.
+# (Moved from lib/panel/migrate.sh after commit 9d6e12d overwrote that
+# file with the unrelated host-to-host migration pipeline and silently
+# dropped this function; restored in management.sh, its only caller.)
 _migrate_env_for_remnawave_v2() {
     local env_file="$DIR/.env"
     [ -f "$env_file" ] || { _warn ".env не найден: $env_file"; return 1; }
@@ -64,6 +81,7 @@ _migrate_env_for_remnawave_v2() {
         return 1
     fi
     [ "$removed" = "1" ] && _ok ".env: удалены устаревшие переменные Remnawave"
+    return 0
 }
 do_status() {
     local ws; ws=$(_detect_ws)
@@ -168,15 +186,54 @@ do_open_port() {
         _info "Для экстренного доступа: rp restart && rp logs caddy"
         return 0
     fi
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+        _warn "open_port не поддерживается для Variant $MODE"
+        _info "nginx.conf у Variant $MODE — это stream{}+http{} топология (SNI-роутинг), а не один server{} на conf.d; открытие 8443 через sed сюда неприменимо."
+        _info "Для экстренного доступа: rp restart && rp logs nginx"
+        return 1
+    fi
     local nc="/opt/remnawave/nginx.conf"
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     ss -tuln|grep -q ":8443" && { _warn "Порт 8443 занят"; return 1; }
+    # UFW lifecycle audit (this session): checked BEFORE touching
+    # anything below, and before the `ufw allow` call further down.
+    # Confirmed live against a real ufw: `ufw allow 8443/tcp comment
+    # "X"` does NOT add a second rule when a `8443/tcp ALLOW IN
+    # Anywhere` rule already exists under a *different* comment (or no
+    # comment) -- it silently RELABELS that existing rule to comment
+    # "X" ("Rule updated"), because ufw treats the underlying spec as
+    # one rule slot regardless of comment. So this function's own
+    # ownership comment on the rule it adds (see below) cannot, by
+    # itself, stop it from taking over -- under a fresh label -- a
+    # rule that already belongs to something else (Hysteria2's own
+    # documented recommended default port, lib/hy2/install.sh: "1)
+    # 8443 — рекомендуется", opened bare/uncommented; or a live Variant
+    # J XHTTP rule, if this MODE=1/2 script is stale leftover from
+    # before a reinstall to J -- panel_remove() never deletes this
+    # generated script). The `ss -tuln` check above only catches a
+    # service currently *listening*, not a firewall rule for a service
+    # that is merely stopped/not-yet-started, so it does not cover
+    # this. Refusing here, before any relabeling can happen, is the
+    # only point this can safely be caught at.
+    if command -v ufw &>/dev/null; then
+        local _existing_8443
+        _existing_8443="$(ufw status numbered 2>/dev/null | grep -F '8443/tcp' | grep -vE '# Panel emergency admin[[:space:]]*$' || true)"
+        if [ -n "$_existing_8443" ]; then
+            _warn "Порт 8443/tcp уже используется другим UFW-правилом (не этой командой) — вероятно, другим сервисом (например, Hysteria2 или Variant J XHTTP). open_port не будет его трогать."
+            printf '%s\n' "$_existing_8443" | sed 's/^/  /' >&2
+            return 1
+        fi
+    fi
     sed -i "/server_name $pd;/a \\    listen 8443 ssl;" "$nc"
     cd /opt/remnawave && docker compose restart remnawave-nginx>/dev/null 2>&1
-    ufw allow 8443/tcp>/dev/null 2>&1; ufw reload>/dev/null 2>&1
+    # Tagged with an ownership comment so do_close_port() below can
+    # delete exactly this rule, never a same-port rule belonging to
+    # something else -- safe now that the check above guarantees no
+    # pre-existing, differently-owned 8443/tcp rule exists to relabel.
+    ufw allow 8443/tcp comment "Panel emergency admin">/dev/null 2>&1; ufw reload>/dev/null 2>&1
     local ck cv
     ck=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '~\*\K\w+(?==)')
-    cv=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '=\K\w+(?= 1)')
+    cv=$(grep "map \$http_cookie" "$nc" -A2|grep -oP '=\K\w+(?=" 1)')
     _ok "Порт 8443 открыт."
     echo -e "  ${WHITE}https://${pd}:8443/auth/login?${ck}=${cv}${NC}"
     _warn "Закройте после работы: remnawave_panel close_port"
@@ -184,165 +241,73 @@ do_open_port() {
 do_close_port() {
     local ws; ws=$(_detect_ws)
     if [ "$ws" = "caddy" ]; then _warn "Не применимо для Caddy"; return 0; fi
+    if [ "$MODE" = "F" ] || [ "$MODE" = "J" ]; then
+        _warn "close_port не поддерживается для Variant $MODE (open_port для него никогда не выполнялся — см. rp open_port)"
+        return 1
+    fi
     local nc="/opt/remnawave/nginx.conf"
     local pd; pd=$(grep -m1 "server_name " "$nc"|awk '{print $2}'|tr -d ';')
     sed -i "/server_name $pd;/,/}/{s/    listen 8443 ssl;//}" "$nc"
     cd /opt/remnawave && docker compose restart remnawave-nginx>/dev/null 2>&1
-    ufw delete allow 8443/tcp>/dev/null 2>&1; ufw reload>/dev/null 2>&1
+    # Same finding as do_open_port() above: deletes ONLY the rule this
+    # function itself owns (port 8443/tcp AND its own "Panel emergency
+    # admin" comment, matched via read-only `ufw status numbered` and
+    # removed by rule number -- same technique already proven for
+    # panel_cleanup_xhttp_ufw_rules()/panel_cleanup_colocated_api_ufw_rule()
+    # in lib/panel/management.sh, inlined here since this is a
+    # standalone generated script with no access to that sourced
+    # helper). A bare `ufw delete allow 8443/tcp` (this function's old
+    # form) matches and removes ANY existing rule on that port
+    # regardless of comment -- confirmed live -- which could silently
+    # take down Hysteria2 (same default port, no comment of its own)
+    # or a live Variant J XHTTP rule (if this MODE=1/2 script is stale
+    # leftover from before a reinstall to J; panel_remove() never
+    # deletes this generated script).
+    if command -v ufw &>/dev/null; then
+        local _status _nums _num
+        _status="$(ufw status numbered 2>/dev/null)" || _status=""
+        _nums="$(printf '%s\n' "$_status" \
+            | grep -F "8443/tcp" \
+            | grep -E "# Panel emergency admin[[:space:]]*\$" \
+            | grep -oE '^\[ *[0-9]+' \
+            | grep -oE '[0-9]+' \
+            | sort -rn)" || _nums=""
+        for _num in $_nums; do
+            ufw --force delete "$_num" >/dev/null 2>&1
+        done
+        ufw reload>/dev/null 2>&1
+    fi
     _ok "Порт 8443 закрыт"
 }
 do_migrate() {
-    header "📦 Перенос Panel на другой сервер"
-
-    # ── Проверки ───────────────────────────────────────────────────
-    [ -d /opt/remnawave ] || { err "Панель не установлена"; return 1; }
-    [ -f /opt/remnawave/docker-compose.yml ] || { err "docker-compose.yml не найден"; return 1; }
-    command -v sshpass &>/dev/null || apt-get install -y -q sshpass 2>/dev/null
-
-    # ── Данные нового сервера ──────────────────────────────────────
-    ask_ssh_target
-    init_ssh_helpers panel
-    check_ssh_connection || return 1
-    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
-
-    # ── Проверка свободного места ──────────────────────────────────
-    _info "Проверяем свободное место на новом сервере..."
-    local remote_free local_used
-    remote_free=$(RUN "df -BM /opt --output=avail | tail -1 | tr -d 'M'" 2>/dev/null || echo "0")
-    local_used=$(du -sm /opt/remnawave 2>/dev/null | awk '{print $1}' || echo "0")
-    if [ "$remote_free" -lt "$((local_used * 2))" ] 2>/dev/null; then
-        _warn "Мало места на новом сервере: ${remote_free}MB свободно, нужно ~$((local_used * 2))MB"
-        read -rp "  Продолжить всё равно? (y/n): " fc < /dev/tty
-        [[ "$fc" =~ ^[yY]$ ]] || return 1
+    # A-2 fix: this used to be a standalone reimplementation of Panel
+    # migration, but it called six project-specific SSH helpers
+    # (ask_ssh_target/init_ssh_helpers/check_ssh_connection/
+    # remote_install_deps/RUN/PUT) that were never embedded here -- they
+    # only exist in lib/common/ssh.sh, sourced by the normal
+    # server-manager.sh runtime, not by this standalone generated
+    # script (see this file's own header comment). Embedding a second
+    # copy of them here would fork F1-sensitive SSH timeout/signal/
+    # argv-security logic (init_ssh_helpers' RUN/PUT) into a
+    # separately-maintained duplicate -- not done. Instead, delegate to
+    # the already-working migrate_prepare_target()+migrate_transfer_panel()
+    # pipeline (lib/migrate.sh, via panel_migrate()) by re-running
+    # server-manager.sh itself, using the same source-tree convention
+    # migrate_copy_script() already relies on ("${SCRIPT_DIR:-/root/server-manager}"),
+    # bootstrapping it via the same curl fallback migrate_copy_script()
+    # already uses if it isn't present.
+    _info "📦 Перенос Panel на другой сервер"
+    local sm_src="${SCRIPT_DIR:-/root/server-manager}"
+    if [ -f "${sm_src}/server-manager.sh" ]; then
+        exec bash "${sm_src}/server-manager.sh" migrate
     fi
-
-    # ── Установка зависимостей на новом сервере ────────────────────
-    remote_install_deps panel "$(_detect_ws)"
-
-    # ── Дамп БД ────────────────────────────────────────────────────
-    _info "Создаём дамп базы данных..."
-    local dump="/tmp/panel_migrate_$(date +%Y%m%d_%H%M%S).sql.gz"
-    cd /opt/remnawave
-    docker compose exec -T remnawave-db pg_dumpall -c -U postgres 2>/dev/null | gzip -9 > "$dump"
-
-    # Проверяем размер дампа
-    local dump_size; dump_size=$(stat -c%s "$dump" 2>/dev/null || echo "0")
-    if [ "$dump_size" -lt 1000 ]; then
-        err "Дамп БД подозрительно мал (${dump_size} байт) — возможна ошибка"
-        rm -f "$dump"
+    _warn "server-manager не найден в ${sm_src} — устанавливаем..."
+    if curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash >/dev/null 2>&1 \
+            && [ -f "${sm_src}/server-manager.sh" ]; then
+        _ok "server-manager установлен. Запустите ещё раз: remnawave_panel migrate"
+    else
+        _warn "Не удалось установить server-manager. Установите вручную и повторите: curl -fsSL https://raw.githubusercontent.com/stump3/server-manager/main/server-manager.sh | bash"
         return 1
-    fi
-    _ok "Дамп БД создан ($(du -sh "$dump" | cut -f1))"
-
-    # ── Передача файлов ────────────────────────────────────────────
-    _info "Передаём файлы панели..."
-    local ws_cfg_src
-    [ -f /opt/remnawave/Caddyfile ] && ws_cfg_src=/opt/remnawave/Caddyfile || ws_cfg_src=/opt/remnawave/nginx.conf
-    PUT "$dump" \
-        /opt/remnawave/.env \
-        /opt/remnawave/docker-compose.yml \
-        "$ws_cfg_src" \
-        "${ruser}@${rip}:/opt/remnawave/" 2>/dev/null \
-        && _ok "Файлы панели переданы" || { err "Ошибка передачи файлов панели"; return 1; }
-
-    # SSL сертификаты
-    _info "Передаём SSL сертификаты..."
-    if [ -d /etc/letsencrypt/live ] && [ -d /etc/letsencrypt/archive ]; then
-        PUT /etc/letsencrypt/live \
-            /etc/letsencrypt/archive \
-            /etc/letsencrypt/renewal \
-            "${ruser}@${rip}:/etc/letsencrypt/" 2>/dev/null \
-            && _ok "SSL сертификаты переданы" || _warn "Ошибка передачи SSL — перевыпустите вручную"
-    else
-        _warn "SSL сертификаты не найдены в /etc/letsencrypt"
-    fi
-
-    # Hysteria сертификаты (если есть)
-    if [ -d /etc/ssl/certs/hysteria ]; then
-        _info "Передаём сертификаты Hysteria2..."
-        PUT /etc/ssl/certs/hysteria \
-            "${ruser}@${rip}:/etc/ssl/certs/" 2>/dev/null \
-            && _ok "Сертификаты Hysteria2 переданы" || _warn "Ошибка передачи сертификатов Hysteria2"
-    fi
-
-    # Selfsteal сайт
-    if [ -d /var/www/html ] && [ "$(ls -A /var/www/html 2>/dev/null)" ]; then
-        _info "Передаём selfsteal сайт..."
-        PUT /var/www/html/. "${ruser}@${rip}:/var/www/html/" 2>/dev/null \
-            && _ok "Selfsteal сайт передан" || _warn "Ошибка передачи сайта"
-    fi
-
-    _ok "Все файлы переданы"
-
-    # ── Запуск на новом сервере ────────────────────────────────────
-    _info "Запускаем стек на новом сервере..."
-    local dumpb; dumpb=$(basename "$dump")
-    RUN bash -s << RSTART
-set -e
-cd /opt/remnawave
-
-# Удаляем старый volume БД если есть
-docker volume rm remnawave-db-data 2>/dev/null || true
-
-# Запускаем только БД и Redis
-docker compose up -d remnawave-db remnawave-redis >/dev/null 2>&1
-echo "Ждём запуска БД..."
-_pw=0
-until docker compose exec -T remnawave-db pg_isready -U postgres -q 2>/dev/null; do
-    sleep 2; _pw=$((_pw+1))
-    [ "$_pw" -ge 30 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
-done
-
-# Восстанавливаем дамп
-echo "Восстанавливаем базу данных..."
-zcat /opt/remnawave/$dumpb | docker compose exec -T remnawave-db psql -U postgres postgres >/dev/null 2>&1 || true
-
-# Запускаем весь стек
-docker compose up -d >/dev/null 2>&1
-echo "Стек запущен"
-RSTART
-    _ok "Стек запущен на новом сервере"
-
-    # ── Копируем скрипты управления ────────────────────────────────
-    PUT /usr/local/bin/remnawave_panel \
-        "${ruser}@${rip}:/usr/local/bin/remnawave_panel" 2>/dev/null && \
-    RUN "chmod +x /usr/local/bin/remnawave_panel" 2>/dev/null && \
-    RUN "grep -q 'alias rp=' /etc/bash.bashrc || echo \"alias rp='remnawave_panel'\" >> /etc/bash.bashrc" 2>/dev/null
-    _ok "Скрипт управления установлен"
-
-    # ── Копируем репозиторий server-manager ───────────────────────
-    local _sm_dir="${SCRIPT_DIR:-$(dirname "$(realpath "$0" 2>/dev/null || echo "$0")")}"
-    if [ -d "$_sm_dir" ] && [ -f "$_sm_dir/server-manager.sh" ]; then
-        RUN "mkdir -p /root/server-manager" 2>/dev/null || true
-        PUT "$_sm_dir/." "${ruser}@${rip}:/root/server-manager/" 2>/dev/null || true
-        RUN "chmod +x /root/server-manager/server-manager.sh &&             ln -sf /root/server-manager/server-manager.sh /usr/local/bin/server-manager" 2>/dev/null || true
-        _ok "server-manager скопирован на новый сервер"
-    else
-        warn "Не удалось определить каталог server-manager — скопируйте вручную"
-    fi
-
-    # ── Очистка ────────────────────────────────────────────────────
-    rm -f "$dump"
-    RUN "rm -f /opt/remnawave/$dumpb" 2>/dev/null || true
-
-    # ── Итог ───────────────────────────────────────────────────────
-    echo ""
-    _ok "Перенос панели завершён!"
-    echo ""
-    echo -e "  ${WHITE}Следующие шаги:${NC}"
-    echo -e "  ${CYAN}1.${NC} Обновите DNS-записи на новый IP: ${CYAN}${rip}${NC}"
-    echo -e "  ${CYAN}2.${NC} После обновления DNS перевыпустите SSL:"
-    echo -e "     ${CYAN}ssh ${ruser}@${rip} remnawave_panel ssl${NC}"
-    echo -e "  ${CYAN}3.${NC} Проверьте работу панели"
-    echo -e "  ${CYAN}4.${NC} Остановите старый сервер когда всё ОК"
-    echo ""
-
-    read -rp "  Остановить панель на ЭТОМ сервере? (y/n): " stop_old < /dev/tty
-    if [[ "$stop_old" =~ ^[yY]$ ]]; then
-        cd /opt/remnawave && docker compose stop >/dev/null 2>&1
-        _ok "Панель на старом сервере остановлена"
-    else
-        _info "Панель на старом сервере продолжает работать"
     fi
 }
 show_menu() {

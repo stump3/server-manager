@@ -1,52 +1,51 @@
 # ████████████████████  MIGRATE SECTION  ███████████████████████████
-# panel_migrate() — перенос Panel через migrate_menu
-# Вызывает do_migrate из panel.sh если доступна,
-# иначе подгружает panel.sh из того же каталога
+# panel_migrate() — перенос только Panel (см. migrate_all() для полного
+# стека Panel+MTProxy+Hysteria2). Раньше эта функция искала do_migrate()
+# через `declare -f` (наследие архитектуры, где ожидалось, что do_migrate
+# станет обычной sourced-функцией) — это никогда не могло сработать:
+# do_migrate существует только как текст heredoc внутри генерируемого
+# /usr/local/bin/remnawave_panel (lib/panel/mgmt_script.sh), а не как
+# функция в этом процессе. Фоллбэк на `panel_menu migrate` тоже был
+# мёртвым на практике: panel_menu() не принимает аргументов вообще, так
+# что "migrate" молча игнорировался, и оператор просто попадал в общее
+# меню Panel. Вместо этого вызываем тот же рабочий Panel-transfer пайплайн,
+# которым уже пользуется migrate_all() для своей Panel-части.
 panel_migrate() {
-    if declare -f do_migrate >/dev/null 2>&1; then
-        do_migrate
-        return $?
-    fi
-    # Пробуем подгрузить panel.sh
-    local _panel_sh
-    _panel_sh="$(dirname "${BASH_SOURCE[0]}")/panel.sh"
-    if [ -f "$_panel_sh" ]; then
-        # shellcheck source=/dev/null
-        source "$_panel_sh"
-        if declare -f do_migrate >/dev/null 2>&1; then
-            do_migrate
-            return $?
-        fi
-
-        # Совместимость со старыми/кастомными версиями panel.sh,
-        # где отдельной do_migrate может не быть.
-        if declare -f panel_menu >/dev/null 2>&1; then
-            panel_menu migrate
-            return $?
-        fi
-
-        err "В panel.sh не найдена функция do_migrate/panel_menu."
-        return 1
-    fi
-    err "Модуль panel.sh не найден. Запустите через главное меню."
-    return 1
+    header "📦 Перенос Panel на другой сервер"
+    migrate_prepare_target panel || return 1
+    local rip="$_SSH_IP" rport="$_SSH_PORT" ruser="$_SSH_USER"
+    migrate_transfer_panel
 }
 
 
 # ═══════════════════════════════════════════════════════════════════
 
 migrate_prepare_target() {
+    # A-2 follow-up: this used to always request "full" dependency
+    # installation (remote_install_deps full ...) regardless of caller,
+    # even when called from panel_migrate() -- a Panel-only transfer.
+    # remote_install_deps's own docstring: "full — base + unzip cron
+    # qrencode + /etc/hysteria" (lib/common/ssh.sh) -- none of which a
+    # Panel-only migration needs; the pre-A-2 do_migrate() correctly
+    # used "panel" here (`remote_install_deps panel "$(_detect_ws)"`).
+    # init_ssh_helpers's own mode branching only distinguishes "telemt"
+    # from everything else (panel and full hit the same `*` case,
+    # producing identical _SSH_OPTS/_SCP_OPTS) -- passing the variant
+    # through there is harmless/for-consistency, not a functional fix.
+    # Default stays "full" so migrate_all()'s existing no-argument call
+    # (below) is byte-for-byte unaffected.
+    local variant="${1:-full}"
     ensure_sshpass
 
     # ── Данные нового сервера ──────────────────────────────────────
     ask_ssh_target || { warn "Ошибка ввода данных SSH"; return 1; }
-    init_ssh_helpers full
+    init_ssh_helpers "$variant"
     check_ssh_connection || return 1
 
     # ── Зависимости ────────────────────────────────────────────────
     local _remote_ws="nginx"
     [ -f /opt/remnawave/docker-compose.yml ] && grep -q "remnawave-caddy" /opt/remnawave/docker-compose.yml && _remote_ws="caddy"
-    remote_install_deps full "$_remote_ws"
+    remote_install_deps "$variant" "$_remote_ws"
     return 0
 }
 
@@ -73,9 +72,55 @@ migrate_transfer_panel_ssl() {
     fi
 }
 
+
+# migrate_dest_existing_state_detected — remote analog of
+# panel_install_existing_state_detected() (lib/panel/install.sh): true if
+# the DESTINATION server already has the remnawave-db-data named Docker
+# volume, i.e. an existing Panel installation whose data
+# migrate_transfer_panel() below is about to overwrite/destroy. Same
+# identity check, same semantics -- executed over RUN (which returns the
+# remote command's exact exit code, lib/common/ssh.sh) instead of
+# locally. `command -v docker` is checked first, same as the local
+# version, so a genuinely blank destination (no Docker yet) correctly
+# reads as "no existing state" rather than erroring.
+migrate_dest_existing_state_detected() {
+    RUN "command -v docker >/dev/null 2>&1 && docker volume inspect remnawave-db-data >/dev/null 2>&1" 2>/dev/null
+}
+
 migrate_transfer_panel() {
     if [ -d /opt/remnawave ] && [ -f /opt/remnawave/docker-compose.yml ]; then
         info "Переносим Panel..."
+
+        # CONFIRMED DEFECT (lifecycle audit, migration destination-DB
+        # pass): everything below this point -- PUT overwriting the
+        # destination's .env/docker-compose.yml, then `docker volume rm
+        # remnawave-db-data` followed by restoring this run's
+        # `pg_dumpall -c` dump -- silently destroyed any ALREADY-EXISTING
+        # Panel installation on the destination, with no confirmation of
+        # any kind. `pg_dumpall -c` itself emits DROP DATABASE/DROP ROLE
+        # statements ahead of the restore, so the destination's existing
+        # data was lost even on the branch where `docker volume rm`
+        # fails silently because a running container still holds the
+        # volume open -- precisely the case a live existing install
+        # produces. This is the same class of operation
+        # panel_remove()/panel_reinstall() (lib/panel/management.sh) both
+        # gate behind an explicit warning + typed 'YES' confirmation;
+        # migrate had no destination-side equivalent, only
+        # panel_install_existing_state_detected() for the LOCAL side of a
+        # plain install. Fix: same detection semantics via
+        # migrate_dest_existing_state_detected() above, gated the same
+        # way as panel_reinstall()'s own confirmation prompt, placed
+        # before ANY destination mutation begins (PUT included).
+        if migrate_dest_existing_state_detected; then
+            warn "На новом сервере уже обнаружена существующая установка Panel (volume remnawave-db-data)."
+            warn "Продолжение ПЕРЕЗАПИШЕТ конфигурацию и УНИЧТОЖИТ текущие данные БД на новом сервере!"
+            local _dest_confirm
+            read -rp "  Продолжить и перезаписать данные на новом сервере? Введите 'YES': " _dest_confirm < /dev/tty
+            if [ "$_dest_confirm" != "YES" ]; then
+                info "Перенос отменён"
+                return 1
+            fi
+        fi
 
         # Дамп БД со сжатием
         local dump="/tmp/panel_migrate_$(date +%Y%m%d_%H%M%S).sql.gz"
@@ -119,6 +164,14 @@ migrate_transfer_panel() {
             && ok "Сертификаты Hysteria2 переданы" || true
 
         # Восстановление
+        # RPANEL is an UNQUOTED heredoc: the local shell expands every
+        # unescaped $name/$((...)) while building the text, before
+        # `RUN bash -s` runs. $dumpb below is intentionally expanded
+        # locally (baked into the remote script as a literal filename).
+        # _pg_wait is a REMOTE-only loop counter, so its reads are
+        # escaped (\$) — unescaped, `set -u` (server-manager.sh:13)
+        # aborts the local process with "_pg_wait: unbound variable"
+        # before RUN is invoked.
         local dumpb; dumpb=$(basename "$dump")
         RUN bash -s << RPANEL
 set -e; cd /opt/remnawave
@@ -127,8 +180,8 @@ docker compose up -d remnawave-db remnawave-redis >/dev/null 2>&1
 # Ждём готовности PostgreSQL через pg_isready вместо фиксированного sleep
 _pg_wait=0
 until docker compose exec -T remnawave-db pg_isready -U postgres -q 2>/dev/null; do
-    sleep 1; _pg_wait=$((_pg_wait+1))
-    [ "$_pg_wait" -ge 60 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
+    sleep 1; _pg_wait=\$((_pg_wait+1))
+    [ "\$_pg_wait" -ge 60 ] && { echo "PostgreSQL не поднялся за 60 сек" >&2; exit 1; }
 done
 zcat /opt/remnawave/$dumpb | docker compose exec -T remnawave-db psql -U postgres postgres >/dev/null 2>&1 || true
 docker compose up -d >/dev/null 2>&1
@@ -145,99 +198,74 @@ RPANEL
 
 migrate_transfer_mtproxy() {
     # ── MTProxy ────────────────────────────────────────────────────
-    if [ -f "$TELEMT_CONFIG_SYSTEMD" ]; then
+    # Source mode is determined via telemt_detect_installed_mode()
+    # (lib/telemt/core.sh) — the same file-existence-based detector
+    # Panel's own install/reconfigure decision already relies on
+    # (lib/panel/cli.sh) — never via a $TELEMT_MODE session variable
+    # (nothing sets it before migrate_all() runs) and never a hardcoded
+    # systemd-only assumption. This is what lets a docker-mode source
+    # (the mode every fresh F/J-integrated install actually uses) reach
+    # its own, already-correct migration path below instead of being
+    # silently skipped because only $TELEMT_CONFIG_SYSTEMD was checked.
+    local _telemt_src_mode; _telemt_src_mode=$(telemt_detect_installed_mode)
+    local _telemt_rc=0
+    case "$_telemt_src_mode" in
+    systemd)
+        # Delegates to the single production payload
+        # (lib/telemt/migrate.sh:telemt_migrate_systemd_payload()) --
+        # this branch used to carry its own complete duplicate
+        # (config substitution + install heredoc), independently from
+        # the docker branch below, which already delegated. That
+        # duplicate is why its sed pattern had drifted out of sync
+        # with the shared renderer's tls_domain_extra/my_tls_domain
+        # fix (see lib/telemt/migrate.sh's own header/render_config
+        # comments for the full history). RUN/PUT and TELEMT_CONFIG_FILE
+        # are already initialized for this session by
+        # migrate_prepare_target() before migrate_all() ever reaches
+        # this function, same convention telemt_migrate_docker_payload()
+        # below already relied on.
         info "Переносим MTProxy..."
-        local cp dp ub lb
-        cp=$(grep -E "^port\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oE "[0-9]+" || echo "8443")
-        dp=$(grep -E "^tls_domain\s*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oP '(?<=")[^"]+' || echo "")
-        [ -z "$dp" ] && dp="1c.ru"  # fallback если regex не совпал
-        ub=$(awk '/^\[access\.users\]/{f=1;next} f&&/^\[/{exit} f&&/=/{print}' "$TELEMT_CONFIG_SYSTEMD")
-        if declare -f telemt_extract_limits_block >/dev/null 2>&1; then
-            lb=$(telemt_extract_limits_block "$TELEMT_CONFIG_SYSTEMD")
+        local cp dp
+        cp=$(grep -E "^port[[:space:]]*=" "$TELEMT_CONFIG_SYSTEMD" | head -1 | grep -oE "[0-9]+" || echo "8443")
+        dp=$(telemt_get_tls_domain "$TELEMT_CONFIG_SYSTEMD")
+        [ -z "$dp" ] && dp="1c.ru"  # fallback если regex не совпал (используется только для ufw/лога ниже)
+        TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
+        if telemt_migrate_systemd_payload "$cp" "$dp"; then
+            ok "MTProxy перенесён"
         else
-            lb=$(awk '
-                /^\[(access\.user_max_tcp_conns|access\.user_expirations|access\.user_data_quota|access\.user_max_unique_ips)\]$/ {
-                    in_section=1; print; next
-                }
-                /^\[access\.user_limits\./ {
-                    in_section=1; print; next
-                }
-                /^\[/ { in_section=0 }
-                in_section { print }
-            ' "$TELEMT_CONFIG_SYSTEMD" || true)
+            _telemt_rc=1
         fi
-
-        echo "$ub" | RUN "mkdir -p /etc/telemt && { cat << 'NCONF'
-[general]
-use_middle_proxy = true
-log_level = \"normal\"
-
-[general.modes]
-classic = false
-secure  = false
-tls     = true
-
-[general.links]
-show = \"*\"
-
-[server]
-port = $cp
-
-[server.api]
-enabled   = true
-listen    = \"127.0.0.1:9091\"
-whitelist = [\"127.0.0.1/32\"]
-
-[[server.listeners]]
-ip = \"0.0.0.0\"
-
-[censorship]
-tls_domain    = \"$dp\"
-mask          = true
-tls_emulation = true
-tls_front_dir = \"/opt/telemt/tlsfront\"
-
-[access.users]
-NCONF
-cat; } > /etc/telemt/telemt.toml"
-        [ -n "$lb" ] && echo "$lb" | RUN "echo '' >> /etc/telemt/telemt.toml && cat >> /etc/telemt/telemt.toml"
-
-        RUN bash << RTELEMT
-set -e
-ARCH=\$(uname -m); LIBC=\$(ldd --version 2>&1|grep -iq musl&&echo musl||echo gnu)
-URL="https://github.com/telemt/telemt/releases/latest/download/telemt-\${ARCH}-linux-\${LIBC}.tar.gz"
-TMP=\$(mktemp -d); curl -fsSL "\$URL"|tar -xz -C "\$TMP"; install -m 0755 "\$TMP/telemt" /usr/local/bin/telemt; rm -rf "\$TMP"
-id telemt &>/dev/null || useradd -d /opt/telemt -m -r -U telemt
-mkdir -p /opt/telemt/tlsfront; chown -R telemt:telemt /etc/telemt /opt/telemt
-cat > /etc/systemd/system/telemt.service << 'SVC'
-[Unit]
-Description=Telemt MTProto Proxy
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-User=telemt
-Group=telemt
-WorkingDirectory=/opt/telemt
-ExecStart=/usr/local/bin/telemt /etc/telemt/telemt.toml
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=65536
-AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
-NoNewPrivileges=true
-ExecReload=/bin/kill -HUP \$MAINPID
-[Install]
-WantedBy=multi-user.target
-SVC
-systemctl daemon-reload; systemctl enable telemt; systemctl restart telemt
-command -v ufw &>/dev/null && ufw allow $cp/tcp >/dev/null 2>&1 || true
-RTELEMT
-        ok "MTProxy перенесён"
-    else
-        warn "MTProxy (systemd) не найден, пропускаю"
-    fi
-    return 0
+        ;;
+    docker)
+        # Reuses the already-correct, already-existing docker migration
+        # core (lib/telemt/migrate.sh:telemt_migrate_docker_payload(),
+        # extracted from telemt_menu_migrate_docker() specifically so it
+        # could be called here without a duplicate implementation). RUN/
+        # PUT are already initialized once by migrate_prepare_target() at
+        # the top of migrate_all() — no repeated ask_ssh_target/
+        # init_ssh_helpers here.
+        if [ ! -f "$TELEMT_COMPOSE_FILE" ]; then
+            warn "MTProxy (docker): docker-compose.yml не найден ($TELEMT_COMPOSE_FILE), пропускаю перенос"
+            _telemt_rc=1
+        else
+            info "Переносим MTProxy (Docker)..."
+            TELEMT_CONFIG_FILE="$TELEMT_CONFIG_DOCKER"
+            local _dp _dd
+            _dp=$(grep -E "^port\s*=" "$TELEMT_CONFIG_DOCKER" | head -1 | grep -oE "[0-9]+" || echo "8443")
+            _dd=$(telemt_get_tls_domain "$TELEMT_CONFIG_DOCKER")
+            if telemt_migrate_docker_payload "$_dp" "$_dd"; then
+                ok "MTProxy (docker) перенесён"
+            else
+                warn "MTProxy (docker): перенос не завершился (см. вывод выше)"
+                _telemt_rc=1
+            fi
+        fi
+        ;;
+    *)
+        warn "MTProxy не найден, пропускаю"
+        ;;
+    esac
+    return "$_telemt_rc"
 }
 
 migrate_transfer_hysteria() {
@@ -310,7 +338,7 @@ migrate_all() {
 
     migrate_transfer_panel || return 1
 
-    migrate_transfer_mtproxy
+    migrate_transfer_mtproxy || warn "MTProxy не перенесён — продолжаю с Hysteria2"
 
     migrate_transfer_hysteria
 
@@ -336,12 +364,7 @@ migrate_menu() {
         local ch; read -rp "  Выбор: " ch < /dev/tty
         case "$ch" in
             1) panel_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
-            2) { [ -z "$TELEMT_MODE" ] && {
-                       TELEMT_MODE="systemd"
-                       TELEMT_CONFIG_FILE="$TELEMT_CONFIG_SYSTEMD"
-                       TELEMT_WORK_DIR="$TELEMT_WORK_DIR_SYSTEMD"
-                   }
-                   telemt_menu_migrate; } || true
+            2) migrate_telemt_interactive || true
                read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             3) hysteria_migrate || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;
             4) { check_root; migrate_all; } || true; read -rp "  Нажмите Enter для продолжения..." < /dev/tty ;;

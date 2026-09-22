@@ -13,9 +13,16 @@ telemt_menu_user_ips() {
     [ -f "$db" ] || { warn "Статистика ещё не собрана: $db"; return 1; }
 
     local -a users=()
+    # F6: same shared lock as api.sh/menu.sh's writers -- read-only here,
+    # but guards against reading a torn file mid-write from either of
+    # them (json.dump is not atomic).
+    mkdir -p "$(dirname "$db")" 2>/dev/null
     while IFS= read -r u; do
         [ -n "$u" ] && users+=("$u")
-    done < <(TELEMT_TRAFFIC_DB="$db" python3 -c "
+    done < <(
+        (
+            flock -w 5 9 || exit 1
+            TELEMT_TRAFFIC_DB="$db" python3 -c "
 import os, json
 db=os.environ.get('TELEMT_TRAFFIC_DB','')
 try:
@@ -28,7 +35,9 @@ try:
                 print(k)
 except Exception:
     pass
-" 2>/dev/null || true)
+" 2>/dev/null
+        ) 9>"${db}.lock" || true
+    )
     if [ ${#users[@]} -eq 0 ]; then
         warn "Нет сохранённой IP-истории."
         info "IP-история появляется, когда telemt API отдаёт active/recent IP списки."
@@ -55,7 +64,10 @@ except Exception:
     local selected="${users[$((ch-1))]}"
 
     header "IP история: $selected"
-    TELEMT_TRAFFIC_DB="$db" TELEMT_SELECTED_USER="$selected" python3 -c "
+    mkdir -p "$(dirname "$db")" 2>/dev/null
+    (
+        flock -w 5 9 || exit 1
+        TELEMT_TRAFFIC_DB="$db" TELEMT_SELECTED_USER="$selected" python3 -c "
 import os, json
 db=os.environ.get('TELEMT_TRAFFIC_DB','')
 user=os.environ.get('TELEMT_SELECTED_USER','')
@@ -80,6 +92,7 @@ try:
 except Exception as e:
     print(f'  Ошибка чтения истории: {e}')
 " 2>/dev/null
+    ) 9>"${db}.lock"
 }
 
 # ── Добавить пользователя через API ──────────────────────────────

@@ -85,9 +85,54 @@ init_ssh_helpers() {
     # options ("sshpass -f <(...), SSHPASS env var, or another
     # approach") — no new decision made here, just picking the first of
     # the two already-named options.
+    # F1 fix (SSH reliability): execution timeout, additional to the
+    # ConnectTimeout=10 above (which bounds only the connection/handshake
+    # phase, not the remote command itself — confirmed: no existing option
+    # or wrapper bounded total execution time before this). 600s (10 min)
+    # is not an arbitrary guess: it's roughly 2x the largest wait budget
+    # already accepted elsewhere in this repo (lib/panel/api.sh's Panel-
+    # readiness poll: 20s initial + up to 5*60s retries ≈ 320s) — enough
+    # headroom for a slow VPS's apt-get/docker-pull/compose-up sequence
+    # (remote_install_deps, docker compose pull -q && up -d), while still
+    # bounding a genuinely wedged session instead of hanging forever.
+    #
+    # Plain `timeout N ...` (no --foreground) is deliberate, not the
+    # default left unexamined: GNU timeout's non-foreground mode puts the
+    # wrapped command in a *fresh process group whose PGID equals
+    # timeout's own PID* (confirmed empirically) specifically so that on
+    # ITS OWN deadline it can reliably signal the *whole* descendant tree
+    # in one shot — this matters here because `sshpass` interposes at
+    # least one further process before it reaches the real ssh/scp binary
+    # (confirmed empirically), so signaling only the direct child would
+    # not be enough. `--foreground` would trade this away (per `man
+    # timeout`: "children of COMMAND will not be timed out" in that mode)
+    # for TTY passthrough this project's batch/non-interactive RUN/PUT
+    # usage (no `-t` allocated) does not need.
+    #
+    # RUN/PUT are still fully synchronous from every caller's point of
+    # view (still block until the command finishes, still return exactly
+    # its exit code via the trailing `wait`) — backgrounding here is only
+    # to capture $_LAST_SSH_PID before waiting, so a caller that installs
+    # its own INT/TERM trap (see lib/panel/node/install.sh) has a reliable
+    # handle to kill an in-flight RUN/PUT if interrupted. Existing callers
+    # that never look at $_LAST_SSH_PID are unaffected — same call syntax,
+    # same blocking behavior, same return code (124 on timeout, GNU
+    # timeout's own established convention, left untranslated; 128+signal
+    # if killed by an explicit signal; the remote command's own exit code
+    # otherwise).
+    _SSH_EXEC_TIMEOUT=600
+
     # shellcheck disable=SC2139
-    RUN() { sshpass -f <(printf '%s\n' "$_SSH_PASS") ssh  $_SSH_OPTS "${_SSH_USER}@${_SSH_IP}" "$@"; }
-    PUT() { sshpass -f <(printf '%s\n' "$_SSH_PASS") scp -r $_SCP_OPTS "$@"; }
+    RUN() {
+        timeout "$_SSH_EXEC_TIMEOUT" sshpass -f <(printf '%s\n' "$_SSH_PASS") ssh  $_SSH_OPTS "${_SSH_USER}@${_SSH_IP}" "$@" &
+        _LAST_SSH_PID=$!
+        wait "$_LAST_SSH_PID"
+    }
+    PUT() {
+        timeout "$_SSH_EXEC_TIMEOUT" sshpass -f <(printf '%s\n' "$_SSH_PASS") scp -r $_SCP_OPTS "$@" &
+        _LAST_SSH_PID=$!
+        wait "$_LAST_SSH_PID"
+    }
     export -f RUN PUT 2>/dev/null || true
 }
 

@@ -13,7 +13,7 @@ panel_generate_nginx_config() {
 
         # ── nginx.conf ────────────────────────────────────────────
         local LISTEN_DIR REAL_IP_P REAL_IP_S
-        if [ "$MODE" = "1" ]; then
+        if [ "$(core_topology_public_ingress_owner "$MODE")" = "xray" ]; then
             LISTEN_DIR="listen unix:/dev/shm/nginx.sock ssl proxy_protocol;"
             REAL_IP_P="\$proxy_protocol_addr"
             REAL_IP_S="\$proxy_protocol_addr"
@@ -150,233 +150,32 @@ server {
 NGINX_CONF_EOF
 }
 
-# Variant F (docs/ARCHITECTURE.md §4b): nginx stream module owns public
-# :443 and routes by SNI (ssl_preread — reads ClientHello without
-# terminating TLS, so REALITY still receives the genuine handshake) to
-# one of two backends:
-#   - PANEL_DOMAIN / SUB_DOMAIN → internal nginx HTTPS listener
-#     (127.0.0.1:$F_NGINX_HTTPS_PORT), which terminates TLS normally —
-#     Panel/sub don't care about REALITY, ordinary HTTP reverse-proxy
-#     semantics apply exactly as MODE=2's http{} blocks already do.
-#   - Everything else (SELFSTEAL_DOMAIN + no SNI match, matching what
-#     REALITY itself already treats as "not my client" traffic) → raw
-#     TCP passthrough, untouched, to Xray's REALITY inbound, moved from
-#     public 0.0.0.0:443 to loopback-only 127.0.0.1:$F_XRAY_PORT.
-# Xray's own REALITY fallback (dest = /dev/shm/nginx.sock, the decoy
-# selfsteal site) is NOT touched by any of this — that mechanism lives
-# entirely inside Xray and fires only after Xray's own REALITY handshake
-# inspection, which still runs identically once nginx's stream block
-# hands it the raw bytes.
-F_NGINX_HTTPS_PORT=7443
-F_XRAY_PORT=8443
-
-# panel_generate_nginx_config_f — Variant F. Writes a FULL top-level
-# nginx.conf (mounted at /etc/nginx/nginx.conf, NOT conf.d/default.conf
-# — the `stream {}` directive is only valid at the top level, never
-# nested inside `http {}`; this is a hard nginx constraint, not a style
-# choice). Includes the standard boilerplate the base nginx:1.28 image's
-# own main config normally provides, since this file replaces it
-# entirely rather than extending conf.d.
-panel_generate_nginx_config_f() {
-    local PANEL_DOMAIN="$1"
-    local SUB_DOMAIN="$2"
-    local SELFSTEAL_DOMAIN="$3"
-    local PC="$4"
-    local SC="$5"
-    local STC="$6"
-    local COOKIE_KEY="$7"
-    local COOKIE_VAL="$8"
-
-    cat > /opt/remnawave/nginx.conf << NGINX_CONF_EOF
-user nginx;
-worker_processes auto;
-pid /run/nginx.pid;
-events { worker_connections 1024; }
-
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    sendfile on;
-    keepalive_timeout 65;
-    server_names_hash_bucket_size 64;
-
-    upstream remnawave { server 127.0.0.1:3000; }
-    upstream remnawave-sub { server 127.0.0.1:3010; }
-
-    map \$http_upgrade \$connection_upgrade {
-        default upgrade; "" close;
-    }
-
-    # Cookie-защита панели: доступ только с ?${COOKIE_KEY}=${COOKIE_VAL}
-    map \$http_cookie \$auth_cookie {
-        default 0; "~*${COOKIE_KEY}=${COOKIE_VAL}" 1;
-    }
-    map \$arg_${COOKIE_KEY} \$auth_query {
-        default 0; "${COOKIE_VAL}" 1;
-    }
-    map "\$auth_cookie\$auth_query" \$authorized {
-        "~1" 1; default 0;
-    }
-    map \$arg_${COOKIE_KEY} \$set_cookie_header {
-        "${COOKIE_VAL}" "${COOKIE_KEY}=${COOKIE_VAL}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=31536000";
-        default "";
-    }
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ecdh_curve X25519:prime256v1:secp384r1;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers on;
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:MozSSL:10m;
-    ssl_session_tickets off;
-
-    # Panel и Sub: reached ONLY via the stream{} proxy_pass below, never
-    # bound to a public interface directly. proxy_protocol picks up the
-    # real client IP forwarded by the stream leg (same mechanism MODE=1
-    # already uses for its unix-socket listener, just over loopback TCP
-    # instead of a socket path).
-    server {
-        server_name ${PANEL_DOMAIN};
-        listen 127.0.0.1:${F_NGINX_HTTPS_PORT} ssl proxy_protocol;
-        http2 on;
-        ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
-        ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
-        ssl_trusted_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
-        add_header Set-Cookie \$set_cookie_header;
-
-        location ^~ /oauth2/ {
-            if (\$http_referer !~ "^https://oauth\\.telegram\\.org/") {
-                return 444;
-            }
-            proxy_http_version 1.1;
-            proxy_pass http://remnawave;
-            proxy_set_header Host \$host;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection \$connection_upgrade;
-            proxy_set_header X-Real-IP \$proxy_protocol_addr;
-            proxy_set_header X-Forwarded-For \$proxy_protocol_addr;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-            proxy_set_header X-Forwarded-Host \$host;
-            proxy_set_header X-Forwarded-Port \$server_port;
-            proxy_send_timeout 60s; proxy_read_timeout 60s;
-        }
-        location / {
-            error_page 418 = @unauthorized;
-            recursive_error_pages on;
-            if (\$authorized = 0) { return 418; }
-            proxy_http_version 1.1;
-            proxy_pass http://remnawave;
-            proxy_set_header Host \$host;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection \$connection_upgrade;
-            proxy_set_header X-Real-IP \$proxy_protocol_addr;
-            proxy_set_header X-Forwarded-For \$proxy_protocol_addr;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-            proxy_set_header X-Forwarded-Host \$host;
-            proxy_set_header X-Forwarded-Port \$server_port;
-            proxy_send_timeout 60s; proxy_read_timeout 60s;
-        }
-        location @unauthorized {
-            root /var/www/html; index index.html; try_files /index.html =444;
-        }
-    }
-
-    server {
-        server_name ${SUB_DOMAIN};
-        listen 127.0.0.1:${F_NGINX_HTTPS_PORT} ssl proxy_protocol;
-        http2 on;
-        ssl_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
-        ssl_certificate_key "/etc/letsencrypt/live/${SC}/privkey.pem";
-        ssl_trusted_certificate "/etc/letsencrypt/live/${SC}/fullchain.pem";
-
-        location / {
-            proxy_http_version 1.1;
-            proxy_pass http://remnawave-sub;
-            proxy_set_header Host \$host;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection \$connection_upgrade;
-            proxy_set_header X-Real-IP \$proxy_protocol_addr;
-            proxy_set_header X-Forwarded-For \$proxy_protocol_addr;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-            proxy_set_header X-Forwarded-Host \$host;
-            proxy_set_header X-Forwarded-Port \$server_port;
-            proxy_send_timeout 60s; proxy_read_timeout 60s;
-            proxy_intercept_errors on;
-            error_page 400 404 500 502 @sub_error;
-        }
-        location @sub_error { return 444; }
-    }
-
-    # Selfsteal decoy + catch-all: UNCHANGED from MODE=1. This is
-    # Xray's own REALITY fallback destination (realitySettings.dest =
-    # /dev/shm/nginx.sock) — reached only from inside Xray, after Xray's
-    # own REALITY handshake inspection decides a connection isn't a
-    # genuine proxy client. Nothing about Variant F touches this path.
-    server {
-        server_name ${SELFSTEAL_DOMAIN};
-        listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
-        http2 on;
-        ssl_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
-        ssl_certificate_key "/etc/letsencrypt/live/${STC}/privkey.pem";
-        ssl_trusted_certificate "/etc/letsencrypt/live/${STC}/fullchain.pem";
-        root /var/www/html; index index.html;
-        add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
-    }
-
-    server {
-        listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
-        server_name _;
-        ssl_certificate "/etc/letsencrypt/live/${PC}/fullchain.pem";
-        ssl_certificate_key "/etc/letsencrypt/live/${PC}/privkey.pem";
-        ssl_reject_handshake on;
-        return 444;
-    }
-}
-
-# Public :443 lives here. ssl_preread reads the ClientHello's SNI
-# WITHOUT terminating TLS — proxy_pass in a stream{} server forwards
-# the raw TCP bytes untouched, so whichever backend receives the
-# connection still sees the genuine original TLS handshake. This is
-# what makes REALITY possible through this topology at all: if nginx
-# terminated TLS here first, Xray would never see a real ClientHello
-# and REALITY's handshake inspection would have nothing genuine to
-# inspect. [VERIFIED against nginx.org/en/docs/stream/ngx_stream_ssl_preread_module.html
-# and the official nginxinc/docker-nginx build (nginx:1.28 already
-# includes --with-stream_ssl_preread_module — confirmed in its
-# Dockerfile's ./configure args), so no custom nginx image is needed.]
-stream {
-    map \$ssl_preread_server_name \$f_backend {
-        ${PANEL_DOMAIN} panel_and_sub;
-        ${SUB_DOMAIN}   panel_and_sub;
-        default         xray_reality;
-    }
-    upstream panel_and_sub { server 127.0.0.1:${F_NGINX_HTTPS_PORT}; }
-    upstream xray_reality  { server 127.0.0.1:${F_XRAY_PORT}; }
-
-    server {
-        listen 443;
-        ssl_preread on;
-        proxy_pass \$f_backend;
-        # proxy_protocol is enabled toward panel_and_sub (matches the
-        # proxy_protocol listener above) so Panel/sub keep real client
-        # IPs. It is intentionally NOT enabled toward xray_reality: this
-        # repo's REALITY inbound JSON (lib/panel/api.sh) has not been
-        # verified to accept PROXY protocol on a REALITY-security
-        # inbound (rawSettings.acceptProxyProtocol is documented for
-        # security:"tls" inbounds, not confirmed for security:"reality"
-        # ones) — enabling it without that confirmation risks silently
-        # breaking every REALITY handshake. Real client IPs at the Xray
-        # leg will show as 127.0.0.1 until this is verified. Documented
-        # as a known limitation, not silently assumed away.
-        proxy_protocol on;
-    }
-}
-NGINX_CONF_EOF
-}
+# panel_generate_nginx_config_f() moved to lib/panel/nginx/variant_f.sh, and
+# panel_generate_nginx_config_j() lives in lib/panel/nginx/variant_j.sh —
+# see those files for Variant F/J's respective topologies and constants.
+# Moved out 2026-08-31 so this file stays a thin dispatcher and each
+# variant's nginx generator lives in its own file (variant_f.sh /
+# variant_j.sh), per the module split decided for Variant F/J. lib/panel.sh
+# sources nginx/variant_f and nginx/variant_j alongside this file, so both
+# panel_generate_nginx_config_f() and panel_generate_nginx_config_j() are
+# defined before panel_generate_webserver_config() below ever calls them.
 
 # panel_generate_webserver_config — dispatcher, выбирает nginx/caddy backend
 # по значению WEB_SERVER. Orchestration-level функция; отдельный третий
 # файл для одного диспетчера не создаём (см. решение Stage 6h).
+#
+# $11/$12 (TELEMT_DOMAIN/TELEMT_PORT) — WIRED 2026-08-31 (TeleMT wiring
+# audit): lib/panel/cli.sh's panel_cli_collect_j_options() has collected
+# these since the CLI-extraction stage, but this function still only
+# accepted its original 10 args, so the values never reached
+# panel_generate_nginx_config_j() — every MODE=J install silently got
+# variant_j.sh's own TELEMT_DOMAIN="" default (TeleMT disabled) regardless
+# of what was collected. Fixed by accepting them here (optional — MODE=1/2/F
+# callers, and MODE=J with TeleMT disabled, simply pass empty strings,
+# which variant_j.sh's own renderer already treats as "no TeleMT branch")
+# and forwarding them to panel_generate_nginx_config_j()'s existing
+# 9th/10th positional args (unchanged since they were added — see that
+# function's own header comment).
 panel_generate_webserver_config() {
     local WEB_SERVER="$1"
     local MODE="$2"
@@ -388,18 +187,60 @@ panel_generate_webserver_config() {
     local STC="$8"
     local COOKIE_KEY="$9"
     local COOKIE_VAL="${10}"
+    local TELEMT_DOMAIN="${11:-}"
+    local TELEMT_PORT="${12:-}"
+    # F_XHTTP_ENABLE (2026-09-05, F+XHTTP) — OPTIONAL 13th arg, "0"/"1".
+    # Backward compatible: every existing 10/11/12-arg call site keeps
+    # working unchanged (omitted => "0" => F's single-Vision-leg output,
+    # byte-identical to before this arg existed).
+    #
+    # FIXED 2026-09-05 (F+XHTTP audit): this dispatcher previously
+    # decided F-shape vs J-shape purely from a local `[ "$MODE" = "J" ]`
+    # -derived XHTTP_ENABLE, which is WRONG for F+XHTTP: it would have
+    # routed a MODE=F + "XHTTP wanted" install to
+    # panel_generate_nginx_config_j() — Variant J's generator, with
+    # Variant J's OWN ports (J_XRAY_VISION_PORT=18443,
+    # J_XHTTP_PUBLIC_PORT=8443, J_NGINX_HTTPS_PORT=7444) — silently
+    # replacing Variant F's topology and ports (F_XRAY_VISION_PORT=8443,
+    # F_NGINX_HTTPS_PORT=7443) entirely, not adding an XHTTP leg to F as
+    # intended. MODE and "does this profile carry an XHTTP leg" are now
+    # kept as two separate questions: MODE alone selects WHICH generator
+    # runs (F always uses panel_generate_nginx_config_f(), J always uses
+    # panel_generate_nginx_config_j() — J already always had its XHTTP
+    # leg built in, unconditionally, so it takes no such flag), and
+    # F_XHTTP_ENABLE only ever reaches panel_generate_nginx_config_f()'s
+    # own optional 11th arg, controlling whether F's generator adds its
+    # OWN, F-specific XHTTP public leg (F_XHTTP_PUBLIC_PORT=9443 ->
+    # F_XRAY_XHTTP_PORT=19444, see variant_f.sh) — never J's.
+    local F_XHTTP_ENABLE="${13:-0}"
 
     if [ "$WEB_SERVER" = "1" ]; then
-        # MODE=F routes to the standalone Variant F generator instead of
-        # panel_generate_nginx_config()'s MODE=1/2 heredoc — dispatcher-
-        # level only, panel_generate_nginx_config()'s body is untouched
-        # (guarantees MODE=1/2 stay byte-identical). WEB_SERVER=2+MODE=F
-        # is already rejected upstream (lib/panel/install.sh:208, before
-        # this function is ever called), so no guard is needed here.
-        if [ "$MODE" = "F" ]; then
+        # MODE=F/MODE=J together route to the co-located nginx generators
+        # instead of panel_generate_nginx_config()'s MODE=1/2 heredoc —
+        # dispatcher-level only, panel_generate_nginx_config()'s body is
+        # untouched (guarantees MODE=1/2 stay byte-identical). WEB_SERVER=2
+        # + MODE=F/J is already rejected upstream (lib/panel/cli.sh's
+        # panel_cli_select_webserver(), and again defensively in
+        # lib/panel/compose/colocated.sh, before this function is ever
+        # reached with such a combination) — no guard needed here too.
+        #
+        # WHICH generator runs is decided by MODE alone (restored to a
+        # direct MODE check — see FIXED comment above for why the old
+        # XHTTP_ENABLE-derived branch was wrong). TELEMT_DOMAIN/TELEMT_PORT
+        # are forwarded to both; each generator treats an empty
+        # TELEMT_DOMAIN as "disabled" on its own. F_XHTTP_ENABLE is
+        # forwarded ONLY to panel_generate_nginx_config_f() — J's call has
+        # no such arg, it is not applicable to J's already-fixed topology.
+        if [ "$MODE" = "J" ]; then
+            panel_generate_nginx_config_j \
+                "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
+                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
+                "$TELEMT_DOMAIN" "$TELEMT_PORT"
+        elif [ "$MODE" = "F" ]; then
             panel_generate_nginx_config_f \
                 "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
-                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL"
+                "$PC" "$SC" "$STC" "$COOKIE_KEY" "$COOKIE_VAL" \
+                "$TELEMT_DOMAIN" "$TELEMT_PORT" "$F_XHTTP_ENABLE"
         else
             panel_generate_nginx_config \
                 "$MODE" "$PANEL_DOMAIN" "$SUB_DOMAIN" "$SELFSTEAL_DOMAIN" \
