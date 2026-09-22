@@ -126,7 +126,7 @@ its own vocabulary, but the same fail-closed posture:
                     should pass UNKNOWN explicitly.
 This module never infers management_scope from whether a path exists,
 whether nginx is installed, or anything else observable — every value
-comes from the caller (see resolve_target_or_none's docstring).
+comes from the caller (see `TargetRegistry.resolve`'s docstring).
 
 RESOLUTION SEMANTICS
 ------------------------
