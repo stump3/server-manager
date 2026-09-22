@@ -88,7 +88,7 @@ PYEOF
 
 _hy_integration_install() {
     local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local install_script="${script_dir}/../integrations/hy-sub-install.sh"
+    local install_script="${script_dir}/../../integrations/hy-sub-install.sh"
     local cleanup_tmp=false
 
     if [ ! -f "$install_script" ]; then
