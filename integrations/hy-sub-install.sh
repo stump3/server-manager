@@ -433,6 +433,21 @@ cd /opt/remnawave && docker compose up -d --force-recreate remnawave >/dev/null 
 ok "Remnawave перезапущена"
 
 # ── Агрегация трафика Hysteria2 → Remnawave ──────────────────────
+# CONFIRMED BUG FIX: this whole section used to run as sequential
+# top-level script code (no enclosing function) while its INSERT
+# helper var was declared "local _HY_NODE_ROW" -- `local` outside a
+# function is a hard bash error ("local: can only be used in a
+# function"), which aborted every install at exactly this step once a
+# user answered "y" to traffic aggregation. None of this section's
+# variables (_TRAFFIC_SECRET, enable_agg, _HY_NODE_ADDRESS,
+# _HY_NODE_ID, _HY_NODE_UUID, _HY_NODE_ROW) are read anywhere after it
+# -- it was always meant to be self-contained -- so it is wrapped in
+# its own function here (restoring the scope the original `local`
+# already assumed existed) rather than dropping `local` to silence
+# the error.
+hy_setup_traffic_aggregation() {
+    local _TRAFFIC_SECRET enable_agg _HY_NODE_ADDRESS _HY_NODE_ID _HY_NODE_UUID _HY_NODE_ROW
+
     echo ""
     echo -e "  ${BOLD}Агрегация трафика Hysteria2 → Remnawave${NC}"
     echo -e "  ${GRAY}Трафик пользователей Hysteria2 будет виден в панели${NC}"
@@ -459,7 +474,6 @@ ok "Remnawave перезапущена"
             _HY_NODE_ID=""
             if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-db"; then
                 # Вставляем ноду, при конфликте по address — просто получаем существующий id
-                local _HY_NODE_ROW
                 _HY_NODE_ROW=$(docker exec remnawave-db psql -U postgres postgres -tAc "
 INSERT INTO nodes (name, address, is_connected, is_connecting, is_disabled,
     is_traffic_tracking_active, country_code, consumption_multiplier)
@@ -502,6 +516,8 @@ TRAFFICEOF
         echo -e "  ${GRAY}  Включите через: Hysteria2 → Установка, затем вернитесь сюда${NC}"
         info "Агрегация пропущена"
     fi
+}
+hy_setup_traffic_aggregation
 
 fi # DO_WEBHOOK
 
