@@ -24,7 +24,7 @@ import copy
 import inspect
 import io
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from unittest import mock
 
 import _loader  # noqa: F401 - adds poc/network-inspect/ to sys.path
@@ -405,27 +405,23 @@ class TestNginxExecutorPolicy(unittest.TestCase):
     def test_path_separators_in_target_name_are_rejected(self):
         for name in ("a/b", "..\\x", "/etc/passwd"):
             with self.subTest(name):
-                rr = _rr(_art("nginx:x", kind="nginx_stream_server_block", name=name), provider="nginx")
+                rr = _rr(_art("nginx:x", kind="nginx_stream", name=name), provider="nginx")
                 self.assertEqual(_codes(core.prepare(rr, nginx_executor.NginxExecutor())), ["invalid_target_name"])
 
     def test_group_id_style_names_are_accepted(self):
-        rr = _rr(_art("nginx:a+b-c", kind="nginx_stream_server_block", name="a+b-c"), provider="nginx")
+        rr = _rr(_art("nginx:a+b-c", kind="nginx_stream", name="a+b-c"), provider="nginx")
         self.assertEqual(core.prepare(rr, nginx_executor.NginxExecutor()).status, "prepared")
 
     def test_two_stream_blocks_are_refused(self):
-        rr = _rr(_art("nginx:g1", kind="nginx_stream_server_block", name="g1"),
-                 _art("nginx:g2", kind="nginx_stream_server_block", name="g2"), provider="nginx")
+        rr = _rr(_art("nginx:g1", kind="nginx_stream", name="g1"),
+                 _art("nginx:g2", kind="nginx_stream", name="g2"), provider="nginx")
         result = core.prepare(rr, nginx_executor.NginxExecutor())
         self.assertEqual(result.status, "validation_failed")
         self.assertEqual(_codes(result), ["multiple_stream_blocks"])
 
-    def test_two_group_renderer_output_is_refused_known_contract_gap(self):
-        """DOCUMENTS A KNOWN UPSTREAM GAP, does not hide it: the Renderer
-        emits a complete `stream {}` wrapper per group, and nginx rejects two
-        top-level stream blocks ('"stream" directive is duplicate'). A
-        genuinely valid multi-group Renderer result is therefore not
-        applicable as independent artifacts."""
-        plan = plan_ir.assemble([
+    @staticmethod
+    def _two_group_plan():
+        return plan_ir.assemble([
             plan_ir.build_group("SHARED_TCP_SNI", "nginx", [
                 _svc_entry("a", ip="203.0.113.10", sni=["a.example.com"]),
                 _svc_entry("b", ip="203.0.113.10", sni=["b.example.com"])]),
@@ -433,13 +429,47 @@ class TestNginxExecutorPolicy(unittest.TestCase):
                 _svc_entry("c", ip="203.0.113.11", sni=["c.example.com"]),
                 _svc_entry("d", ip="203.0.113.11", sni=["d.example.com"])]),
         ])
-        rr = nginx_renderer.render(plan)
+
+    def test_valid_multi_group_renderer_output_no_longer_triggers_multiple_stream_blocks(self):
+        """Regression for the contract gap found in the Executor Foundation
+        stage: the Renderer used to emit one complete `stream {}` per group
+        (nginx: '"stream" directive is duplicate'), which this guard
+        correctly refused. It now aggregates every nginx group into ONE
+        artifact, so valid multi-group output is accepted. The guard itself
+        is untouched (see the next test)."""
+        rr = nginx_renderer.render(self._two_group_plan())
         self.assertTrue(rr.valid, rr.diagnostics)
-        self.assertEqual(len(rr.artifacts), 2)
-        for art in rr.artifacts:
-            self.assertTrue(art.content.startswith("stream {"))
+        self.assertEqual(len(rr.artifacts), 1)
         result = core.prepare(rr, nginx_executor.NginxExecutor())
+        self.assertEqual(result.status, "prepared", result.diagnostics)
+        self.assertNotIn("multiple_stream_blocks", _codes(result))
+
+    def test_multi_group_renderer_output_executes_through_the_transaction(self):
+        rr = nginx_renderer.render(self._two_group_plan())
+        port = FakePort(["nginx:stream"], provider="nginx")
+        result = core.execute(rr, nginx_executor.NginxExecutor(), port)
+        self.assertEqual(result.status, "applied", result.diagnostics)
+        self.assertEqual(result.applied_artifacts, ["nginx:stream"])
+        self.assertEqual(port.host["nginx:stream"], rr.artifacts[0].content)   # passed through untouched
+
+    def test_multiple_stream_blocks_guard_still_refuses_the_legacy_per_group_shape(self):
+        """The guard is a defensive contract, not a workaround for the old
+        Renderer bug, so it must keep firing on the shape that bug produced:
+        one stream artifact per group, identified by group id."""
+        plan = self._two_group_plan()
+        legacy = []
+        for group in plan["groups"]:
+            single = nginx_renderer.render(plan_ir.assemble([group]))
+            self.assertTrue(single.valid, single.diagnostics)
+            legacy.append(replace(single.artifacts[0], artifact_id=f"nginx:{group['group_id']}",
+                                  target_name=group["group_id"]))
+        rr = nginx_renderer.RenderResult(True, "nginx", legacy, [])
+        result = core.prepare(rr, nginx_executor.NginxExecutor())
+        self.assertEqual(result.status, "validation_failed")
         self.assertEqual(_codes(result), ["multiple_stream_blocks"])
+        port = FakePort([a.artifact_id for a in legacy], provider="nginx")
+        self.assertEqual(core.execute(rr, nginx_executor.NginxExecutor(), port).status, "validation_failed")
+        self.assertEqual(port.calls, [])          # refused before any port operation
 
     def test_executor_does_not_touch_artifact_content(self):
         rr = _real_render("a", "b")
@@ -986,8 +1016,12 @@ class TestExecutorArchitecture(unittest.TestCase):
     def test_core_imports_only_the_standard_library(self):
         self.assertLessEqual(_imported_top_level_names(core), {"__future__", "dataclasses", "typing"})
 
-    def test_nginx_executor_imports_only_core_and_future(self):
-        self.assertLessEqual(_imported_top_level_names(nginx_executor), {"__future__", "executors"})
+    def test_nginx_executor_imports_only_stdlib_and_executors(self):
+        # re/dataclasses/typing (Protocol) joined this set in the Runtime
+        # Target Mapping stage for the nginx preflight adapter — all
+        # stdlib, still no third-party or forbidden-pipeline import.
+        self.assertLessEqual(_imported_top_level_names(nginx_executor),
+                             {"__future__", "executors", "re", "dataclasses", "typing"})
 
     def test_no_forbidden_pipeline_imports(self):
         forbidden = {"planner", "desired_state", "inventory_build", "net_facts", "capabilities",
