@@ -127,7 +127,7 @@ declare -p _HY_NODE_ROW >> "$log" 2>&1 || echo "_HY_NODE_ROW: not set (correct)"
 EOF
 
 cat > "$W/driver.py" << 'EOF'
-import os, pty, sys, select, time
+import os, pty, sys, select, time, signal
 fn, mock_db, log, child, ans = sys.argv[1:6]
 if ans == "EMPTY": ans = ""
 pid, fd = pty.fork()
@@ -135,6 +135,15 @@ if pid == 0:
     os.execvp("bash", ["bash", child, fn, mock_db, log])
 out = b""; sent = False; end = time.time() + 30
 prompt = "Включить агрегацию".encode()
+# FAILSAFE (fixes a real hang): a `while ... : ...` loop that merely stops
+# WATCHING the fd on timeout does not stop the CHILD -- the unconditional
+# `os.waitpid(pid, 0)` below would then block forever on a still-alive,
+# stuck child (e.g. an external command in the mock chain that never
+# returns). `while/else` fires only when the loop exits by exhausting
+# `end` without `break` -- i.e. exactly the timeout case, never the
+# normal "prompt answered, child exited" case -- so this SIGKILLs the
+# child only on genuine timeout, then the final waitpid always completes
+# (either reaping the already-dead child, or the just-killed one).
 while time.time() < end:
     r, _, _ = select.select([fd], [], [], 0.5)
     if r:
@@ -155,6 +164,11 @@ while time.time() < end:
                 break
         except ChildProcessError:
             break
+else:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 try:
     _, st = os.waitpid(pid, 0)
 except ChildProcessError:
@@ -258,13 +272,17 @@ echo "== 3. mutation test: proves this suite WOULD catch the original (pre-fix) 
 printf 'trafficStats:\n  secret: mysecret123\n' > /etc/hysteria/config.yaml
 : > /etc/hy-webhook.env
 cat > "$W/mut_driver.py" << 'EOF'
-import os, pty, sys, select, time
+import os, pty, sys, select, time, signal
 mut, log = sys.argv[1:3]
 pid, fd = pty.fork()
 if pid == 0:
     os.execvp("bash", ["bash", mut])
 out = b""; sent = False; end = time.time() + 15
 prompt = "Включить агрегацию".encode()
+# Same failsafe as driver.py above: SIGKILL the child on genuine timeout
+# (while/else fires only when the loop exhausts `end` without `break`)
+# before the final blocking waitpid, so a stuck child can never hang
+# this test forever.
 while time.time() < end:
     r, _, _ = select.select([fd], [], [], 0.5)
     if r:
@@ -285,6 +303,11 @@ while time.time() < end:
                 break
         except ChildProcessError:
             break
+else:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 try:
     _, st = os.waitpid(pid, 0)
 except ChildProcessError:
